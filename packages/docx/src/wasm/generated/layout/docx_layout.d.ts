@@ -21,7 +21,7 @@ export function close_display_list(handle: number): void;
 
 /**
  * wasm wrapper over [`hit::hit_test_json`]: display-list JSON + page-local
- * point in, PM position (or `null`) as JSON out.
+ * point in, document position (or `null`) as JSON out.
  */
 export function hit_test_json(display_list: string, page_index: number, x: number, y: number): string;
 
@@ -85,7 +85,7 @@ export function outline_glyph_json(font_id: number, glyph_id: number): string;
 export function range_rects_by_handle(handle: number, from: number, to: number): string;
 
 /**
- * wasm wrapper over [`hit::range_rects_json`]: display-list JSON + PM range
+ * wasm wrapper over [`hit::range_rects_json`]: display-list JSON + document range
  * in, JSON array of page-local rects out.
  */
 export function range_rects_json(display_list: string, from: number, to: number): string;
@@ -103,7 +103,7 @@ export function range_rects_region_by_handle(handle: number, region: string, r_i
  * wasm wrapper over [`hit::range_rects_region_json`]: region-aware range rects.
  * `region` is `"body" | "header" | "footer"`; `r_id` scopes a header/footer to
  * one HF part (empty for body / match-any). The `from`/`to` refer to that
- * region's PM doc. The legacy `range_rects_json` export stays body-only.
+ * region's doc. The legacy `range_rects_json` export stays body-only.
  */
 export function range_rects_region_json(display_list: string, region: string, r_id: string, from: number, to: number): string;
 
