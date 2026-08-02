@@ -1,0 +1,48 @@
+appId: dev.nexoffice.desktop
+productName: NexOffice
+copyright: Copyright © 2026 NexOffice
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+asarUnpack:
+  - "**/*.wasm"
+fileAssociations:
+  - ext: docx
+    name: Word Document
+    role: Editor
+    mimeType: application/vnd.openxmlformats-officedocument.wordprocessingml.document
+  - ext: xlsx
+    name: Excel Workbook
+    role: Editor
+    mimeType: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+  - ext: pptx
+    name: PowerPoint Presentation
+    role: Editor
+    mimeType: application/vnd.openxmlformats-officedocument.presentationml.presentation
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+win:
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+linux:
+  category: Office
+  target:
+    - AppImage
+    - deb

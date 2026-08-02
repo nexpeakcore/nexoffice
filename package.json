@@ -6,7 +6,8 @@
   "workspaces": [
     "apps/*",
     "packages/*",
-    "crates"
+    "crates",
+    "desktop"
   ],
   "overrides": {
     "@hono/node-server": "2.0.10",

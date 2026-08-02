@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="220" fill="url(#bg)"/>
+  <!-- document sheet -->
+  <rect x="272" y="192" width="480" height="640" rx="48" fill="#ffffff" opacity="0.96"/>
+  <!-- text lines -->
+  <rect x="352" y="320" width="320" height="48" rx="24" fill="#2563eb"/>
+  <rect x="352" y="416" width="240" height="36" rx="18" fill="#94a3b8"/>
+  <rect x="352" y="500" width="320" height="36" rx="18" fill="#cbd5e1"/>
+  <rect x="352" y="584" width="280" height="36" rx="18" fill="#cbd5e1"/>
+  <rect x="352" y="668" width="200" height="36" rx="18" fill="#cbd5e1"/>
+  <!-- grid accent: spreadsheet corner -->
+  <path d="M560 192h160a48 48 0 0 1 48 48v160" fill="none" stroke="#22d3ee" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M592 224h96a32 32 0 0 1 32 32v96" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
