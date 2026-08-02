@@ -44,6 +44,7 @@ pub struct GridGeometry {
 
 impl GridGeometry {
     /// build cumulative offset tables from a sheet's custom widths/heights.
+    /// hidden rows occupy zero height, so the rows below them close the gap.
     pub fn new(sheet: &Sheet) -> Self {
         let default_col_px = col_chars_to_px(DEFAULT_COL_WIDTH_CHARS);
         let default_row_px = row_pt_to_px(DEFAULT_ROW_HEIGHT_PT);
@@ -59,7 +60,15 @@ impl GridGeometry {
             .keys()
             .next_back()
             .map(|&r| r + 1)
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .max(
+                sheet
+                    .hidden_rows
+                    .iter()
+                    .next_back()
+                    .map(|&r| r + 1)
+                    .unwrap_or(0),
+            );
 
         let mut col_x = Vec::with_capacity(n_cols as usize + 1);
         col_x.push(0.0);
@@ -75,11 +84,15 @@ impl GridGeometry {
         let mut row_y = Vec::with_capacity(n_rows as usize + 1);
         row_y.push(0.0);
         for r in 0..n_rows {
-            let h = sheet
-                .row_heights
-                .get(&r)
-                .map(|&h| row_pt_to_px(h))
-                .unwrap_or(default_row_px);
+            let h = if sheet.is_row_hidden(r) {
+                0.0
+            } else {
+                sheet
+                    .row_heights
+                    .get(&r)
+                    .map(|&h| row_pt_to_px(h))
+                    .unwrap_or(default_row_px)
+            };
             row_y.push(row_y[r as usize] + h);
         }
 

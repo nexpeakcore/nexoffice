@@ -25,6 +25,8 @@ export type ToolbarIconName =
   | 'check'
   | 'save'
   | 'image'
+  | 'sortAsc'
+  | 'sortDesc'
   | 'proposals';
 
 export interface ToolbarIconProps {
@@ -143,6 +145,18 @@ export function ToolbarIcon({ name, size = 20, style }: ToolbarIconProps) {
           <rect x="3" y="5" width="18" height="14" rx="2" />
           <circle cx="8.5" cy="9.5" r="1.25" />
           <path d="m6 17 4.5-4.5 3.25 3.25L16 13.5l2 2" />
+        </>
+      )}
+      {name === 'sortAsc' && (
+        <>
+          <path d="M4 6h8M4 11h5M4 16h3" />
+          <path d="m15 13 3-3 3 3M18 10v10" />
+        </>
+      )}
+      {name === 'sortDesc' && (
+        <>
+          <path d="M4 6h8M4 11h5M4 16h3" />
+          <path d="m15 11 3 3 3-3M18 4v10" />
         </>
       )}
       {name === 'proposals' && (

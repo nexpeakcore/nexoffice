@@ -1062,6 +1062,22 @@ function XlsxEditorContent({
 
   const print = useCallback(() => window.print(), []);
 
+  const sortSelection = useCallback(
+    (ascending: boolean) => {
+      const handle = handleRef.current;
+      if (!handle || !selection) return;
+      const minRow = Math.min(selection.anchor.row, selection.focus.row);
+      const maxRow = Math.max(selection.anchor.row, selection.focus.row);
+      const keyCol = selection.anchor.col;
+      try {
+        applyResult(handle.sortRange(activeSheet, minRow, maxRow, keyCol, ascending));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [applyResult, selection, activeSheet]
+  );
+
   const searchMenus = useCallback(() => undefined, []);
 
   const mergeSelection = useCallback(
@@ -1526,6 +1542,27 @@ function XlsxEditorContent({
                 title={t('toolbar.exportPng')}
               >
                 <ToolbarIcon name="image" size={18} />
+              </ToolbarButton>
+            </ToolbarGroup>
+            <ToolbarGroup
+              style={{ ...xlsxToolbarStyles.group }}
+              label={t('toolbar.sortLabel')}
+            >
+              <ToolbarButton
+                testId="xlsx-sort-asc"
+                onClick={() => sortSelection(true)}
+                disabled={!sheetInfo || !selection}
+                title={t('toolbar.sortAsc')}
+              >
+                <ToolbarIcon name="sortAsc" size={18} />
+              </ToolbarButton>
+              <ToolbarButton
+                testId="xlsx-sort-desc"
+                onClick={() => sortSelection(false)}
+                disabled={!sheetInfo || !selection}
+                title={t('toolbar.sortDesc')}
+              >
+                <ToolbarIcon name="sortDesc" size={18} />
               </ToolbarButton>
             </ToolbarGroup>
             <div

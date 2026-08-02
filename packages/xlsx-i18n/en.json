@@ -101,7 +101,10 @@
     "save": "Save",
     "exportPng": "Export PNG",
     "undo": "Undo",
-    "redo": "Redo"
+    "redo": "Redo",
+    "sortLabel": "Sort",
+    "sortAsc": "Sort A to Z",
+    "sortDesc": "Sort Z to A"
   },
   "editor": {
     "appLabel": "Spreadsheet editor",

@@ -3,8 +3,8 @@
 
 use xlsx_model::styles::{BorderStyle, Color, Fill, FormatCode, HAlign, VAlign};
 use xlsx_model::{
-    Cell, CellRef, CellValue, DateSystem, DefinedName, ErrorValue, FreezePane, Hyperlink, SheetId,
-    Workbook,
+    AutoFilter, AutoFilterColumn, Cell, CellRange, CellRef, CellValue, DateSystem, DefinedName,
+    ErrorValue, FreezePane, Hyperlink, SheetId, Workbook,
 };
 
 use crate::write::{serialize_workbook_with_package, serialize_workbook_with_package_and_origins};
@@ -155,6 +155,71 @@ fn parses_and_round_trips_frozen_sheet_views() {
 
     let reparsed = parse_workbook(&serialize_workbook(&parsed).unwrap()).unwrap();
     assert_eq!(reparsed.sheets[0].freeze_pane, parsed.sheets[0].freeze_pane);
+}
+
+#[test]
+fn parses_and_round_trips_hidden_rows_and_auto_filter() {
+    let body = r#"
+        <sheetData>
+            <row r="1"><c r="A1"><v>1</v></c></row>
+            <row r="2" hidden="1"><c r="A2"><v>2</v></c></row>
+            <row r="3" hidden="true"/>
+        </sheetData>
+        <autoFilter ref="A1:C10">
+            <filterColumn colId="1">
+                <filters blank="1"><filter val="x"/><filter val="y"/></filters>
+            </filterColumn>
+            <filterColumn colId="2"/>
+        </autoFilter>
+    "#;
+    let parsed = parse_workbook(&package(body, &[], false)).unwrap();
+
+    let sheet = &parsed.sheets[0];
+    assert_eq!(
+        sheet.hidden_rows.iter().copied().collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert!(sheet.is_row_hidden(1));
+    assert!(!sheet.is_row_hidden(0));
+    assert_eq!(
+        sheet.auto_filter,
+        Some(AutoFilter {
+            range: CellRange::parse_a1("A1:C10").unwrap(),
+            columns: vec![
+                AutoFilterColumn {
+                    col: 1,
+                    values: Some(vec!["x".into(), "y".into()]),
+                    show_blanks: true,
+                },
+                AutoFilterColumn {
+                    col: 2,
+                    values: None,
+                    show_blanks: true,
+                },
+            ],
+        })
+    );
+
+    let reparsed = parse_workbook(&serialize_workbook(&parsed).unwrap()).unwrap();
+    assert_eq!(reparsed.sheets[0].hidden_rows, sheet.hidden_rows);
+    assert_eq!(reparsed.sheets[0].auto_filter, sheet.auto_filter);
+}
+
+#[test]
+fn drops_blank_marker_when_filters_omit_it() {
+    let body = r#"
+        <sheetData/>
+        <autoFilter ref="A1:A5">
+            <filterColumn colId="0"><filters><filter val="z"/></filters></filterColumn>
+        </autoFilter>
+    "#;
+    let parsed = parse_workbook(&package(body, &[], false)).unwrap();
+    let columns = &parsed.sheets[0].auto_filter.as_ref().unwrap().columns;
+    assert_eq!(columns[0].values.as_deref(), Some(&["z".to_owned()][..]));
+    assert!(!columns[0].show_blanks);
+
+    let reparsed = parse_workbook(&serialize_workbook(&parsed).unwrap()).unwrap();
+    assert_eq!(reparsed.sheets[0].auto_filter, parsed.sheets[0].auto_filter);
 }
 
 #[test]
@@ -1161,6 +1226,67 @@ fn removes_the_pane_when_a_sheet_is_unfrozen() {
     assert!(
         parse_workbook(&saved).unwrap().sheets[0]
             .freeze_pane
+            .is_none()
+    );
+}
+
+#[test]
+fn overlays_auto_filter_and_hidden_rows_onto_a_retained_worksheet() {
+    let body = r#"<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>"#;
+    let parsed = parse_workbook_with_package(&package(body, &[], false)).unwrap();
+
+    let mut workbook = parsed.workbook.clone();
+    workbook.sheets[0].hide_row(1);
+    workbook.sheets[0].auto_filter = Some(AutoFilter {
+        range: CellRange::parse_a1("A1:B5").unwrap(),
+        columns: vec![AutoFilterColumn {
+            col: 1,
+            values: Some(vec!["beta".into()]),
+            show_blanks: false,
+        }],
+    });
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+    let written = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+
+    assert!(written.contains(r#"<row r="2" hidden="1">"#), "{written}");
+    assert!(
+        written.find("</sheetData>").unwrap() < written.find("<autoFilter").unwrap()
+            && written.find("<autoFilter").unwrap() < written.find("<pageMargins").unwrap(),
+        "autoFilter must sit between sheetData and pageMargins: {written}"
+    );
+    assert!(
+        written.contains(
+            r#"<filterColumn colId="1"><filters><filter val="beta"/></filters></filterColumn>"#
+        ),
+        "{written}"
+    );
+
+    let reparsed = parse_workbook(&saved).unwrap();
+    assert_eq!(
+        reparsed.sheets[0].hidden_rows,
+        workbook.sheets[0].hidden_rows
+    );
+    assert_eq!(
+        reparsed.sheets[0].auto_filter,
+        workbook.sheets[0].auto_filter
+    );
+}
+
+#[test]
+fn removes_the_auto_filter_when_cleared() {
+    let body = r#"<sheetData/><autoFilter ref="A1:B5"/>"#;
+    let parsed = parse_workbook_with_package(&package(body, &[], false)).unwrap();
+    assert!(parsed.workbook.sheets[0].auto_filter.is_some());
+
+    let mut workbook = parsed.workbook.clone();
+    workbook.sheets[0].auto_filter = None;
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+    let written = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+
+    assert!(!written.contains("<autoFilter"), "{written}");
+    assert!(
+        parse_workbook(&saved).unwrap().sheets[0]
+            .auto_filter
             .is_none()
     );
 }

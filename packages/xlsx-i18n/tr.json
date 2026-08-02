@@ -10,7 +10,10 @@
     "save": null,
     "exportPng": null,
     "undo": null,
-    "redo": null
+    "redo": null,
+    "sortLabel": "Sırala",
+    "sortAsc": "A'dan Z'ye Sırala",
+    "sortDesc": "Z'den A'ya Sırala"
   },
   "editor": {
     "appLabel": null,

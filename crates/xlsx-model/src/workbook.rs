@@ -1,6 +1,6 @@
 //! sparse workbook containers and the calc-facing cell-access trait.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,23 @@ pub struct DefinedName {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoFilter {
+    pub range: CellRange,
+    /// per-column criteria; empty when the filter only adds dropdowns.
+    pub columns: Vec<AutoFilterColumn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoFilterColumn {
+    /// absolute sheet column; the xml `colId` is relative to `range.start`.
+    pub col: ColId,
+    /// explicit cell texts kept visible; `None` when the column has no value criteria.
+    pub values: Option<Vec<String>>,
+    /// whether blank cells stay visible alongside `values`.
+    pub show_blanks: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hyperlink {
     pub range: CellRange,
     pub external_target: Option<String>,
@@ -62,6 +79,9 @@ pub struct Sheet {
     pub merges: Vec<CellRange>,
     pub col_widths: BTreeMap<ColId, f64>,
     pub row_heights: BTreeMap<RowId, f64>,
+    /// rows explicitly hidden (by a filter or a manual hide).
+    pub hidden_rows: BTreeSet<RowId>,
+    pub auto_filter: Option<AutoFilter>,
 }
 
 impl Sheet {
@@ -103,6 +123,18 @@ impl Sheet {
                 .range((row, start_col)..(row, end_col))
                 .map(|(&(row, col), cell)| (CellRef::new(row, col), cell))
         })
+    }
+
+    pub fn hide_row(&mut self, row: RowId) {
+        self.hidden_rows.insert(row);
+    }
+
+    pub fn show_row(&mut self, row: RowId) {
+        self.hidden_rows.remove(&row);
+    }
+
+    pub fn is_row_hidden(&self, row: RowId) -> bool {
+        self.hidden_rows.contains(&row)
     }
 
     pub fn hyperlink_at(&self, at: CellRef) -> Option<&Hyperlink> {
@@ -330,6 +362,22 @@ mod tests {
         let mut reversed = 1..2;
         std::mem::swap(&mut reversed.start, &mut reversed.end);
         assert_eq!(sheet.iter_cells_in_rect(0..3, reversed).count(), 0);
+    }
+
+    #[test]
+    fn hides_and_shows_rows() {
+        let mut sheet = Sheet::new("Data");
+        assert!(!sheet.is_row_hidden(3));
+
+        sheet.hide_row(3);
+        sheet.hide_row(5);
+        assert!(sheet.is_row_hidden(3));
+        assert!(sheet.is_row_hidden(5));
+        assert!(!sheet.is_row_hidden(4));
+
+        sheet.show_row(3);
+        assert!(!sheet.is_row_hidden(3));
+        assert!(sheet.is_row_hidden(5));
     }
 
     #[test]

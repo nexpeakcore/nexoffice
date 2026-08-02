@@ -10,7 +10,10 @@
     "save": null,
     "exportPng": null,
     "undo": null,
-    "redo": null
+    "redo": null,
+    "sortLabel": "排序",
+    "sortAsc": "升序排序",
+    "sortDesc": "降序排序"
   },
   "editor": {
     "appLabel": null,

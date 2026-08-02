@@ -574,6 +574,66 @@ fn frozen_panes_survive_the_facade_and_drive_the_initial_view() {
 }
 
 #[test]
+fn set_freeze_pane_op_applies_undoes_and_persists() {
+    let mut model = WorkbookModel::default();
+    model.sheets.push(Sheet::new("Data"));
+    let mut workbook = Workbook::from_model(model).unwrap();
+
+    let pane = FreezePane::new(2, 1, cell("B3"));
+    workbook
+        .apply_ops(
+            vec![Op::SetFreezePane {
+                sheet: SheetId(0),
+                pane: Some(pane),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(workbook.sheet(SheetId(0)).unwrap().freeze_pane, Some(pane));
+    let info = workbook.sheet_info().unwrap();
+    assert_eq!((info.frozen_rows, info.frozen_cols), (2, 1));
+
+    let reopened = Workbook::open(&workbook.save().unwrap()).unwrap();
+    assert_eq!(reopened.sheet(SheetId(0)).unwrap().freeze_pane, Some(pane));
+
+    workbook.undo(CalculationOptions::default()).unwrap();
+    assert_eq!(workbook.sheet(SheetId(0)).unwrap().freeze_pane, None);
+    workbook.redo(CalculationOptions::default()).unwrap();
+    assert_eq!(workbook.sheet(SheetId(0)).unwrap().freeze_pane, Some(pane));
+
+    workbook
+        .apply_ops(
+            vec![Op::SetFreezePane {
+                sheet: SheetId(0),
+                pane: None,
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(workbook.sheet(SheetId(0)).unwrap().freeze_pane, None);
+}
+
+#[test]
+fn set_freeze_pane_op_rejects_out_of_range_panes() {
+    let mut model = WorkbookModel::default();
+    model.sheets.push(Sheet::new("Data"));
+    let mut workbook = Workbook::from_model(model).unwrap();
+    let before = workbook.model().clone();
+
+    let error = workbook
+        .apply_ops(
+            vec![Op::SetFreezePane {
+                sheet: SheetId(0),
+                pane: Some(FreezePane::new(u32::MAX, 0, cell("A1"))),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("freeze pane is out of range"));
+    assert_eq!(workbook.model(), &before);
+}
+
+#[test]
 fn hyperlinks_survive_the_facade_and_reach_the_display_list() {
     let mut sheet = Sheet::new("Data");
     sheet.set_cell(
@@ -3514,8 +3574,9 @@ fn undo_restores_defined_names_dropped_by_a_sheet_removal() {
     assert_eq!(workbook.model().defined_names, before);
 }
 
-/// v1 leaves preserved sheet fragments at their original geometry after an
+/// v1 leaves unmodeled sheet fragments at their original geometry after an
 /// axis edit; the file must still open, even though the ranges have drifted.
+/// The modeled auto filter follows the edit.
 #[test]
 fn row_insertion_preserves_unmodeled_ranges_and_anchors_without_corruption() {
     let original = preservation_fixture();
@@ -3534,7 +3595,7 @@ fn row_insertion_preserves_unmodeled_ranges_and_anchors_without_corruption() {
     let saved = workbook.save().unwrap();
     let after = package_map(&saved);
     let worksheet = String::from_utf8(after["xl/worksheets/sheet1.xml"].clone()).unwrap();
-    assert!(worksheet.contains(r#"<autoFilter ref="A1:B2""#));
+    assert!(worksheet.contains(r#"<autoFilter ref="A2:B3""#));
     assert!(worksheet.contains(r#"<dataValidation type="whole" sqref="B2""#));
     assert!(worksheet.contains(r#"<conditionalFormatting sqref="B2""#));
     assert_eq!(
@@ -3607,6 +3668,44 @@ fn remove_then_add_is_fresh_while_undo_restores_exact_sheet_identity() {
             .unwrap()
             .contains("<autoFilter")
     );
+}
+
+#[test]
+fn auto_filter_and_hidden_rows_survive_save_and_reopen() {
+    let mut model = WorkbookModel::default();
+    let mut sheet = Sheet::new("Data");
+    for (address, value) in [("A1", "Name"), ("A2", "keep"), ("A3", "drop")] {
+        sheet.set_cell(
+            cell(address),
+            Cell {
+                value: CellValue::Text {
+                    value: value.to_owned(),
+                },
+                ..Cell::default()
+            },
+        );
+    }
+    sheet.auto_filter = Some(betteroffice_xlsx::AutoFilter {
+        range: CellRange::parse_a1("A1:A3").unwrap(),
+        columns: vec![betteroffice_xlsx::AutoFilterColumn {
+            col: 0,
+            values: Some(vec!["keep".to_owned()]),
+            show_blanks: false,
+        }],
+    });
+    sheet.hidden_rows.insert(2);
+    model.sheets.push(sheet.clone());
+    let original = ooxml_opc::rezip_parts(&xlsx_parse::serialize_workbook(&model).unwrap());
+
+    let workbook = Workbook::open(&original.unwrap()).unwrap();
+    let opened = workbook.model().sheet(SheetId(0)).unwrap();
+    assert_eq!(opened.auto_filter, sheet.auto_filter);
+    assert_eq!(opened.hidden_rows, sheet.hidden_rows);
+
+    let reopened = Workbook::open(&workbook.save().unwrap()).unwrap();
+    let survived = reopened.model().sheet(SheetId(0)).unwrap();
+    assert_eq!(survived.auto_filter, sheet.auto_filter);
+    assert_eq!(survived.hidden_rows, sheet.hidden_rows);
 }
 
 /// Provenance is recorded against the address a cell was read from, so a row

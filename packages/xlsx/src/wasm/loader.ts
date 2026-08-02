@@ -11,6 +11,9 @@ import type { InitInput } from './generated/xlsx_wasm.js';
 import type { CollaborationReplica, CollaborationUpdateOrigin } from '../collaboration/types';
 import type { DisplayList } from '../display-list/types';
 
+/** last 0-based column index in the xlsx grid (column XFD). */
+const XLSX_MAX_COL = 16_383;
+
 /**
  * A scrolled window into a sheet. `x`/`y` are content-pixel offsets into the
  * non-frozen body. Mirrors the Rust `Viewport`.
@@ -61,6 +64,16 @@ export interface EditResult {
 
 export interface CalculationStatus {
   limitedCells: string[];
+}
+
+/**
+ * An auto filter over `range`. Each column entry keeps only the listed cell
+ * texts visible (`values: null` means no value criteria for that column);
+ * `showBlanks` keeps blank cells visible alongside `values`.
+ */
+export interface AutoFilterSpec {
+  range: { startRow: number; startCol: number; endRow: number; endCol: number };
+  columns: { col: number; values: string[] | null; showBlanks: boolean }[];
 }
 
 export type NumberFormat =
@@ -292,6 +305,26 @@ export interface WorkbookHandle extends CollaborationReplica {
   editCells(sheet: number, edits: CellInputEdit[]): EditResult;
   /** raw op-list escape hatch for structural ops (insert/delete rows, merges…). */
   applyOps(ops: unknown[]): EditResult;
+  /**
+   * freeze the first `row` rows and `col` columns of a sheet — `row`/`col` are
+   * the index of the first scrollable row/column, i.e. the count frozen.
+   * `null` (or 0) leaves that axis unfrozen; both `null` clears the freeze.
+   * one undo step; persists through save.
+   */
+  setFreezePane(sheet: number, row: number | null, col: number | null): EditResult;
+  /**
+   * sort rows `startRow..=endRow` (inclusive, whole rows) by the values in
+   * absolute column `keyCol`; ascending=true for A→Z. one undo step.
+   */
+  sortRange(
+    sheet: number,
+    startRow: number,
+    endRow: number,
+    keyCol: number,
+    ascending: boolean
+  ): EditResult;
+  /** set or replace a sheet's auto filter; `null` clears it and unhides its rows. */
+  setAutoFilter(sheet: number, filter: AutoFilterSpec | null): EditResult;
   undo(): EditResult;
   redo(): EditResult;
   /** the editable view of one cell (formula bar / in-cell editor prefill). */
@@ -580,6 +613,54 @@ export function openWorkbook(
       return parseJson(() => doc.editCellsJson(JSON.stringify({ sheet, edits })), true);
     },
     applyOps(ops: unknown[]): EditResult {
+      return parseJson(() => doc.applyOpsJson(JSON.stringify({ ops })), true);
+    },
+    setFreezePane(sheet: number, row: number | null, col: number | null): EditResult {
+      const rows = row ?? 0;
+      const cols = col ?? 0;
+      const pane =
+        rows > 0 || cols > 0
+          ? { rows, cols, top_left: { row: rows, col: cols } }
+          : null;
+      const ops = [{ type: 'setFreezePane', sheet, pane }];
+      return parseJson(() => doc.applyOpsJson(JSON.stringify({ ops })), true);
+    },
+    sortRange(
+      sheet: number,
+      startRow: number,
+      endRow: number,
+      keyCol: number,
+      ascending: boolean
+    ): EditResult {
+      const ops = [
+        {
+          type: 'sortRange',
+          sheet,
+          range: {
+            start: { row: startRow, col: 0 },
+            end: { row: endRow, col: XLSX_MAX_COL },
+          },
+          key_col: keyCol,
+          ascending,
+        },
+      ];
+      return parseJson(() => doc.applyOpsJson(JSON.stringify({ ops })), true);
+    },
+    setAutoFilter(sheet: number, filter: AutoFilterSpec | null): EditResult {
+      const wire = filter
+        ? {
+            range: {
+              start: { row: filter.range.startRow, col: filter.range.startCol },
+              end: { row: filter.range.endRow, col: filter.range.endCol },
+            },
+            columns: filter.columns.map((c) => ({
+              col: c.col,
+              values: c.values,
+              show_blanks: c.showBlanks,
+            })),
+          }
+        : null;
+      const ops = [{ type: 'setAutoFilter', sheet, filter: wire }];
       return parseJson(() => doc.applyOpsJson(JSON.stringify({ ops })), true);
     },
     undo(): EditResult {

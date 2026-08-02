@@ -163,6 +163,103 @@ describe('wasm loader', () => {
     }
   });
 
+  it('freezes and unfreezes panes as one undoable step', () => {
+    const handle = openWorkbook(sampleBytes());
+    try {
+      const frozen = handle.setFreezePane(0, 2, 1);
+      expect(frozen.applied).toBe(true);
+      expect(frozen.sheetInfo.frozenRows).toBe(2);
+      expect(frozen.sheetInfo.frozenCols).toBe(1);
+
+      const reopened = openWorkbook(handle.save());
+      try {
+        const info = reopened.sheetInfo();
+        expect(info.frozenRows).toBe(2);
+        expect(info.frozenCols).toBe(1);
+      } finally {
+        reopened.dispose();
+      }
+
+      const undone = handle.undo();
+      expect(undone.sheetInfo.frozenRows).toBe(0);
+      expect(undone.sheetInfo.frozenCols).toBe(0);
+
+      const redone = handle.redo();
+      expect(redone.sheetInfo.frozenRows).toBe(2);
+      expect(redone.sheetInfo.frozenCols).toBe(1);
+
+      const cleared = handle.setFreezePane(0, null, null);
+      expect(cleared.sheetInfo.frozenRows).toBe(0);
+      expect(cleared.sheetInfo.frozenCols).toBe(0);
+    } finally {
+      handle.dispose();
+    }
+  });
+
+  it('sorts a range by key column as one undoable step', () => {
+    const handle = openWorkbook(sampleBytes());
+    try {
+      const sorted = handle.sortRange(0, 2, 11, 1, false);
+      expect(sorted.applied).toBe(true);
+      expect(handle.cell(0, 2, 0).input).toBe('Line item 10');
+      expect(handle.cell(0, 2, 1).input).toBe('1000');
+      expect(handle.cell(0, 11, 1).input).toBe('100');
+      // the header above the range is untouched.
+      expect(handle.cell(0, 1, 0).input).toBe('Item');
+
+      const undone = handle.undo();
+      expect(undone.applied).toBe(true);
+      expect(handle.cell(0, 2, 0).input).toBe('Line item 1');
+      expect(handle.cell(0, 2, 1).input).toBe('100');
+
+      handle.redo();
+      expect(handle.cell(0, 2, 1).input).toBe('1000');
+    } finally {
+      handle.dispose();
+    }
+  });
+
+  it('filters rows without hiding the header, persists, and clears', () => {
+    const handle = openWorkbook(sampleBytes());
+    const viewport = { x: 0, y: 0, width: 600, height: 400 };
+    try {
+      const before = handle.sheetInfo().contentHeight;
+      const filtered = handle.setAutoFilter(0, {
+        range: { startRow: 1, startCol: 0, endRow: 11, endCol: 3 },
+        columns: [{ col: 0, values: ['Line item 3'], showBlanks: false }],
+      });
+      expect(filtered.applied).toBe(true);
+      expect(filtered.sheetInfo.contentHeight).toBeLessThan(before);
+
+      const texts = handle
+        .displayList(viewport)
+        .commands.filter((c) => c.op === 'text')
+        .map((c) => (c.op === 'text' ? c.text : ''));
+      // the header row owns the dropdown and must stay visible.
+      expect(texts).toContain('Item');
+      expect(texts).toContain('Line item 3');
+      expect(texts).not.toContain('Line item 1');
+
+      // hidden rows and the filter survive save/reopen.
+      const reopened = openWorkbook(handle.save());
+      try {
+        expect(reopened.sheetInfo().contentHeight).toBeLessThan(before);
+      } finally {
+        reopened.dispose();
+      }
+
+      const undone = handle.undo();
+      expect(undone.sheetInfo.contentHeight).toBe(before);
+
+      handle.redo();
+      const cleared = handle.setAutoFilter(0, null);
+      expect(cleared.applied).toBe(true);
+      expect(cleared.sheetInfo.contentHeight).toBe(before);
+    } finally {
+      handle.dispose();
+    }
+  });
+
   it('round-trips formatting, format capture, merge metadata, and history state', () => {
     const handle = openWorkbook(sampleBytes());
     try {

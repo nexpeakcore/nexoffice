@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use quick_xml::events::Event;
 use xlsx_model::addr::{MAX_COLS, MAX_ROWS};
 use xlsx_model::{
-    Cell, CellRange, CellRef, CellValue, DateSystem, DefinedName, ErrorValue, FreezePane,
-    Hyperlink, Sheet, SheetId, Workbook,
+    AutoFilter, AutoFilterColumn, Cell, CellRange, CellRef, CellValue, DateSystem, DefinedName,
+    ErrorValue, FreezePane, Hyperlink, Sheet, SheetId, Workbook,
 };
 
 use crate::styles::parse_stylesheet;
@@ -309,6 +309,8 @@ fn parse_worksheet(
     let mut cur: Option<CellBuild> = None;
     let mut cell_count: u64 = 0;
     let mut hyperlink_count: usize = 0;
+    let mut in_auto_filter = false;
+    let mut filter_column: Option<AutoFilterColumn> = None;
 
     loop {
         match next_event(&mut reader, &mut buf, &mut depth)? {
@@ -322,6 +324,9 @@ fn parse_worksheet(
                     col_cursor = 0;
                     if let Some(h) = attr(&e, b"ht")?.and_then(|v| v.parse::<f64>().ok()) {
                         sheet.row_heights.insert(row, h);
+                    }
+                    if attr(&e, b"hidden")?.is_some_and(|v| is_truthy(&v)) {
+                        sheet.hidden_rows.insert(row);
                     }
                 }
                 b"c" => {
@@ -373,6 +378,49 @@ fn parse_worksheet(
                         sheet.freeze_pane = parse_freeze_pane(&e)?;
                     }
                 }
+                b"autoFilter" => {
+                    if sheet.auto_filter.is_none()
+                        && let Some(r) = attr(&e, b"ref")?
+                    {
+                        let range = CellRange::parse_a1(&r).map_err(|_| {
+                            ParseError::Malformed(format!("bad autoFilter ref {r:?}"))
+                        })?;
+                        sheet.auto_filter = Some(AutoFilter {
+                            range,
+                            columns: Vec::new(),
+                        });
+                        in_auto_filter = true;
+                    }
+                }
+                b"filterColumn" => {
+                    if in_auto_filter
+                        && let Some(filter) = sheet.auto_filter.as_ref()
+                        && let Some(id) = attr(&e, b"colId")?.and_then(|v| v.parse::<u32>().ok())
+                    {
+                        let col = filter.range.start.col.saturating_add(id);
+                        if col < MAX_COLS {
+                            filter_column = Some(AutoFilterColumn {
+                                col,
+                                values: None,
+                                show_blanks: true,
+                            });
+                        }
+                    }
+                }
+                b"filters" => {
+                    if let Some(column) = filter_column.as_mut() {
+                        column.values = Some(Vec::new());
+                        column.show_blanks = attr(&e, b"blank")?.is_some_and(|v| is_truthy(&v));
+                    }
+                }
+                b"filter" => {
+                    if let Some(column) = filter_column.as_mut()
+                        && let Some(values) = column.values.as_mut()
+                        && let Some(val) = attr(&e, b"val")?
+                    {
+                        values.push(val);
+                    }
+                }
                 b"hyperlink" => {
                     hyperlink_count += 1;
                     if hyperlink_count > MAX_HYPERLINKS {
@@ -395,6 +443,14 @@ fn parse_worksheet(
                         col_cursor += 1;
                     }
                     b"row" => cur_row = None,
+                    b"autoFilter" => in_auto_filter = false,
+                    b"filterColumn" => {
+                        if let Some(filter) = sheet.auto_filter.as_mut()
+                            && let Some(column) = filter_column.take()
+                        {
+                            filter.columns.push(column);
+                        }
+                    }
                     _ => {}
                 }
             }

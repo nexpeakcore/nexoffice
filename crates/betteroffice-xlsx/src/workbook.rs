@@ -33,6 +33,7 @@ use crate::{
 use crate::{RenderOptions, RenderedPng};
 
 const MAX_RANGE_CELLS: u64 = 100_000;
+const MAX_SORT_ROWS: u64 = 100_000;
 const MAX_COL_WIDTH: f64 = 255.0;
 const MAX_ROW_HEIGHT: f64 = 409.5;
 const MAX_HYPERLINKS_PER_SHEET: usize = 65_536;
@@ -2017,6 +2018,10 @@ fn worksheet_edit_target(op: &Op) -> Option<SheetId> {
         | Op::SetColWidth { sheet, .. }
         | Op::SetRowHeight { sheet, .. }
         | Op::SetFreezePane { sheet, .. }
+        | Op::SortRange { sheet, .. }
+        | Op::MoveRows { sheet, .. }
+        | Op::SetAutoFilter { sheet, .. }
+        | Op::SetHiddenRows { sheet, .. }
         | Op::SetHyperlinks { sheet, .. }
         | Op::MergeCells { sheet, .. }
         | Op::UnmergeCells { sheet, .. }
@@ -2100,6 +2105,42 @@ fn validate_op(model: &WorkbookModel, op: &Op) -> Result<()> {
                 ));
             }
         }
+        Op::SortRange {
+            sheet,
+            range,
+            key_col,
+            ..
+        } => {
+            require_sheet(model, *sheet)?;
+            validate_range(*range)?;
+            // sort moves whole sparse rows, so cost scales with the row count
+            // rather than the nominal cell area of the (full-width) range.
+            let rows = u64::from(range.end.row - range.start.row + 1);
+            if rows > MAX_SORT_ROWS {
+                return Err(Error::InvalidOperation(format!(
+                    "sort range of {rows} rows exceeds the {MAX_SORT_ROWS}-row cap"
+                )));
+            }
+            if *key_col < range.start.col || *key_col > range.end.col {
+                return Err(Error::InvalidOperation(format!(
+                    "sort key column {} is outside the sorted range",
+                    u64::from(*key_col) + 1
+                )));
+            }
+        }
+        Op::SetAutoFilter { sheet, filter } => {
+            require_sheet(model, *sheet)?;
+            if let Some(filter) = filter {
+                validate_range(filter.range)?;
+                if filter.columns.iter().any(|column| {
+                    column.col < filter.range.start.col || column.col > filter.range.end.col
+                }) {
+                    return Err(Error::InvalidOperation(
+                        "filter criteria column is outside the filter range".to_string(),
+                    ));
+                }
+            }
+        }
         Op::SetHyperlinks { sheet, hyperlinks } => {
             require_sheet(model, *sheet)?;
             validate_hyperlinks(hyperlinks)?;
@@ -2135,6 +2176,11 @@ fn validate_op(model: &WorkbookModel, op: &Op) -> Result<()> {
         Op::RestoreSheet { .. } | Op::SetDefinedNames { .. } => {
             return Err(Error::InvalidOperation(
                 "restore sheet operations are internal".to_string(),
+            ));
+        }
+        Op::MoveRows { .. } | Op::SetHiddenRows { .. } => {
+            return Err(Error::InvalidOperation(
+                "row move and hidden row operations are internal undo primitives".to_string(),
             ));
         }
     }
@@ -2590,6 +2636,8 @@ fn invalidates_proposals(op: &Op) -> bool {
             | Op::DeleteRows { .. }
             | Op::InsertCols { .. }
             | Op::DeleteCols { .. }
+            | Op::SortRange { .. }
+            | Op::MoveRows { .. }
             | Op::SetHyperlinks { .. }
             | Op::AddSheet { .. }
             | Op::RemoveSheet { .. }

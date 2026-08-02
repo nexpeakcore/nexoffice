@@ -1,11 +1,15 @@
 //! applying ops mutably to a workbook, returning the inverse for undo, plus
 //! `remap_ref` — the shared address-remapping primitive.
 
-use std::collections::BTreeMap;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use xlsx_model::addr::{MAX_COLS, MAX_ROWS};
-use xlsx_model::{Cell, CellRange, CellRef, ColId, DefinedName, RowId, Sheet, SheetId, Workbook};
+use xlsx_model::{
+    AutoFilter, Cell, CellRange, CellRef, CellValue, ColId, DefinedName, RowId, Sheet, SheetId,
+    Workbook,
+};
 
 use crate::formatting::{mutate_number_format, patch_cell_format};
 use crate::op::{CellState, Op};
@@ -26,6 +30,7 @@ pub enum OpError {
     FormulaNotRewritable { sheet: SheetId, cell: CellRef },
     DefinedNameNotRewritable { name: String },
     InvalidStyle(String),
+    MergeConflict { sheet: SheetId, merge: CellRange },
 }
 
 impl fmt::Display for OpError {
@@ -43,6 +48,13 @@ impl fmt::Display for OpError {
                 write!(f, "defined name {name} cannot be safely rewritten")
             }
             OpError::InvalidStyle(message) => f.write_str(message),
+            OpError::MergeConflict { sheet, merge } => write!(
+                f,
+                "merged range {} on sheet {} conflicts with the sort range; merges must lie \
+                 inside it, span a single row, and repeat on every sorted row",
+                merge.to_a1(),
+                sheet.0
+            ),
         }
     }
 }
@@ -103,6 +115,101 @@ pub fn apply(wb: &mut Workbook, op: &Op) -> Result<InvertedOp, OpError> {
             Ok(InvertedOp(vec![Op::SetFreezePane {
                 sheet: *sheet,
                 pane: old,
+            }]))
+        }
+        Op::SortRange {
+            sheet,
+            range,
+            key_col,
+            ascending,
+        } => {
+            let s = sheet_mut(wb, *sheet)?;
+            if let Some(merge) = find_sort_merge_conflict(s, *range) {
+                return Err(OpError::MergeConflict {
+                    sheet: *sheet,
+                    merge,
+                });
+            }
+            let original: Vec<RowId> = (range.start.row..=range.end.row).collect();
+            let mut order = original.clone();
+            order.sort_by(|&a, &b| {
+                compare_sort_keys(
+                    s.cell(CellRef::new(a, *key_col)).map(|cell| &cell.value),
+                    s.cell(CellRef::new(b, *key_col)).map(|cell| &cell.value),
+                    *ascending,
+                )
+            });
+            let moves: Vec<(RowId, RowId)> = order
+                .into_iter()
+                .zip(original)
+                .filter(|(from, to)| from != to)
+                .collect();
+            let inverse = move_row_cells(s, *range, &moves);
+            Ok(InvertedOp(if inverse.is_empty() {
+                vec![]
+            } else {
+                vec![Op::MoveRows {
+                    sheet: *sheet,
+                    range: *range,
+                    moves: inverse,
+                }]
+            }))
+        }
+        Op::MoveRows {
+            sheet,
+            range,
+            moves,
+        } => {
+            let s = sheet_mut(wb, *sheet)?;
+            let inverse = move_row_cells(s, *range, moves);
+            Ok(InvertedOp(if inverse.is_empty() {
+                vec![]
+            } else {
+                vec![Op::MoveRows {
+                    sheet: *sheet,
+                    range: *range,
+                    moves: inverse,
+                }]
+            }))
+        }
+        Op::SetAutoFilter { sheet, filter } => {
+            let s = sheet_mut(wb, *sheet)?;
+            let old_filter = s.auto_filter.clone();
+            let old_hidden: Vec<RowId> = s.hidden_rows.iter().copied().collect();
+            if let Some(previous) = &old_filter {
+                for row in previous.range.start.row..=previous.range.end.row {
+                    s.show_row(row);
+                }
+            }
+            s.auto_filter = filter.clone();
+            if let Some(filter) = filter {
+                for row in filter.range.start.row..=filter.range.end.row {
+                    let is_header = row == filter.range.start.row;
+                    if is_header || row_passes_filter(s, filter, row) {
+                        s.show_row(row);
+                    } else {
+                        s.hide_row(row);
+                    }
+                }
+            }
+            Ok(InvertedOp(vec![
+                Op::SetAutoFilter {
+                    sheet: *sheet,
+                    filter: old_filter,
+                },
+                Op::SetHiddenRows {
+                    sheet: *sheet,
+                    hidden: old_hidden,
+                },
+            ]))
+        }
+        Op::SetHiddenRows { sheet, hidden } => {
+            let s = sheet_mut(wb, *sheet)?;
+            let old: Vec<RowId> = s.hidden_rows.iter().copied().collect();
+            s.hidden_rows = hidden.iter().copied().collect();
+            Ok(InvertedOp(vec![Op::SetHiddenRows {
+                sheet: *sheet,
+                hidden: old,
             }]))
         }
         Op::SetHyperlinks { sheet, hyperlinks } => {
@@ -339,6 +446,154 @@ fn ranges_intersect(left: CellRange, right: CellRange) -> bool {
         && left.end.col >= right.start.col
 }
 
+fn range_contains(outer: CellRange, inner: CellRange) -> bool {
+    outer.start.row <= inner.start.row
+        && outer.end.row >= inner.end.row
+        && outer.start.col <= inner.start.col
+        && outer.end.col >= inner.end.col
+}
+
+/// a sort moves whole rows while merges stay fixed, so a merge is only safe
+/// when it lies inside the range, spans a single row, and the same column
+/// span is merged on every sorted row; anything else is a conflict.
+fn find_sort_merge_conflict(s: &Sheet, range: CellRange) -> Option<CellRange> {
+    let contained: Vec<CellRange> = s
+        .merges
+        .iter()
+        .copied()
+        .filter(|merge| ranges_intersect(*merge, range))
+        .collect();
+    contained
+        .iter()
+        .copied()
+        .find(|merge| !range_contains(range, *merge) || merge.start.row != merge.end.row)
+        .or_else(|| {
+            contained.iter().copied().find(|merge| {
+                (range.start.row..=range.end.row).any(|row| {
+                    !contained.iter().any(|other| {
+                        other.start.row == row
+                            && other.start.col == merge.start.col
+                            && other.end.col == merge.end.col
+                    })
+                })
+            })
+        })
+}
+
+/// move whole rows of cells within `range`'s columns; every `(from, to)` pair
+/// is applied simultaneously, so sources are read before any destination is
+/// written. cells carry their style and formula. returns the inverse pairs.
+fn move_row_cells(
+    s: &mut Sheet,
+    range: CellRange,
+    moves: &[(RowId, RowId)],
+) -> Vec<(RowId, RowId)> {
+    if moves.is_empty() {
+        return Vec::new();
+    }
+    let cols = range.start.col..range.end.col.saturating_add(1);
+    let mut writes = Vec::with_capacity(moves.len());
+    for &(from, to) in moves {
+        let cells: Vec<(ColId, Cell)> = s
+            .iter_cells_in_rect(from..from.saturating_add(1), cols.clone())
+            .map(|(at, cell)| (at.col, cell.clone()))
+            .collect();
+        writes.push((to, cells));
+    }
+    let mut cleared = Vec::new();
+    for &(_, to) in moves {
+        cleared.extend(
+            s.iter_cells_in_rect(to..to.saturating_add(1), cols.clone())
+                .map(|(at, _)| at),
+        );
+    }
+    for at in cleared {
+        s.set_cell(at, Cell::default());
+    }
+    for (to, cells) in writes {
+        for (col, cell) in cells {
+            s.set_cell(CellRef::new(to, col), cell);
+        }
+    }
+    moves.iter().map(|&(from, to)| (to, from)).collect()
+}
+
+/// sort-key ordering: empties sort last regardless of direction; otherwise
+/// excel's collation approximation — numbers < text < booleans < errors.
+fn compare_sort_keys(a: Option<&CellValue>, b: Option<&CellValue>, ascending: bool) -> Ordering {
+    fn nonempty(value: Option<&CellValue>) -> Option<&CellValue> {
+        value.filter(|value| !matches!(value, CellValue::Empty))
+    }
+    match (nonempty(a), nonempty(b)) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(a), Some(b)) => {
+            let ordering = compare_values(a, b);
+            if ascending {
+                ordering
+            } else {
+                ordering.reverse()
+            }
+        }
+    }
+}
+
+fn compare_values(a: &CellValue, b: &CellValue) -> Ordering {
+    match (a, b) {
+        (CellValue::Number { value: a }, CellValue::Number { value: b }) => a.total_cmp(b),
+        (CellValue::Text { value: a }, CellValue::Text { value: b }) => a
+            .to_lowercase()
+            .cmp(&b.to_lowercase())
+            .then_with(|| a.cmp(b)),
+        (CellValue::Bool { value: a }, CellValue::Bool { value: b }) => a.cmp(b),
+        (CellValue::Error { value: a }, CellValue::Error { value: b }) => {
+            a.as_str().cmp(b.as_str())
+        }
+        _ => value_rank(a).cmp(&value_rank(b)),
+    }
+}
+
+fn value_rank(value: &CellValue) -> u8 {
+    match value {
+        CellValue::Number { .. } => 0,
+        CellValue::Text { .. } => 1,
+        CellValue::Bool { .. } => 2,
+        CellValue::Error { .. } => 3,
+        CellValue::Empty => 4,
+    }
+}
+
+/// a row is visible when every column with value criteria matches its cell
+/// text, blanks counting only when the column keeps blanks.
+fn row_passes_filter(sheet: &Sheet, filter: &AutoFilter, row: RowId) -> bool {
+    filter.columns.iter().all(|column| {
+        let Some(values) = &column.values else {
+            return true;
+        };
+        let text = sheet
+            .cell(CellRef::new(row, column.col))
+            .map(|cell| filter_text(&cell.value))
+            .unwrap_or_default();
+        if text.is_empty() {
+            column.show_blanks
+        } else {
+            values.contains(&text)
+        }
+    })
+}
+
+/// the text a filter matches against: the bare value, no number formats.
+fn filter_text(value: &CellValue) -> String {
+    match value {
+        CellValue::Empty => String::new(),
+        CellValue::Number { value } => value.to_string(),
+        CellValue::Text { value } => value.clone(),
+        CellValue::Bool { value } => if *value { "TRUE" } else { "FALSE" }.to_string(),
+        CellValue::Error { value } => value.as_str().to_string(),
+    }
+}
+
 /// remap an address through a structural op; `None` when it falls inside a
 /// deleted span. non-structural ops leave the address unchanged.
 pub fn remap_ref(at: CellRef, structural_op: &Op) -> Option<CellRef> {
@@ -388,6 +643,34 @@ fn delete_axis(idx: u32, p: u32, count: u32) -> Option<u32> {
     }
 }
 
+/// shift an inclusive index span through an insert at `p`; ends pushed past
+/// the axis limit are clamped to it.
+fn insert_span(start: u32, end: u32, p: u32, count: u32, limit: u32) -> (u32, u32) {
+    let shift = |idx| insert_axis(idx, p, count, limit).unwrap_or(limit - 1);
+    (shift(start), shift(end))
+}
+
+/// shift an inclusive index span through a delete at `p` of `count`; `None`
+/// when the whole span is deleted, otherwise the surviving span.
+fn delete_span(start: u32, end: u32, p: u32, count: u32) -> Option<(u32, u32)> {
+    let cutoff = p.saturating_add(count);
+    let start = if start >= cutoff {
+        start - count
+    } else if start >= p {
+        p
+    } else {
+        start
+    };
+    let end = if end >= cutoff {
+        end - count
+    } else if end >= p {
+        p.checked_sub(1)?
+    } else {
+        end
+    };
+    (start <= end).then_some((start, end))
+}
+
 fn shift_row(mut at: CellRef, f: impl Fn(u32) -> Option<u32>) -> Option<CellRef> {
     at.row = f(at.row)?;
     Some(at)
@@ -411,10 +694,14 @@ fn insert_rows(
     let hyperlink_restores = remap_hyperlink_locations(wb, op);
     let s = sheet_mut(wb, sheet)?;
     let old_hyperlinks = s.hyperlinks.clone();
+    let old_filter = s.auto_filter.clone();
+    let old_hidden = s.hidden_rows.clone();
     let dropped = shift_cells(s, op);
     shift_row_heights_up(s, at, count);
     remap_merges_keep(s, op);
     remap_hyperlinks(s, op);
+    remap_auto_filter(s, op);
+    remap_hidden_rows(s, op);
 
     let mut inv = vec![Op::DeleteRows { sheet, at, count }];
     for (r, c) in dropped {
@@ -428,6 +715,7 @@ fn insert_rows(
         sheet,
         hyperlinks: old_hyperlinks,
     });
+    inv.extend(filter_restore_ops(s, sheet, old_filter, old_hidden));
     inv.extend(restores);
     inv.extend(defined_name_restore);
     inv.extend(hyperlink_restores);
@@ -447,10 +735,14 @@ fn delete_rows(
     let hyperlink_restores = remap_hyperlink_locations(wb, op);
     let s = sheet_mut(wb, sheet)?;
     let old_hyperlinks = s.hyperlinks.clone();
+    let old_filter = s.auto_filter.clone();
+    let old_hidden = s.hidden_rows.clone();
     let deleted = shift_cells(s, op);
     let dropped_heights = shift_row_heights_down(s, at, count);
     let dropped_merges = remap_merges_drop(s, op);
     remap_hyperlinks(s, op);
+    remap_auto_filter(s, op);
+    remap_hidden_rows(s, op);
 
     let mut inv = vec![Op::InsertRows { sheet, at, count }];
     for (r, c) in deleted {
@@ -474,6 +766,7 @@ fn delete_rows(
         sheet,
         hyperlinks: old_hyperlinks,
     });
+    inv.extend(filter_restore_ops(s, sheet, old_filter, old_hidden));
     inv.extend(restores);
     inv.extend(defined_name_restore);
     inv.extend(hyperlink_restores);
@@ -493,10 +786,13 @@ fn insert_cols(
     let hyperlink_restores = remap_hyperlink_locations(wb, op);
     let s = sheet_mut(wb, sheet)?;
     let old_hyperlinks = s.hyperlinks.clone();
+    let old_filter = s.auto_filter.clone();
+    let old_hidden = s.hidden_rows.clone();
     let dropped = shift_cells(s, op);
     shift_col_widths_up(s, at, count);
     remap_merges_keep(s, op);
     remap_hyperlinks(s, op);
+    remap_auto_filter(s, op);
 
     let mut inv = vec![Op::DeleteCols { sheet, at, count }];
     for (r, c) in dropped {
@@ -510,6 +806,7 @@ fn insert_cols(
         sheet,
         hyperlinks: old_hyperlinks,
     });
+    inv.extend(filter_restore_ops(s, sheet, old_filter, old_hidden));
     inv.extend(restores);
     inv.extend(defined_name_restore);
     inv.extend(hyperlink_restores);
@@ -529,10 +826,13 @@ fn delete_cols(
     let hyperlink_restores = remap_hyperlink_locations(wb, op);
     let s = sheet_mut(wb, sheet)?;
     let old_hyperlinks = s.hyperlinks.clone();
+    let old_filter = s.auto_filter.clone();
+    let old_hidden = s.hidden_rows.clone();
     let deleted = shift_cells(s, op);
     let dropped_widths = shift_col_widths_down(s, at, count);
     let dropped_merges = remap_merges_drop(s, op);
     remap_hyperlinks(s, op);
+    remap_auto_filter(s, op);
 
     let mut inv = vec![Op::InsertCols { sheet, at, count }];
     for (r, c) in deleted {
@@ -556,6 +856,7 @@ fn delete_cols(
         sheet,
         hyperlinks: old_hyperlinks,
     });
+    inv.extend(filter_restore_ops(s, sheet, old_filter, old_hidden));
     inv.extend(restores);
     inv.extend(defined_name_restore);
     inv.extend(hyperlink_restores);
@@ -676,6 +977,109 @@ fn remap_merges_drop(s: &mut Sheet, op: &Op) -> Vec<CellRange> {
     dropped
 }
 
+/// remap explicitly hidden rows through a row insert or delete, dropping
+/// entries for deleted rows.
+fn remap_hidden_rows(sheet: &mut Sheet, op: &Op) {
+    sheet.hidden_rows = sheet
+        .hidden_rows
+        .iter()
+        .filter_map(|&row| match *op {
+            Op::InsertRows { at, count, .. } => insert_axis(row, at, count, MAX_ROWS),
+            Op::DeleteRows { at, count, .. } => delete_axis(row, at, count),
+            _ => Some(row),
+        })
+        .collect();
+}
+
+/// remap the auto filter through a structural op: its range shifts with the
+/// edited axis, deleted criteria columns are dropped, and the filter itself
+/// is dropped when its whole range is deleted.
+fn remap_auto_filter(sheet: &mut Sheet, op: &Op) {
+    let Some(mut filter) = sheet.auto_filter.take() else {
+        return;
+    };
+    match *op {
+        Op::InsertRows { at, count, .. } => {
+            let (start, end) = insert_span(
+                filter.range.start.row,
+                filter.range.end.row,
+                at,
+                count,
+                MAX_ROWS,
+            );
+            filter.range.start.row = start;
+            filter.range.end.row = end;
+        }
+        Op::DeleteRows { at, count, .. } => {
+            let Some((start, end)) =
+                delete_span(filter.range.start.row, filter.range.end.row, at, count)
+            else {
+                return;
+            };
+            filter.range.start.row = start;
+            filter.range.end.row = end;
+        }
+        Op::InsertCols { at, count, .. } => {
+            let (start, end) = insert_span(
+                filter.range.start.col,
+                filter.range.end.col,
+                at,
+                count,
+                MAX_COLS,
+            );
+            filter.range.start.col = start;
+            filter.range.end.col = end;
+            filter.columns.retain_mut(|column| {
+                insert_axis(column.col, at, count, MAX_COLS).is_some_and(|col| {
+                    column.col = col;
+                    true
+                })
+            });
+        }
+        Op::DeleteCols { at, count, .. } => {
+            let Some((start, end)) =
+                delete_span(filter.range.start.col, filter.range.end.col, at, count)
+            else {
+                return;
+            };
+            filter.range.start.col = start;
+            filter.range.end.col = end;
+            filter.columns.retain_mut(|column| {
+                delete_axis(column.col, at, count).is_some_and(|col| {
+                    column.col = col;
+                    true
+                })
+            });
+        }
+        _ => {}
+    }
+    sheet.auto_filter = Some(filter);
+}
+
+/// inverse ops restoring the exact pre-edit filter and hidden set; the
+/// `SetHiddenRows` follows `SetAutoFilter` so its replayed row evaluation is
+/// overridden by the recorded state.
+fn filter_restore_ops(
+    sheet: &Sheet,
+    id: SheetId,
+    old_filter: Option<AutoFilter>,
+    old_hidden: BTreeSet<RowId>,
+) -> Vec<Op> {
+    if sheet.auto_filter == old_filter && sheet.hidden_rows == old_hidden {
+        return Vec::new();
+    }
+    vec![
+        Op::SetAutoFilter {
+            sheet: id,
+            filter: old_filter,
+        },
+        Op::SetHiddenRows {
+            sheet: id,
+            hidden: old_hidden.into_iter().collect(),
+        },
+    ]
+}
+
 fn remap_hyperlinks(sheet: &mut Sheet, op: &Op) {
     sheet.hyperlinks = sheet
         .hyperlinks
@@ -757,6 +1161,18 @@ fn remove_sheet(wb: &mut Workbook, index: usize) -> Result<InvertedOp, OpError> 
             pane: Some(pane),
         });
     }
+    if let Some(filter) = &removed.auto_filter {
+        inv.push(Op::SetAutoFilter {
+            sheet,
+            filter: Some(filter.clone()),
+        });
+    }
+    if !removed.hidden_rows.is_empty() {
+        inv.push(Op::SetHiddenRows {
+            sheet,
+            hidden: removed.hidden_rows.iter().copied().collect(),
+        });
+    }
     if !removed.hyperlinks.is_empty() {
         inv.push(Op::SetHyperlinks {
             sheet,
@@ -803,10 +1219,23 @@ fn sheet_mut(wb: &mut Workbook, sheet: SheetId) -> Result<&mut Sheet, OpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xlsx_model::{CellProvider, CellValue, FreezePane, Hyperlink};
+    use xlsx_model::{AutoFilterColumn, CellProvider, CellValue, FreezePane, Hyperlink};
 
     fn r(a1: &str) -> CellRef {
         CellRef::parse_a1(a1).unwrap()
+    }
+
+    fn rng(a1: &str) -> CellRange {
+        CellRange::parse_a1(a1).unwrap()
+    }
+
+    fn text_cell(value: &str) -> Cell {
+        Cell {
+            value: CellValue::Text {
+                value: value.into(),
+            },
+            ..Cell::default()
+        }
     }
 
     fn num(v: f64) -> CellState {
@@ -1233,6 +1662,54 @@ mod tests {
     }
 
     #[test]
+    fn set_freeze_pane_round_trip() {
+        let mut wb = wb_one_sheet();
+        let first = FreezePane::new(2, 1, r("B3"));
+        let inv_set = apply(
+            &mut wb,
+            &Op::SetFreezePane {
+                sheet: SheetId(0),
+                pane: Some(first),
+            },
+        )
+        .unwrap();
+        assert_eq!(wb.sheets[0].freeze_pane, Some(first));
+
+        let replacement = FreezePane::new(1, 0, r("A2"));
+        let inv_replace = apply(
+            &mut wb,
+            &Op::SetFreezePane {
+                sheet: SheetId(0),
+                pane: Some(replacement),
+            },
+        )
+        .unwrap();
+        assert_eq!(wb.sheets[0].freeze_pane, Some(replacement));
+
+        for iop in &inv_replace.0 {
+            apply(&mut wb, iop).unwrap();
+        }
+        assert_eq!(wb.sheets[0].freeze_pane, Some(first));
+        for iop in &inv_set.0 {
+            apply(&mut wb, iop).unwrap();
+        }
+        assert_eq!(wb.sheets[0].freeze_pane, None);
+    }
+
+    #[test]
+    fn set_freeze_pane_missing_sheet_errors() {
+        let mut wb = wb_one_sheet();
+        let err = apply(
+            &mut wb,
+            &Op::SetFreezePane {
+                sheet: SheetId(7),
+                pane: None,
+            },
+        );
+        assert_eq!(err.unwrap_err(), OpError::SheetNotFound(SheetId(7)));
+    }
+
+    #[test]
     fn rename_sheet_round_trip() {
         let mut wb = wb_one_sheet();
         wb.sheets.push(Sheet::new("Formula"));
@@ -1423,6 +1900,259 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, OpError::DefinedNameNotRewritable { .. }));
+        assert_eq!(wb, before);
+    }
+
+    #[test]
+    fn sort_range_orders_rows_and_undo_restores_original_order() {
+        let mut wb = wb_one_sheet();
+        let s = wb.sheet_mut(SheetId(0)).unwrap();
+        for (row, value) in [(0, 3.0), (1, 1.0), (2, 2.0)] {
+            s.set_cell(
+                CellRef::new(row, 0),
+                Cell {
+                    value: CellValue::Number { value },
+                    ..Cell::default()
+                },
+            );
+        }
+        let before = wb.clone();
+
+        let inv = apply(
+            &mut wb,
+            &Op::SortRange {
+                sheet: SheetId(0),
+                range: rng("A1:A3"),
+                key_col: 0,
+                ascending: true,
+            },
+        )
+        .unwrap();
+        let values: Vec<CellValue> = (0..3)
+            .map(|row| wb.value(SheetId(0), CellRef::new(row, 0)))
+            .collect();
+        assert_eq!(
+            values,
+            vec![
+                CellValue::Number { value: 1.0 },
+                CellValue::Number { value: 2.0 },
+                CellValue::Number { value: 3.0 },
+            ]
+        );
+
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+    }
+
+    #[test]
+    fn set_auto_filter_hides_non_matching_rows_but_never_the_header() {
+        let mut wb = wb_one_sheet();
+        let s = wb.sheet_mut(SheetId(0)).unwrap();
+        s.set_cell(r("A1"), text_cell("Name"));
+        s.set_cell(r("A2"), text_cell("keep"));
+        s.set_cell(r("A3"), text_cell("drop"));
+        let before = wb.clone();
+
+        let inv = apply(
+            &mut wb,
+            &Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: Some(AutoFilter {
+                    range: rng("A1:A3"),
+                    columns: vec![AutoFilterColumn {
+                        col: 0,
+                        values: Some(vec!["keep".into()]),
+                        show_blanks: false,
+                    }],
+                }),
+            },
+        )
+        .unwrap();
+        let sheet = wb.sheet(SheetId(0)).unwrap();
+        assert!(!sheet.is_row_hidden(0), "header row must stay visible");
+        assert!(!sheet.is_row_hidden(1));
+        assert!(sheet.is_row_hidden(2));
+
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+    }
+
+    #[test]
+    fn set_hidden_rows_round_trips() {
+        let mut wb = wb_one_sheet();
+        let inv = apply(
+            &mut wb,
+            &Op::SetHiddenRows {
+                sheet: SheetId(0),
+                hidden: vec![1, 3],
+            },
+        )
+        .unwrap();
+        assert!(wb.sheets[0].is_row_hidden(1));
+        assert!(wb.sheets[0].is_row_hidden(3));
+        assert!(!wb.sheets[0].is_row_hidden(2));
+
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert!(wb.sheets[0].hidden_rows.is_empty());
+    }
+
+    #[test]
+    fn sort_rejects_conflicting_merges_and_allows_uniform_single_row_merges() {
+        let sort = Op::SortRange {
+            sheet: SheetId(0),
+            range: rng("A1:B3"),
+            key_col: 0,
+            ascending: true,
+        };
+
+        for merges in [vec![rng("B3:C3")], vec![rng("A1:A2")], vec![rng("A1:B1")]] {
+            let mut wb = wb_one_sheet();
+            wb.sheets[0].merges = merges;
+            let before = wb.clone();
+            let error = apply(&mut wb, &sort).unwrap_err();
+            assert!(matches!(error, OpError::MergeConflict { .. }), "{error}");
+            assert_eq!(wb, before);
+        }
+
+        let mut wb = wb_one_sheet();
+        wb.sheets[0].merges = vec![rng("A1:B1"), rng("A2:B2"), rng("A3:B3")];
+        apply(&mut wb, &sort).unwrap();
+    }
+
+    #[test]
+    fn row_edits_remap_hidden_rows_and_auto_filter() {
+        let mut wb = wb_one_sheet();
+        let s = wb.sheet_mut(SheetId(0)).unwrap();
+        s.set_cell(r("A1"), text_cell("Name"));
+        s.set_cell(r("A3"), text_cell("hidden"));
+        s.auto_filter = Some(AutoFilter {
+            range: rng("A1:A4"),
+            columns: vec![AutoFilterColumn {
+                col: 0,
+                values: None,
+                show_blanks: true,
+            }],
+        });
+        s.hidden_rows.insert(2);
+        let before = wb.clone();
+
+        let inv = apply(
+            &mut wb,
+            &Op::InsertRows {
+                sheet: SheetId(0),
+                at: 1,
+                count: 2,
+            },
+        )
+        .unwrap();
+        let sheet = &wb.sheets[0];
+        assert_eq!(sheet.auto_filter.as_ref().unwrap().range, rng("A1:A6"));
+        assert!(sheet.is_row_hidden(4));
+        assert!(!sheet.is_row_hidden(2));
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+
+        let inv = apply(
+            &mut wb,
+            &Op::DeleteRows {
+                sheet: SheetId(0),
+                at: 2,
+                count: 2,
+            },
+        )
+        .unwrap();
+        let sheet = &wb.sheets[0];
+        assert_eq!(sheet.auto_filter.as_ref().unwrap().range, rng("A1:A2"));
+        assert!(sheet.hidden_rows.is_empty());
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+    }
+
+    #[test]
+    fn column_edits_remap_auto_filter_range_and_criteria_columns() {
+        let mut wb = wb_one_sheet();
+        let s = wb.sheet_mut(SheetId(0)).unwrap();
+        s.set_cell(r("B1"), text_cell("Left"));
+        s.set_cell(r("C1"), text_cell("Right"));
+        s.auto_filter = Some(AutoFilter {
+            range: rng("B1:C3"),
+            columns: vec![
+                AutoFilterColumn {
+                    col: 1,
+                    values: Some(vec!["x".into()]),
+                    show_blanks: false,
+                },
+                AutoFilterColumn {
+                    col: 2,
+                    values: None,
+                    show_blanks: true,
+                },
+            ],
+        });
+        let before = wb.clone();
+
+        let inv = apply(
+            &mut wb,
+            &Op::InsertCols {
+                sheet: SheetId(0),
+                at: 0,
+                count: 1,
+            },
+        )
+        .unwrap();
+        let filter = wb.sheets[0].auto_filter.as_ref().unwrap();
+        assert_eq!(filter.range, rng("C1:D3"));
+        assert_eq!(
+            filter.columns.iter().map(|c| c.col).collect::<Vec<_>>(),
+            [2, 3]
+        );
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+
+        let inv = apply(
+            &mut wb,
+            &Op::DeleteCols {
+                sheet: SheetId(0),
+                at: 1,
+                count: 1,
+            },
+        )
+        .unwrap();
+        let filter = wb.sheets[0].auto_filter.as_ref().unwrap();
+        assert_eq!(filter.range, rng("B1:B3"));
+        assert_eq!(
+            filter.columns.iter().map(|c| c.col).collect::<Vec<_>>(),
+            [1]
+        );
+        assert!(filter.columns[0].values.is_none());
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+    }
+
+    #[test]
+    fn deleting_the_whole_auto_filter_range_drops_the_filter_and_undo_restores_it() {
+        let mut wb = wb_one_sheet();
+        let s = wb.sheet_mut(SheetId(0)).unwrap();
+        s.auto_filter = Some(AutoFilter {
+            range: rng("A2:A3"),
+            columns: Vec::new(),
+        });
+        s.hidden_rows.insert(2);
+        let before = wb.clone();
+
+        let inv = apply(
+            &mut wb,
+            &Op::DeleteRows {
+                sheet: SheetId(0),
+                at: 1,
+                count: 2,
+            },
+        )
+        .unwrap();
+        assert!(wb.sheets[0].auto_filter.is_none());
+        assert!(wb.sheets[0].hidden_rows.is_empty());
+
+        apply_ops(&mut wb, &inv.0).unwrap();
         assert_eq!(wb, before);
     }
 

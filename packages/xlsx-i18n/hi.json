@@ -10,7 +10,10 @@
     "save": null,
     "exportPng": null,
     "undo": null,
-    "redo": null
+    "redo": null,
+    "sortLabel": "क्रमबद्ध करें",
+    "sortAsc": "A से Z क्रमबद्ध करें",
+    "sortDesc": "Z से A क्रमबद्ध करें"
   },
   "editor": {
     "appLabel": null,

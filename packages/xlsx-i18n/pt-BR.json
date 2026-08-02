@@ -10,7 +10,10 @@
     "save": null,
     "exportPng": null,
     "undo": null,
-    "redo": null
+    "redo": null,
+    "sortLabel": "Classificar",
+    "sortAsc": "Classificar de A a Z",
+    "sortDesc": "Classificar de Z a A"
   },
   "editor": {
     "appLabel": null,

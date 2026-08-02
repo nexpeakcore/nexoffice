@@ -10,7 +10,10 @@
     "save": null,
     "exportPng": null,
     "undo": null,
-    "redo": null
+    "redo": null,
+    "sortLabel": "מיון",
+    "sortAsc": "מיין מא׳ עד ת׳",
+    "sortDesc": "מיין מת׳ עד א׳"
   },
   "editor": {
     "appLabel": null,

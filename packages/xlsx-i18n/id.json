@@ -10,7 +10,10 @@
     "save": null,
     "exportPng": null,
     "undo": null,
-    "redo": null
+    "redo": null,
+    "sortLabel": "Urutkan",
+    "sortAsc": "Urutkan A ke Z",
+    "sortDesc": "Urutkan Z ke A"
   },
   "editor": {
     "appLabel": null,

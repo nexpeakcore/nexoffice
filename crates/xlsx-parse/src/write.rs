@@ -498,6 +498,8 @@ fn sheet_body_matches(sheet: &Sheet, original: &Sheet) -> bool {
         && sheet.merges == original.merges
         && sheet.col_widths == original.col_widths
         && sheet.row_heights == original.row_heights
+        && sheet.hidden_rows == original.hidden_rows
+        && sheet.auto_filter == original.auto_filter
         && sheet.iter_cells().eq(original.iter_cells())
 }
 
@@ -1900,6 +1902,7 @@ fn worksheet_xml_with_namespace(
             &SharedStringCells::new(),
             shared_string_plan,
         )?;
+        write_auto_filter(writer, sheet)?;
         write_merges(writer, sheet)?;
         write_hyperlinks(writer, sheet, &links.ids, REL_ID_ATTRIBUTE, &[])?;
         writer.write_event(Event::End(BytesEnd::new("worksheet")))?;
@@ -1943,6 +1946,15 @@ fn worksheet_xml_with_template(
 
     if original.is_none_or(|original| original.freeze_pane != sheet.freeze_pane) {
         replacements.push(("sheetViews", patched_sheet_views(template, sheet)?));
+    }
+
+    if original.is_none_or(|original| original.auto_filter != sheet.auto_filter) {
+        let auto_filter = sheet
+            .auto_filter
+            .as_ref()
+            .map(|_| fragment(|writer| write_auto_filter(writer, sheet)))
+            .transpose()?;
+        replacements.push(("autoFilter", auto_filter));
     }
 
     let mut relationships = None;
@@ -2101,6 +2113,7 @@ fn write_sheet_data(
 
     let mut rows: Vec<RowId> = sheet.iter_cells().map(|(r, _)| r.row).collect();
     rows.extend(sheet.row_heights.keys().copied());
+    rows.extend(sheet.hidden_rows.iter().copied());
     rows.sort_unstable();
     rows.dedup();
 
@@ -2236,6 +2249,9 @@ fn write_row(
         start.push_attribute(("ht", h.as_str()));
         start.push_attribute(("customHeight", "1"));
     }
+    if sheet.hidden_rows.contains(&row) {
+        start.push_attribute(("hidden", "1"));
+    }
     w.write_event(Event::Start(start))?;
     for (addr, cell) in sheet.iter_cells().filter(|(a, _)| a.row == row) {
         let source = retained.get(&(addr.row, addr.col)).copied();
@@ -2318,6 +2334,47 @@ fn write_cell(
         })?;
     }
     w.write_event(Event::End(BytesEnd::new("c")))?;
+    Ok(())
+}
+
+fn write_auto_filter(w: &mut Writer<Vec<u8>>, sheet: &Sheet) -> io::Result<()> {
+    let Some(filter) = &sheet.auto_filter else {
+        return Ok(());
+    };
+    let mut root = BytesStart::new("autoFilter");
+    let reference = filter.range.to_a1();
+    root.push_attribute(("ref", reference.as_str()));
+    if filter.columns.is_empty() {
+        w.write_event(Event::Empty(root))?;
+        return Ok(());
+    }
+    w.write_event(Event::Start(root))?;
+    for column in &filter.columns {
+        let mut element = BytesStart::new("filterColumn");
+        let col_id = column
+            .col
+            .saturating_sub(filter.range.start.col)
+            .to_string();
+        element.push_attribute(("colId", col_id.as_str()));
+        let Some(values) = &column.values else {
+            w.write_event(Event::Empty(element))?;
+            continue;
+        };
+        w.write_event(Event::Start(element))?;
+        let mut filters = BytesStart::new("filters");
+        if column.show_blanks {
+            filters.push_attribute(("blank", "1"));
+        }
+        w.write_event(Event::Start(filters))?;
+        for value in values {
+            w.create_element("filter")
+                .with_attribute(("val", value.as_str()))
+                .write_empty()?;
+        }
+        w.write_event(Event::End(BytesEnd::new("filters")))?;
+        w.write_event(Event::End(BytesEnd::new("filterColumn")))?;
+    }
+    w.write_event(Event::End(BytesEnd::new("autoFilter")))?;
     Ok(())
 }
 

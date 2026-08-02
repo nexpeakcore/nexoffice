@@ -3,7 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 use xlsx_model::{
-    Cell, CellRange, CellRef, CellValue, ColId, DefinedName, FreezePane, Hyperlink, RowId, SheetId,
+    AutoFilter, Cell, CellRange, CellRef, CellValue, ColId, DefinedName, FreezePane, Hyperlink,
+    RowId, SheetId,
 };
 
 use crate::formatting::{CapturedFormat, NumberFormatMutation, StylePatch};
@@ -93,6 +94,33 @@ pub enum Op {
     SetFreezePane {
         sheet: SheetId,
         pane: Option<FreezePane>,
+    },
+    SortRange {
+        sheet: SheetId,
+        /// rows to reorder (inclusive); columns stay fixed — a sort is a row permutation.
+        range: CellRange,
+        /// absolute sheet column supplying the sort key.
+        key_col: ColId,
+        ascending: bool,
+    },
+    /// Absolute row permutation emitted as the inverse of `SortRange`.
+    #[doc(hidden)]
+    MoveRows {
+        sheet: SheetId,
+        range: CellRange,
+        /// `(from, to)` row pairs, all applied simultaneously.
+        moves: Vec<(RowId, RowId)>,
+    },
+    SetAutoFilter {
+        sheet: SheetId,
+        /// `None` clears the filter and unhides its rows.
+        filter: Option<AutoFilter>,
+    },
+    /// Absolute hidden-row replacement emitted as the inverse of `SetAutoFilter`.
+    #[doc(hidden)]
+    SetHiddenRows {
+        sheet: SheetId,
+        hidden: Vec<RowId>,
     },
     #[doc(hidden)]
     SetHyperlinks {
@@ -188,6 +216,79 @@ impl Transaction {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_freeze_pane_wire_shape() {
+        let op = Op::SetFreezePane {
+            sheet: SheetId(0),
+            pane: Some(FreezePane::new(2, 1, CellRef::new(2, 1))),
+        };
+        let json = serde_json::to_value(&op).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "setFreezePane",
+                "sheet": 0,
+                "pane": {"rows": 2, "cols": 1, "top_left": {"row": 2, "col": 1}}
+            })
+        );
+        let decoded: Op = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, op);
+
+        let unfreeze = Op::SetFreezePane {
+            sheet: SheetId(0),
+            pane: None,
+        };
+        let json = serde_json::to_value(&unfreeze).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"type": "setFreezePane", "sheet": 0, "pane": null})
+        );
+        let decoded: Op = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, unfreeze);
+    }
+
+    #[test]
+    fn sort_and_filter_wire_shapes() {
+        let sort = Op::SortRange {
+            sheet: SheetId(0),
+            range: CellRange::parse_a1("A1:B3").unwrap(),
+            key_col: 0,
+            ascending: true,
+        };
+        let json = serde_json::to_value(&sort).unwrap();
+        assert_eq!(json["type"], "sortRange");
+        let decoded: Op = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, sort);
+
+        let filter = Op::SetAutoFilter {
+            sheet: SheetId(0),
+            filter: Some(xlsx_model::AutoFilter {
+                range: CellRange::parse_a1("A1:B3").unwrap(),
+                columns: vec![xlsx_model::AutoFilterColumn {
+                    col: 0,
+                    values: Some(vec!["x".into()]),
+                    show_blanks: true,
+                }],
+            }),
+        };
+        let json = serde_json::to_value(&filter).unwrap();
+        assert_eq!(json["type"], "setAutoFilter");
+        let decoded: Op = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, filter);
+
+        let clear = Op::SetAutoFilter {
+            sheet: SheetId(0),
+            filter: None,
+        };
+        let json = serde_json::to_value(&clear).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"type": "setAutoFilter", "sheet": 0, "filter": null})
+        );
+        let decoded: Op = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, clear);
+    }
 
     #[test]
     fn cell_state_round_trips_through_model_cell() {
