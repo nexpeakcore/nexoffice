@@ -418,6 +418,19 @@ export interface PagedEditorRef {
 /**
  * PagedEditor - Main paginated editing component.
  */
+/** Trailing delay for toolbar/overlay sync coalesced across a typing burst. */
+const DEFERRED_INPUT_SYNC_MS = 150;
+
+/** Stable empties so per-frame emits cannot re-render the host. */
+const EMPTY_TRACKED_CHANGES_RESULT: TrackedChangesResult = {
+  entries: [],
+  commentToRevision: new Map(),
+};
+const EMPTY_ANCHOR_POSITIONS: Map<string, number> = new Map();
+
+/** Trailing delay for the sidebar anchor projection sweep during typing. */
+const SIDEBAR_ANCHOR_REFRESH_DELAY_MS = 180;
+
 const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
   function PagedEditor(props, ref) {
     const {
@@ -729,6 +742,57 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
     );
 
     /**
+     * Toolbar selection derivation reads the live session + display position
+     * map (a full storySegments walk when the map cache is cold). During a
+     * typing burst that cost lands on every keystroke, so the resident input
+     * path defers it — with the selection overlay refresh — to the burst tail.
+     */
+    const publishYrsToolbarSelection = useCallback((): void => {
+      const session = yrsCore.session;
+      if (!session) return;
+      const liveStory = session.selection()?.head.story ?? activeYrsRootStory;
+      const inputMap = yrsCore.inputPositionMap(liveStory);
+      if (!inputMap) return;
+      const toolbarSelection = currentYrsToolbarSelection(session, inputMap);
+      if (!toolbarSelection) return;
+      const nextToolbarSelection = withStoredYrsFormatting(
+        toolbarSelection,
+        yrsInputRef.current?.storedFormatting() ?? null
+      );
+      const key = JSON.stringify([
+        nextToolbarSelection.context,
+        nextToolbarSelection.tableContext,
+        nextToolbarSelection.range.story,
+        nextToolbarSelection.startParagraphIndex,
+        nextToolbarSelection.endParagraphIndex,
+      ]);
+      if (lastYrsToolbarSelectionKeyRef.current !== key) {
+        lastYrsToolbarSelectionKeyRef.current = key;
+        onYrsSelectionChangeRef.current?.(nextToolbarSelection);
+      }
+    }, [activeYrsRootStory, yrsCore.inputPositionMap, yrsCore.session]);
+
+    const deferredInputSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const scheduleDeferredInputSync = useCallback((): void => {
+      if (deferredInputSyncTimerRef.current !== null) {
+        clearTimeout(deferredInputSyncTimerRef.current);
+      }
+      deferredInputSyncTimerRef.current = setTimeout(() => {
+        deferredInputSyncTimerRef.current = null;
+        publishYrsToolbarSelection();
+        updateSelectionOverlayRef.current();
+      }, DEFERRED_INPUT_SYNC_MS);
+    }, [publishYrsToolbarSelection]);
+    useEffect(
+      () => () => {
+        if (deferredInputSyncTimerRef.current !== null) {
+          clearTimeout(deferredInputSyncTimerRef.current);
+        }
+      },
+      []
+    );
+
+    /**
      * Publish sticky yrs selection geometry and refresh the yrs-backed layout.
      */
     const handleYrsStateChange = useCallback(
@@ -760,28 +824,10 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
             presence.setCursor(null, !docChanged);
           }
         }
-        const liveStory = session?.selection()?.head.story ?? activeYrsRootStory;
-        const inputMap = yrsCore.inputPositionMap(liveStory);
-        if (session && inputMap) {
-          const toolbarSelection = currentYrsToolbarSelection(session, inputMap);
-          if (toolbarSelection) {
-            const nextToolbarSelection = withStoredYrsFormatting(
-              toolbarSelection,
-              yrsInputRef.current?.storedFormatting() ?? null
-            );
-            const key = JSON.stringify([
-              nextToolbarSelection.context,
-              nextToolbarSelection.tableContext,
-              nextToolbarSelection.range.story,
-              nextToolbarSelection.startParagraphIndex,
-              nextToolbarSelection.endParagraphIndex,
-            ]);
-            if (lastYrsToolbarSelectionKeyRef.current !== key) {
-              lastYrsToolbarSelectionKeyRef.current = key;
-              onYrsSelectionChangeRef.current?.(nextToolbarSelection);
-            }
-          }
-        }
+        // Resident-path keystrokes coalesce the toolbar derivation into one
+        // trailing sync; direct selection moves keep the immediate update.
+        if (docChanged || residentCaretReady) scheduleDeferredInputSync();
+        else publishYrsToolbarSelection();
 
         if (activeYrsRootStory.startsWith('hf:') && hfEditRId) {
           onYrsHfSelectionChangeRef.current?.(hfEditRId, {
@@ -824,9 +870,10 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
         activeYrsRootStory,
         collaboration?.presence,
         hfEditRId,
+        publishYrsToolbarSelection,
         refreshYrsLayout,
+        scheduleDeferredInputSync,
         updateSelectionOverlay,
-        yrsCore.inputPositionMap,
         yrsCore.session,
       ]
     );
@@ -1483,6 +1530,15 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       let hostRaf: number | null = null;
       const emit = (): void => {
         if (cancelled) return;
+        // Nothing to place: skip the projection sweep (a storySegments walk of
+        // every story) entirely. Stable empty identities let the host bail out
+        // of its own state updates.
+        const revisions = session.listRevisions();
+        if (sidebarCommentIds.length === 0 && revisions.length === 0) {
+          onYrsTrackedChangesChange?.(EMPTY_TRACKED_CHANGES_RESULT);
+          onAnchorPositionsChange(EMPTY_ANCHOR_POSITIONS);
+          return;
+        }
         const host = canvasHostRef?.current ?? pagesContainerRef.current;
         if (!host?.classList.contains('canvas-pages')) {
           hostRaf = requestAnimationFrame(emit);
@@ -1498,7 +1554,6 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           return pageRect.top - targetRect.top + rect.y * (pageRect.height / pageSize.height);
         };
         const projection = createYrsSidebarProjection(session);
-        const revisions = session.listRevisions();
         onYrsTrackedChangesChange?.(extractTrackedChangesFromYrs(revisions, projection));
         const hfRegions = new Map<string, 'header' | 'footer'>();
         for (const rId of document?.package?.headers?.keys() ?? []) {
@@ -1519,10 +1574,16 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           )
         );
       };
-      emit();
-      void displayListQueries.whenReady().then(emit, () => undefined);
+      // Sidebar anchors are decorative during a typing burst: coalesce the
+      // per-frame recompute to the burst tail instead of paying the story
+      // sweep + forced layout on every keystroke.
+      const debounce = setTimeout(() => {
+        emit();
+        void displayListQueries.whenReady().then(emit, () => undefined);
+      }, SIDEBAR_ANCHOR_REFRESH_DELAY_MS);
       return () => {
         cancelled = true;
+        clearTimeout(debounce);
         if (hostRaf !== null) cancelAnimationFrame(hostRaf);
       };
     }, [
