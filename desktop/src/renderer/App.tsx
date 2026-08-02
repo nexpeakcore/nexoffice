@@ -189,9 +189,22 @@ export function App() {
             setStatus('Open a document first')
             break
           }
-          void window.nexoffice
-            .exportPdf(current.name)
-            .then((result) => setStatus(result.path ? `Exported ${result.path}` : 'PDF export canceled'))
+          setStatus('Exporting PDF…')
+          void getCurrentBytes(current)
+            .then((data) => window.nexoffice.exportPdf(current.name, current.kind, data))
+            .then((result) => {
+              if (!result.path) {
+                setStatus('PDF export canceled')
+                return
+              }
+              const pages =
+                result.pages != null ? ` (${result.pages} page${result.pages === 1 ? '' : 's'})` : ''
+              const truncated = result.truncated ? ' — truncated at page limit' : ''
+              setStatus(`Exported ${result.path}${pages}${truncated}`)
+            })
+            .catch((error: unknown) =>
+              setStatus(`PDF export failed: ${error instanceof Error ? error.message : String(error)}`),
+            )
           break
         }
         case 'view:spellCheck':
@@ -223,7 +236,7 @@ export function App() {
       }
     }
     return window.nexoffice.onMenuAction(handle)
-  }, [openDocument, saveDocument, ensureSaved])
+  }, [openDocument, saveDocument, ensureSaved, getCurrentBytes])
 
   useEffect(() => {
     window.nexoffice.rendererReady()

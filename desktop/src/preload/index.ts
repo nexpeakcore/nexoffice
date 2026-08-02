@@ -2,8 +2,11 @@ import { contextBridge, ipcRenderer } from 'electron'
 import {
   IPC,
   type DocumentKind,
+  type ExportPdfResult,
   type MenuAction,
   type OpenedDocument,
+  type PrintJob,
+  type PrintRenderResult,
   type SaveResult,
   type UnsavedChoice,
 } from '../shared/ipc.js'
@@ -21,8 +24,18 @@ const api = {
   saveFileAs: (path: string | null, kind: DocumentKind, data: Uint8Array): Promise<SaveResult> =>
     ipcRenderer.invoke(IPC.saveFileAs, { path, kind, data }),
 
-  exportPdf: (defaultName: string): Promise<{ path: string | null; canceled: boolean }> =>
-    ipcRenderer.invoke(IPC.exportPdf, defaultName),
+  exportPdf: (name: string, kind: DocumentKind, data: Uint8Array): Promise<ExportPdfResult> =>
+    ipcRenderer.invoke(IPC.exportPdf, { name, kind, data }),
+
+  printReady: (): void => ipcRenderer.send(IPC.printReady),
+
+  printRendered: (result: PrintRenderResult): void => ipcRenderer.send(IPC.printRendered, result),
+
+  onPrintRender: (handler: (job: PrintJob) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, job: PrintJob) => handler(job)
+    ipcRenderer.on(IPC.printRender, listener)
+    return () => ipcRenderer.removeListener(IPC.printRender, listener)
+  },
 
   confirmUnsaved: (name: string): Promise<UnsavedChoice> =>
     ipcRenderer.invoke(IPC.confirmUnsaved, name),

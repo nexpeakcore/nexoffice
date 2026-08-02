@@ -6,9 +6,14 @@ import {
   EXTENSIONS,
   IPC,
   kindFromPath,
+  PRINT_PAGE_CAP,
   type DocumentKind,
+  type ExportPdfRequest,
+  type ExportPdfResult,
   type MenuAction,
   type OpenedDocument,
+  type PrintJob,
+  type PrintRenderResult,
   type SaveRequest,
   type SaveResult,
   type UnsavedChoice,
@@ -188,6 +193,73 @@ async function promptSaveAs(kind: DocumentKind, suggestedPath: string | null): P
   return filePath
 }
 
+const PRINT_QUERY = 'offscreenReplay=0&pageWindow=0'
+const PRINT_TIMEOUT_MS = 120_000
+
+function createPrintWindow(): BrowserWindow {
+  const window = new BrowserWindow({
+    width: 1000,
+    height: 1400,
+    show: false,
+    webPreferences: {
+      preload: join(import.meta.dirname, '../preload/index.cjs'),
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  window.webContents.on('will-navigate', (event) => event.preventDefault())
+
+  const devServerUrl = process.env['ELECTRON_RENDERER_URL']
+  if (isDev && devServerUrl) {
+    void window.loadURL(`${devServerUrl}/print.html?${PRINT_QUERY}`)
+  } else {
+    void window.loadURL(`${APP_ORIGIN}/print.html?${PRINT_QUERY}`)
+  }
+  return window
+}
+
+function renderPrintJob(
+  window: BrowserWindow,
+  job: PrintJob,
+): Promise<{ pages: number; truncated: boolean }> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const cleanup = (): void => {
+      clearTimeout(timer)
+      ipcMain.removeListener(IPC.printReady, onReady)
+      ipcMain.removeListener(IPC.printRendered, onRendered)
+      window.removeListener('closed', onClosed)
+    }
+    const fail = (message: string): void => {
+      cleanup()
+      rejectPromise(new Error(message))
+    }
+    const timer = setTimeout(() => fail('PDF rendering timed out'), PRINT_TIMEOUT_MS)
+    const onClosed = (): void => fail('Print window closed before rendering finished')
+    const onReady = (event: Electron.IpcMainEvent): void => {
+      if (window.isDestroyed() || event.sender !== window.webContents) return
+      event.sender.send(IPC.printRender, job)
+    }
+    const onRendered = (event: Electron.IpcMainEvent, result: PrintRenderResult): void => {
+      if (window.isDestroyed() || event.sender !== window.webContents) return
+      if (result.ok) {
+        cleanup()
+        resolvePromise({ pages: result.pages, truncated: result.truncated })
+      } else {
+        fail(result.error)
+      }
+    }
+    ipcMain.on(IPC.printReady, onReady)
+    ipcMain.on(IPC.printRendered, onRendered)
+    window.on('closed', onClosed)
+    window.webContents.on('render-process-gone', (_event, details) =>
+      fail(`Print renderer crashed: ${details.reason}`),
+    )
+  })
+}
+
 function registerIpc(): void {
   ipcMain.handle(IPC.openFile, () => promptOpen())
 
@@ -234,24 +306,45 @@ function registerIpc(): void {
     return response === 0 ? 'save' : response === 1 ? 'discard' : 'cancel'
   })
 
-  ipcMain.handle(IPC.exportPdf, async (_event, defaultName: string): Promise<{ path: string | null; canceled: boolean }> => {
+  ipcMain.handle(IPC.exportPdf, async (_event, request: ExportPdfRequest): Promise<ExportPdfResult> => {
     const owner = mainWindow
     if (!owner || owner.isDestroyed()) return { path: null, canceled: true }
 
-    const base = defaultName.replace(/\.(docx|xlsx|pptx)$/i, '') || 'Untitled'
+    const base = request.name.replace(/\.(docx|xlsx|pptx)$/i, '') || 'Untitled'
     const { canceled, filePath } = await dialog.showSaveDialog(owner, {
       defaultPath: `${base}.pdf`,
       filters: [{ name: 'PDF Document', extensions: ['pdf'] }],
     })
     if (canceled || !filePath) return { path: null, canceled: true }
+    grantedPaths.add(filePath)
 
-    const data = await owner.webContents.printToPDF({
-      pageSize: 'A4',
-      printBackground: true,
-      margins: { top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 },
-    })
-    await writeFile(filePath, data)
-    return { path: filePath, canceled: false }
+    const printWindow = createPrintWindow()
+    try {
+      const { pages, truncated } = await renderPrintJob(printWindow, {
+        kind: request.kind,
+        data: request.data,
+      })
+      const pdf = await printWindow.webContents.printToPDF({
+        preferCSSPageSize: true,
+        printBackground: true,
+        margins: { top: 0, bottom: 0, left: 0, right: 0 },
+      })
+      await writeFile(filePath, pdf)
+      if (truncated && !owner.isDestroyed()) {
+        void dialog.showMessageBox(owner, {
+          type: 'warning',
+          message: 'PDF export truncated',
+          detail: `The document exceeds the ${PRINT_PAGE_CAP}-page export limit; only the first ${pages} pages were exported.`,
+        })
+      }
+      return { path: filePath, canceled: false, pages, truncated }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      dialog.showErrorBox('PDF Export Failed', message)
+      return { path: null, canceled: true }
+    } finally {
+      if (!printWindow.isDestroyed()) printWindow.destroy()
+    }
   })
 
   ipcMain.on(IPC.rendererReady, (event) => {

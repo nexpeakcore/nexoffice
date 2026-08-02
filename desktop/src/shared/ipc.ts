@@ -10,7 +10,12 @@ export const IPC = {
   rendererReady: 'renderer:ready',
   closeRequest: 'window:closeRequest',
   closeResponse: 'window:closeResponse',
+  printReady: 'print:ready',
+  printRender: 'print:render',
+  printRendered: 'print:rendered',
 } as const
+
+export const PRINT_PAGE_CAP = 100
 
 export type DocumentKind = 'docx' | 'xlsx' | 'pptx'
 
@@ -33,6 +38,28 @@ export interface SaveResult {
   path: string | null
   canceled: boolean
 }
+
+export interface ExportPdfRequest {
+  name: string
+  kind: DocumentKind
+  data: Uint8Array
+}
+
+export interface ExportPdfResult {
+  path: string | null
+  canceled: boolean
+  pages?: number
+  truncated?: boolean
+}
+
+export interface PrintJob {
+  kind: DocumentKind
+  data: Uint8Array
+}
+
+export type PrintRenderResult =
+  | { ok: true; pages: number; truncated: boolean }
+  | { ok: false; error: string }
 
 export type MenuAction =
   | 'file:new'

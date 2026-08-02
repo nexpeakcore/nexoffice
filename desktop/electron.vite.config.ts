@@ -36,7 +36,10 @@ export default defineConfig({
     build: {
       target: 'esnext',
       rollupOptions: {
-        input: resolve(rootDir, 'src/renderer/index.html'),
+        input: {
+          index: resolve(rootDir, 'src/renderer/index.html'),
+          print: resolve(rootDir, 'src/renderer/print.html'),
+        },
       },
     },
   },

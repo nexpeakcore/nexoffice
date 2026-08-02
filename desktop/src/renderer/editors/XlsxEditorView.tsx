@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { forwardRef, useImperativeHandle, useRef, useState } from 'react'
 import { XlsxEditor, type XlsxEditorApi } from '@betteroffice/xlsx-react'
 import type { OpenedDocument } from '../../shared/ipc.js'
 
@@ -18,44 +18,24 @@ export const XlsxEditorView = forwardRef<XlsxEditorViewRef, XlsxEditorViewProps>
   function XlsxEditorView({ document, onChange }, ref) {
     const [error] = useState<string | null>(null)
     const apiRef = useRef<XlsxEditorApi | null>(null)
-    const undoDepthRef = useRef(0)
     const onChangeRef = useRef(onChange)
     onChangeRef.current = onChange
 
-    useEffect(() => {
-      const timer = setInterval(() => {
-        const handle = apiRef.current?.handle
-        if (!handle) return
-        try {
-          const { undoDepth } = handle.historyState()
-          if (undoDepth !== undoDepthRef.current) {
-            undoDepthRef.current = undoDepth
-            onChangeRef.current?.()
-          }
-        } catch {
-          // handle disposed between ticks
-        }
-      }, 700)
-      return () => clearInterval(timer)
-    }, [])
+    const setFreezePane = (row: number | null, col: number | null) => {
+      const handle = apiRef.current?.handle
+      if (!handle) return
+      handle.setFreezePane(handle.sheetInfo().activeSheet, row, col)
+      onChangeRef.current?.()
+    }
 
     useImperativeHandle(ref, () => ({
       save: () => {
         const handle = apiRef.current?.handle
         return handle ? handle.save() : null
       },
-      freezeTopRow: () => {
-        apiRef.current?.handle.setFreezePane(0, 1, null)
-        onChange?.()
-      },
-      freezeFirstColumn: () => {
-        apiRef.current?.handle.setFreezePane(0, null, 1)
-        onChange?.()
-      },
-      unfreeze: () => {
-        apiRef.current?.handle.setFreezePane(0, null, null)
-        onChange?.()
-      },
+      freezeTopRow: () => setFreezePane(1, null),
+      freezeFirstColumn: () => setFreezePane(null, 1),
+      unfreeze: () => setFreezePane(null, null),
     }))
 
     if (error) {
@@ -74,9 +54,9 @@ export const XlsxEditorView = forwardRef<XlsxEditorViewRef, XlsxEditorViewProps>
         file={document.data}
         fileName={document.name}
         onSave={() => onChange?.()}
+        onEdit={() => onChangeRef.current?.()}
         onReady={(api: XlsxEditorApi) => {
           apiRef.current = api
-          undoDepthRef.current = 0
           return () => {
             if (apiRef.current === api) apiRef.current = null
           }
