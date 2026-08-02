@@ -123,6 +123,7 @@
       "version": "0.1.0",
       "devDependencies": {
         "@betteroffice/docx": "workspace:*",
+        "@betteroffice/docx-fonts": "workspace:*",
         "@betteroffice/docx-react": "workspace:*",
         "@betteroffice/xlsx": "workspace:*",
         "@betteroffice/xlsx-react": "workspace:*",

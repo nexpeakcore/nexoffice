@@ -1,7 +1,13 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { DocxEditor, type DocxEditorRef } from '@betteroffice/docx-react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { DocxEditor, type BundledFontProvider, type DocxEditorRef } from '@betteroffice/docx-react'
 import '@betteroffice/docx-react/styles.css'
 import type { Document as DocxDocument } from '@betteroffice/docx/types/document'
+import {
+  loadBundledFontBytes,
+  resolveLastResortFace,
+  resolveMetricCompatFace,
+  resolveScriptFallbackFace,
+} from '@betteroffice/docx-fonts'
 import type { OpenedDocument } from '../../shared/ipc.js'
 
 export interface DocxEditorViewRef {
@@ -19,8 +25,8 @@ function extractText(blocks: unknown[]): string {
   let out = ''
   for (const block of blocks as Array<Record<string, unknown>>) {
     if (!block || typeof block !== 'object') continue
-    if (block.type === 'paragraph') {
-      out += extractText((block.content as unknown[]) ?? []) + '\n'
+    if (block.type === 'text') {
+      out += (block.text as string) ?? ''
     } else if (block.type === 'table') {
       for (const row of (block.rows as unknown[]) ?? []) {
         for (const cell of ((row as Record<string, unknown>).cells as unknown[]) ?? []) {
@@ -28,8 +34,9 @@ function extractText(blocks: unknown[]): string {
         }
         out += '\n'
       }
-    } else if (block.type === 'text') {
-      out += (block.text as string) ?? ''
+    } else if (Array.isArray(block.content)) {
+      out += extractText(block.content as unknown[])
+      if (block.type === 'paragraph') out += '\n'
     }
   }
   return out
@@ -43,6 +50,22 @@ function countWords(text: string): number {
 export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>(
   function DocxEditorView({ document, onChange }, ref) {
     const editorRef = useRef<DocxEditorRef>(null)
+    const measurementFontProvider = useMemo<BundledFontProvider>(
+      () => ({
+        resolve(family, bold, italic) {
+          const face = resolveMetricCompatFace(family, bold, italic)
+          return face ? () => loadBundledFontBytes(face) : undefined
+        },
+        resolveScriptFallback(script, bold, italic) {
+          const face = resolveScriptFallbackFace(script, bold, italic)
+          return face ? () => loadBundledFontBytes(face) : undefined
+        },
+        resolveLastResort(family, bold, italic) {
+          return () => loadBundledFontBytes(resolveLastResortFace(family, bold, italic))
+        },
+      }),
+      [],
+    )
     const [error, setError] = useState<string | null>(null)
     const textRef = useRef('')
     const statsRef = useRef({ words: 0, characters: 0, page: 1, pages: 1 })
@@ -84,6 +107,7 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
       <DocxEditor
         ref={editorRef}
         documentBuffer={document.data}
+        measurementFontProvider={measurementFontProvider}
         showFileOpen={false}
         className="h-full w-full"
         loadingIndicator={
