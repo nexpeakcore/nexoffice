@@ -18,7 +18,7 @@ pub use workbook::{
 
 pub use xlsx_model::addr::AddrError;
 pub use xlsx_model::{
-    AutoFilter, AutoFilterColumn, Cell, CellRange, CellRef, CellValue, ColId, DateSystem,
+    AutoFilter, AutoFilterColumn, Cell, CellRange, CellRef, CellValue, ColId, Comment, DateSystem,
     DefinedName, ErrorValue, FreezePane, Hyperlink, MAX_COLS, MAX_ROWS, RowId, Sheet, SheetId,
     Workbook as WorkbookModel,
 };

@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex, Weak};
 use xlsx_calc::graph::DepGraph;
 use xlsx_calc::{RecalcResult, rebuild_and_recalc_all, recalc_after};
 use xlsx_model::{
-    Border, BorderEdge, BorderStyle, CellFormat, CellRange, CellRef, CellValue, Fill, HAlign,
-    Hyperlink, MAX_COLS, MAX_ROWS, NumberFormat, Sheet, SheetId, VAlign, Workbook as WorkbookModel,
+    Border, BorderEdge, BorderStyle, CellFormat, CellRange, CellRef, CellValue, ColId, Comment,
+    Fill, HAlign, Hyperlink, MAX_COLS, MAX_ROWS, NumberFormat, RowId, Sheet, SheetId, VAlign,
+    Workbook as WorkbookModel,
 };
 use xlsx_ops::{
     BorderLineStyle, BorderPreset, CapturedFormat, CellState, HorizontalAlignment,
@@ -38,6 +39,8 @@ const MAX_COL_WIDTH: f64 = 255.0;
 const MAX_ROW_HEIGHT: f64 = 409.5;
 const MAX_HYPERLINKS_PER_SHEET: usize = 65_536;
 const MAX_HYPERLINK_FIELD_BYTES: usize = 32_767;
+const MAX_COMMENTS_PER_SHEET: usize = 65_536;
+const MAX_COMMENT_FIELD_BYTES: usize = 32_767;
 /// Maximum accepted encoded update or state-vector size: 64 MiB.
 pub const MAX_COLLABORATION_BYTES: usize = 64 * 1024 * 1024;
 /// Largest browser-safe collaboration client identifier.
@@ -1941,6 +1944,7 @@ fn validate_model(model: &WorkbookModel) -> Result<()> {
             )));
         }
         validate_hyperlinks(&sheet.hyperlinks)?;
+        validate_sheet_comments(&sheet.comments)?;
         validate_sheet_name(&sheet.name)?;
         if !names.insert(sheet.name.to_lowercase()) {
             return Err(Error::InvalidOperation(format!(
@@ -2023,6 +2027,7 @@ fn worksheet_edit_target(op: &Op) -> Option<SheetId> {
         | Op::SetAutoFilter { sheet, .. }
         | Op::SetHiddenRows { sheet, .. }
         | Op::SetHyperlinks { sheet, .. }
+        | Op::SetComment { sheet, .. }
         | Op::MergeCells { sheet, .. }
         | Op::UnmergeCells { sheet, .. }
         | Op::PatchRangeStyle { sheet, .. }
@@ -2144,6 +2149,17 @@ fn validate_op(model: &WorkbookModel, op: &Op) -> Result<()> {
         Op::SetHyperlinks { sheet, hyperlinks } => {
             require_sheet(model, *sheet)?;
             validate_hyperlinks(hyperlinks)?;
+        }
+        Op::SetComment {
+            sheet,
+            cell,
+            comment,
+        } => {
+            require_sheet(model, *sheet)?;
+            validate_cell_ref(*cell)?;
+            if let Some(comment) = comment {
+                validate_comment(comment)?;
+            }
         }
         Op::MergeCells { sheet, range } | Op::UnmergeCells { sheet, range } => {
             require_sheet(model, *sheet)?;
@@ -2320,6 +2336,30 @@ fn validate_hyperlinks(hyperlinks: &[Hyperlink]) -> Result<()> {
                 ));
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_sheet_comments(comments: &BTreeMap<(RowId, ColId), Comment>) -> Result<()> {
+    if comments.len() > MAX_COMMENTS_PER_SHEET {
+        return Err(Error::InvalidOperation(
+            "sheet contains too many comments".to_string(),
+        ));
+    }
+    for (&(row, col), comment) in comments {
+        validate_cell_ref(CellRef::new(row, col))?;
+        validate_comment(comment)?;
+    }
+    Ok(())
+}
+
+fn validate_comment(comment: &Comment) -> Result<()> {
+    if comment.author.len() > MAX_COMMENT_FIELD_BYTES
+        || comment.text.len() > MAX_COMMENT_FIELD_BYTES
+    {
+        return Err(Error::InvalidOperation(
+            "comment field exceeds its length limit".to_string(),
+        ));
     }
     Ok(())
 }

@@ -8,7 +8,7 @@ use std::io;
 
 use quick_xml::Writer;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
-use xlsx_model::addr::RowId;
+use xlsx_model::addr::{ColId, MAX_COLS, MAX_ROWS, RowId};
 use xlsx_model::styles::{Alignment, Border, BorderEdge, Color, Fill, Font, Stylesheet, Xf};
 use xlsx_model::{Cell, CellRef, CellValue, DateSystem, Sheet, Workbook};
 
@@ -19,7 +19,7 @@ use crate::package::{
     remove_attribute, set_attribute,
 };
 use crate::read::SharedStringCells;
-use crate::xml::xml_err;
+use crate::xml::{resolve_part_path, xml_err};
 
 const NS_MAIN: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const NS_STRICT_MAIN: &str = "http://purl.oclc.org/ooxml/spreadsheetml/main";
@@ -48,6 +48,13 @@ const REL_OFFICE_DOCUMENT: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
 const REL_HYPERLINK: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
+const CT_COMMENTS: &str =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml";
+const CT_VML: &str = "application/vnd.openxmlformats-officedocument.vmlDrawing";
+const REL_COMMENTS: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
+const REL_VML: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing";
 const NS_DML: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const NS_STRICT_DML: &str = "http://purl.oclc.org/ooxml/drawingml/main";
 
@@ -100,15 +107,45 @@ pub fn serialize_workbook(wb: &Workbook) -> Result<Vec<(String, Vec<u8>)>, Parse
     }
     for (i, sheet) in wb.sheets.iter().enumerate() {
         let links = HyperlinkPlan::new(sheet, &[], REL_HYPERLINK);
+        let comments = (!sheet.comments.is_empty()).then(|| {
+            let mut used_ids = links
+                .relationships
+                .iter()
+                .filter_map(Relationship::id)
+                .map(str::to_owned)
+                .collect::<HashSet<_>>();
+            CommentPlan {
+                comments_path: format!("xl/comments{}.xml", i + 1),
+                vml_path: format!("xl/drawings/vmlDrawing{}.vml", i + 1),
+                comments_rel_id: next_relationship_id(&mut used_ids),
+                vml_rel_id: next_relationship_id(&mut used_ids),
+            }
+        });
         parts.push((
             format!("xl/worksheets/sheet{}.xml", i + 1),
-            worksheet_xml_with_namespace(sheet, wb, NS_MAIN, NS_R, &links, None)?,
+            worksheet_xml_with_namespace(
+                sheet,
+                wb,
+                NS_MAIN,
+                NS_R,
+                &links,
+                comments.as_ref(),
+                None,
+            )?,
         ));
-        if !links.relationships.is_empty() {
+        let mut relationships = links.relationships;
+        if let Some(plan) = &comments {
+            relationships.extend(plan.relationships("xl/worksheets", REL_COMMENTS, REL_VML));
+        }
+        if !relationships.is_empty() {
             parts.push((
                 format!("xl/worksheets/_rels/sheet{}.xml.rels", i + 1),
-                relationships_xml(&links.relationships)?,
+                relationships_xml(&relationships)?,
             ));
+        }
+        if let Some(plan) = &comments {
+            parts.push((plan.comments_path.clone(), comments_xml(sheet, NS_MAIN)?));
+            parts.push((plan.vml_path.clone(), vml_drawing_xml(sheet)?));
         }
     }
     Ok(parts)
@@ -280,6 +317,9 @@ pub fn serialize_workbook_with_package_and_origins_after_edits(
 
     let shared_strings_stable = wb.shared_strings == package.original_workbook.shared_strings;
     let empty_provenance = SharedStringCells::new();
+    let mut comment_overrides = Vec::new();
+    let mut removed_part_names = HashSet::new();
+    let mut wrote_vml = false;
     for (index, (sheet, plan)) in wb.sheets.iter().zip(&sheets).enumerate() {
         let source = plan.origin.and_then(|origin| package.sheets.get(origin));
         let original = plan
@@ -299,8 +339,11 @@ pub fn serialize_workbook_with_package_and_origins_after_edits(
                     original,
                     source,
                     package,
-                    provenance,
-                    shared_string_plan.as_ref(),
+                    SheetSharedStrings {
+                        provenance,
+                        plan: shared_string_plan.as_ref(),
+                    },
+                    &mut used_paths,
                 )?
             }
             Some(_) => continue,
@@ -314,20 +357,69 @@ pub fn serialize_workbook_with_package_and_origins_after_edits(
                         REL_HYPERLINK,
                     ),
                 );
-                WorksheetOutput {
-                    bytes: worksheet_xml_with_namespace(
+                let comments = (!sheet.comments.is_empty()).then(|| {
+                    let mut used_ids = links
+                        .relationships
+                        .iter()
+                        .filter_map(Relationship::id)
+                        .map(str::to_owned)
+                        .collect::<HashSet<_>>();
+                    CommentPlan {
+                        comments_path: next_part_path(&mut used_paths, |index| {
+                            format!("xl/comments{index}.xml")
+                        }),
+                        vml_path: next_part_path(&mut used_paths, |index| {
+                            format!("xl/drawings/vmlDrawing{index}.vml")
+                        }),
+                        comments_rel_id: next_relationship_id(&mut used_ids),
+                        vml_rel_id: next_relationship_id(&mut used_ids),
+                    }
+                });
+                let mut output = WorksheetOutput::new(
+                    worksheet_xml_with_namespace(
                         sheet,
                         wb,
                         main_namespace,
                         &relationship_namespace,
                         &links,
+                        comments.as_ref(),
                         shared_string_plan.as_ref(),
                     )?,
-                    relationships: Some(links.relationships),
+                    None,
+                );
+                let mut relationships = links.relationships;
+                if let Some(comment_plan) = &comments {
+                    relationships.extend(comment_plan.relationships(
+                        &part_directory(&plan.path),
+                        &relationship_type(package, "comments", REL_COMMENTS),
+                        &relationship_type(package, "vmlDrawing", REL_VML),
+                    ));
+                    output.comment_parts.push((
+                        comment_plan.comments_path.clone(),
+                        comments_xml(sheet, main_namespace)?,
+                    ));
+                    output
+                        .comment_parts
+                        .push((comment_plan.vml_path.clone(), vml_drawing_xml(sheet)?));
+                    output
+                        .new_comment_overrides
+                        .push(comment_plan.comments_path.clone());
+                    output.wrote_vml = true;
                 }
+                output.relationships = Some(relationships);
+                output
             }
         };
         parts.set(plan.path.clone(), output.bytes)?;
+        for path in &output.removed_parts {
+            parts.remove(path);
+            removed_part_names.insert(normalized_part_name(path));
+        }
+        for (path, bytes) in output.comment_parts {
+            parts.set(path, bytes)?;
+        }
+        comment_overrides.extend(output.new_comment_overrides);
+        wrote_vml |= output.wrote_vml;
         if let Some(relationships) = output.relationships {
             let path = relationship_part_path(&plan.path);
             if relationships.is_empty() {
@@ -364,6 +456,11 @@ pub fn serialize_workbook_with_package_and_origins_after_edits(
             styles.as_ref(),
             theme.as_ref(),
             edited,
+            CommentContentTypes {
+                overrides: &comment_overrides,
+                removed_part_names: &removed_part_names,
+                wrote_vml,
+            },
         )?,
     )?;
 
@@ -500,6 +597,7 @@ fn sheet_body_matches(sheet: &Sheet, original: &Sheet) -> bool {
         && sheet.row_heights == original.row_heights
         && sheet.hidden_rows == original.hidden_rows
         && sheet.auto_filter == original.auto_filter
+        && sheet.comments == original.comments
         && sheet.iter_cells().eq(original.iter_cells())
 }
 
@@ -778,14 +876,228 @@ fn next_relationship_id(used: &mut HashSet<String>) -> String {
 }
 
 fn next_sheet_path(used: &mut HashSet<String>) -> String {
+    next_part_path(used, |index| format!("xl/worksheets/sheet{index}.xml"))
+}
+
+fn next_part_path(used: &mut HashSet<String>, name: impl Fn(u64) -> String) -> String {
     let mut index = 1_u64;
     loop {
-        let path = format!("xl/worksheets/sheet{index}.xml");
+        let path = name(index);
         if used.insert(normalized_part_name(&path)) {
             return path;
         }
         index += 1;
     }
+}
+
+/// The comments part, its legacy VML twin, and the worksheet relationship ids
+/// pointing at them. Excel shows comment indicators only when the sheet also
+/// carries the `<legacyDrawing>` reference to the VML part.
+struct CommentPlan {
+    comments_path: String,
+    vml_path: String,
+    comments_rel_id: String,
+    vml_rel_id: String,
+}
+
+impl CommentPlan {
+    fn relationships(
+        &self,
+        sheet_directory: &str,
+        comments_type: &str,
+        vml_type: &str,
+    ) -> [Relationship; 2] {
+        [
+            new_relationship(
+                self.comments_rel_id.clone(),
+                comments_type,
+                relative_target(sheet_directory, &self.comments_path),
+            ),
+            new_relationship(
+                self.vml_rel_id.clone(),
+                vml_type,
+                relative_target(sheet_directory, &self.vml_path),
+            ),
+        ]
+    }
+}
+
+fn part_directory(path: &str) -> String {
+    path.rsplit_once('/')
+        .map(|(directory, _)| directory.to_owned())
+        .unwrap_or_default()
+}
+
+/// A relationship `Target` for `path`, relative to the part living in
+/// `base_dir`.
+fn relative_target(base_dir: &str, path: &str) -> String {
+    let base: Vec<&str> = base_dir.split('/').filter(|s| !s.is_empty()).collect();
+    let target: Vec<&str> = path
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut common = 0;
+    while common < base.len() && common + 1 < target.len() && base[common] == target[common] {
+        common += 1;
+    }
+    let mut segments: Vec<&str> = vec![".."; base.len() - common];
+    segments.extend(&target[common..]);
+    segments.join("/")
+}
+
+fn comments_xml(sheet: &Sheet, main_namespace: &str) -> Result<Vec<u8>, ParseError> {
+    let mut authors: Vec<&str> = Vec::new();
+    let mut author_ids: HashMap<&str, usize> = HashMap::new();
+    for comment in sheet.comments.values() {
+        if !author_ids.contains_key(comment.author.as_str()) {
+            author_ids.insert(comment.author.as_str(), authors.len());
+            authors.push(comment.author.as_str());
+        }
+    }
+    doc(|w| {
+        w.create_element("comments")
+            .with_attribute(("xmlns", main_namespace))
+            .write_inner_content(|w| {
+                w.create_element("authors").write_inner_content(|w| {
+                    for author in &authors {
+                        w.create_element("author")
+                            .write_text_content(BytesText::new(author))?;
+                    }
+                    Ok(())
+                })?;
+                w.create_element("commentList").write_inner_content(|w| {
+                    for (&(row, col), comment) in &sheet.comments {
+                        let reference = CellRef::new(row, col).to_a1();
+                        let author_id = author_ids[comment.author.as_str()].to_string();
+                        w.create_element("comment")
+                            .with_attribute(("ref", reference.as_str()))
+                            .with_attribute(("authorId", author_id.as_str()))
+                            .write_inner_content(|w| {
+                                w.create_element("text").write_inner_content(|w| {
+                                    write_text_el(w, &comment.text)?;
+                                    Ok(())
+                                })?;
+                                Ok(())
+                            })?;
+                    }
+                    Ok(())
+                })?;
+                Ok(())
+            })?;
+        Ok(())
+    })
+}
+
+/// A minimal legacy VML drawing with one hidden note shape per comment, the
+/// boilerplate Excel expects for comment indicators.
+fn vml_drawing_xml(sheet: &Sheet) -> Result<Vec<u8>, ParseError> {
+    fragment(|w| {
+        let mut root = BytesStart::new("xml");
+        root.push_attribute(("xmlns:v", "urn:schemas-microsoft-com:vml"));
+        root.push_attribute(("xmlns:o", "urn:schemas-microsoft-com:office:office"));
+        root.push_attribute(("xmlns:x", "urn:schemas-microsoft-com:office:excel"));
+        w.write_event(Event::Start(root))?;
+        w.create_element("o:shapelayout")
+            .with_attribute(("v:ext", "edit"))
+            .write_inner_content(|w| {
+                w.create_element("o:idmap")
+                    .with_attribute(("v:ext", "edit"))
+                    .with_attribute(("data", "1"))
+                    .write_empty()?;
+                Ok(())
+            })?;
+        w.create_element("v:shapetype")
+            .with_attribute(("id", "_x0000_t202"))
+            .with_attribute(("coordsize", "21600,21600"))
+            .with_attribute(("o:spt", "202"))
+            .with_attribute(("path", "m,l,21600r21600,l21600,xe"))
+            .write_inner_content(|w| {
+                w.create_element("v:stroke")
+                    .with_attribute(("joinstyle", "miter"))
+                    .write_empty()?;
+                w.create_element("v:path")
+                    .with_attribute(("gradientshapeok", "t"))
+                    .with_attribute(("o:connecttype", "rect"))
+                    .write_empty()?;
+                Ok(())
+            })?;
+        for (index, (&(row, col), _)) in sheet.comments.iter().enumerate() {
+            write_comment_shape(w, index, row, col)?;
+        }
+        w.write_event(Event::End(BytesEnd::new("xml")))?;
+        Ok(())
+    })
+}
+
+fn write_comment_shape(
+    w: &mut Writer<Vec<u8>>,
+    index: usize,
+    row: RowId,
+    col: ColId,
+) -> io::Result<()> {
+    let id = format!("_x0000_s{}", 1025 + index);
+    let anchor = comment_anchor(row, col);
+    let row_text = row.to_string();
+    let col_text = col.to_string();
+    w.create_element("v:shape")
+        .with_attribute(("id", id.as_str()))
+        .with_attribute(("type", "#_x0000_t202"))
+        .with_attribute((
+            "style",
+            "position:absolute;margin-left:59.25pt;margin-top:1.5pt;width:96pt;height:55.5pt;\
+             z-index:1;visibility:hidden",
+        ))
+        .with_attribute(("fillcolor", "#ffffe1"))
+        .with_attribute(("o:insetmode", "auto"))
+        .write_inner_content(|w| {
+            w.create_element("v:fill")
+                .with_attribute(("color2", "#ffffe1"))
+                .write_empty()?;
+            w.create_element("v:shadow")
+                .with_attribute(("on", "t"))
+                .with_attribute(("color", "black"))
+                .with_attribute(("obscured", "t"))
+                .write_empty()?;
+            w.create_element("v:path")
+                .with_attribute(("o:connecttype", "none"))
+                .write_empty()?;
+            w.create_element("v:textbox")
+                .with_attribute(("style", "mso-direction-alt:auto"))
+                .write_inner_content(|w| {
+                    w.create_element("div")
+                        .with_attribute(("style", "text-align:left"))
+                        .write_empty()?;
+                    Ok(())
+                })?;
+            w.create_element("x:ClientData")
+                .with_attribute(("ObjectType", "Note"))
+                .write_inner_content(|w| {
+                    w.create_element("x:MoveWithCells").write_empty()?;
+                    w.create_element("x:SizeWithCells").write_empty()?;
+                    w.create_element("x:Anchor")
+                        .write_text_content(BytesText::new(&anchor))?;
+                    w.create_element("x:AutoFill")
+                        .write_text_content(BytesText::new("False"))?;
+                    w.create_element("x:Row")
+                        .write_text_content(BytesText::new(&row_text))?;
+                    w.create_element("x:Column")
+                        .write_text_content(BytesText::new(&col_text))?;
+                    Ok(())
+                })?;
+            Ok(())
+        })?;
+    Ok(())
+}
+
+/// The standard note anchor: one column right of the cell, roughly three rows
+/// tall, clamped to the sheet edge.
+fn comment_anchor(row: RowId, col: ColId) -> String {
+    let left = col.saturating_add(1).min(MAX_COLS - 1);
+    let right = col.saturating_add(3).min(MAX_COLS - 1);
+    let top = row.min(MAX_ROWS - 1);
+    let bottom = row.saturating_add(3).min(MAX_ROWS - 1);
+    format!("{left}, 15, {top}, 2, {right}, 15, {bottom}, 16")
 }
 
 fn relative_to_xl(path: &str) -> String {
@@ -1067,6 +1379,13 @@ fn relationships_xml(relationships: &[Relationship]) -> Result<Vec<u8>, ParseErr
     })
 }
 
+/// Content-type consequences of the comment parts a save wrote or dropped.
+struct CommentContentTypes<'a> {
+    overrides: &'a [String],
+    removed_part_names: &'a HashSet<String>,
+    wrote_vml: bool,
+}
+
 fn merged_content_types(
     package: &PreservedPackage,
     sheets: &[PlannedSheet],
@@ -1074,7 +1393,11 @@ fn merged_content_types(
     styles: Option<&PlannedPart>,
     theme: Option<&PlannedPart>,
     edited: bool,
+    comments: CommentContentTypes<'_>,
 ) -> Result<Vec<u8>, ParseError> {
+    let comment_overrides = comments.overrides;
+    let removed_part_names = comments.removed_part_names;
+    let wrote_vml = comments.wrote_vml;
     let mut desired = BTreeMap::new();
     let strict = package.workbook_template.root_namespace() == Some(NS_STRICT_MAIN);
     desired.insert(
@@ -1129,6 +1452,9 @@ fn merged_content_types(
                 .unwrap_or(CT_THEME),
         );
     }
+    for path in comment_overrides {
+        desired.insert(normalized_part_name(path), CT_COMMENTS);
+    }
 
     let mut source_owned = HashSet::from([normalized_part_name("xl/workbook.xml")]);
     source_owned.extend(
@@ -1178,6 +1504,9 @@ fn merged_content_types(
         if edited && calc_chain_paths.contains(&normalized) {
             continue;
         }
+        if removed_part_names.contains(&normalized) {
+            continue;
+        }
         if source_owned.contains(&normalized) {
             if desired.contains_key(&normalized) && emitted_parts.insert(normalized) {
                 entries.push(entry.clone());
@@ -1185,6 +1514,23 @@ fn merged_content_types(
         } else {
             entries.push(entry.clone());
         }
+    }
+
+    if wrote_vml && !default_extensions.contains_key("vml") {
+        default_extensions.insert("vml".to_owned(), CT_VML.to_owned());
+        entries.push(ContentTypeEntry {
+            element: "Default".to_owned(),
+            attributes: vec![
+                XmlAttribute {
+                    name: "Extension".to_owned(),
+                    value: "vml".to_owned(),
+                },
+                XmlAttribute {
+                    name: "ContentType".to_owned(),
+                    value: CT_VML.to_owned(),
+                },
+            ],
+        });
     }
 
     for (path, content_type) in desired {
@@ -1356,11 +1702,27 @@ fn content_types(wb: &Workbook, have_sst: bool, have_styles: bool) -> Result<Vec
                         .with_attribute(("ContentType", CT_THEME))
                         .write_empty()?;
                 }
+                if wb.sheets.iter().any(|sheet| !sheet.comments.is_empty()) {
+                    w.create_element("Default")
+                        .with_attribute(("Extension", "vml"))
+                        .with_attribute(("ContentType", CT_VML))
+                        .write_empty()?;
+                }
                 for i in 0..wb.sheets.len() {
                     let part = format!("/xl/worksheets/sheet{}.xml", i + 1);
                     w.create_element("Override")
                         .with_attribute(("PartName", part.as_str()))
                         .with_attribute(("ContentType", CT_WORKSHEET))
+                        .write_empty()?;
+                }
+                for (i, sheet) in wb.sheets.iter().enumerate() {
+                    if sheet.comments.is_empty() {
+                        continue;
+                    }
+                    let part = format!("/xl/comments{}.xml", i + 1);
+                    w.create_element("Override")
+                        .with_attribute(("PartName", part.as_str()))
+                        .with_attribute(("ContentType", CT_COMMENTS))
                         .write_empty()?;
                 }
                 Ok(())
@@ -1884,12 +2246,13 @@ fn worksheet_xml_with_namespace(
     main_namespace: &str,
     relationship_namespace: &str,
     links: &HyperlinkPlan,
+    comments: Option<&CommentPlan>,
     shared_string_plan: Option<&SharedStringPlan>,
 ) -> Result<Vec<u8>, ParseError> {
     doc(|writer| {
         let mut root = BytesStart::new("worksheet");
         root.push_attribute(("xmlns", main_namespace));
-        if links.relationships.iter().any(Relationship::is_hyperlink) {
+        if links.relationships.iter().any(Relationship::is_hyperlink) || comments.is_some() {
             root.push_attribute((REL_PREFIX_DECLARATION, relationship_namespace));
         }
         writer.write_event(Event::Start(root))?;
@@ -1905,16 +2268,46 @@ fn worksheet_xml_with_namespace(
         write_auto_filter(writer, sheet)?;
         write_merges(writer, sheet)?;
         write_hyperlinks(writer, sheet, &links.ids, REL_ID_ATTRIBUTE, &[])?;
+        if let Some(plan) = comments {
+            let mut element = BytesStart::new("legacyDrawing");
+            element.push_attribute((REL_ID_ATTRIBUTE, plan.vml_rel_id.as_str()));
+            writer.write_event(Event::Empty(element))?;
+        }
         writer.write_event(Event::End(BytesEnd::new("worksheet")))?;
         Ok(())
     })
 }
 
 /// A retained worksheet and the relationship part backing it, when the model's
-/// hyperlinks moved and the part has to be rewritten.
+/// hyperlinks or comments moved and the part has to be rewritten, plus the
+/// comment parts a save writes or drops next to it.
 struct WorksheetOutput {
     bytes: Vec<u8>,
     relationships: Option<Vec<Relationship>>,
+    comment_parts: Vec<(String, Vec<u8>)>,
+    removed_parts: Vec<String>,
+    new_comment_overrides: Vec<String>,
+    wrote_vml: bool,
+}
+
+impl WorksheetOutput {
+    fn new(bytes: Vec<u8>, relationships: Option<Vec<Relationship>>) -> Self {
+        Self {
+            bytes,
+            relationships,
+            comment_parts: Vec::new(),
+            removed_parts: Vec::new(),
+            new_comment_overrides: Vec::new(),
+            wrote_vml: false,
+        }
+    }
+}
+
+/// Per-sheet shared-string identity: each cell's authored entry plus the
+/// table-wide retention plan.
+struct SheetSharedStrings<'a> {
+    provenance: &'a SharedStringCells,
+    plan: Option<&'a SharedStringPlan>,
 }
 
 /// Preserved fragments (filters, validations, anchors) keep their source
@@ -1925,15 +2318,21 @@ fn worksheet_xml_with_template(
     original: Option<&Sheet>,
     source: &PreservedSheet,
     package: &PreservedPackage,
-    shared_string_cells: &SharedStringCells,
-    shared_string_plan: Option<&SharedStringPlan>,
+    shared_strings: SheetSharedStrings<'_>,
+    used_paths: &mut HashSet<String>,
 ) -> Result<WorksheetOutput, ParseError> {
     let template = &source.template;
     let columns = (!sheet.col_widths.is_empty())
         .then(|| fragment(|writer| write_cols(writer, sheet)))
         .transpose()?;
     let sheet_data = Some(fragment(|writer| {
-        write_sheet_data(writer, sheet, wb, shared_string_cells, shared_string_plan)
+        write_sheet_data(
+            writer,
+            sheet,
+            wb,
+            shared_strings.provenance,
+            shared_strings.plan,
+        )
     })?);
     let merges = (!sheet.merges.is_empty())
         .then(|| fragment(|writer| write_merges(writer, sheet)))
@@ -1957,28 +2356,165 @@ fn worksheet_xml_with_template(
         replacements.push(("autoFilter", auto_filter));
     }
 
+    let hyperlinks_changed =
+        original.is_none_or(|original| original.hyperlinks != sheet.hyperlinks);
+    let comments_changed = original.is_none_or(|original| original.comments != sheet.comments);
     let mut relationships = None;
-    if original.is_none_or(|original| original.hyperlinks != sheet.hyperlinks) {
+    let mut output_extras = WorksheetOutput::new(Vec::new(), None);
+    if hyperlinks_changed || comments_changed {
         let source_relationships = package
             .part_bytes(&relationship_part_path(&source.path))
             .map(parse_relationships)
             .transpose()?
             .unwrap_or_default();
-        let links = HyperlinkPlan::new(
-            sheet,
-            &source_relationships,
-            &relationship_type_from(&package.workbook_relationships, "hyperlink", REL_HYPERLINK),
-        );
-        replacements.push((
-            "hyperlinks",
-            patched_hyperlinks(template, package, sheet, &links)?,
-        ));
-        relationships = Some(links.relationships);
+        let mut merged = if hyperlinks_changed {
+            let links = HyperlinkPlan::new(
+                sheet,
+                &source_relationships,
+                &relationship_type_from(
+                    &package.workbook_relationships,
+                    "hyperlink",
+                    REL_HYPERLINK,
+                ),
+            );
+            replacements.push((
+                "hyperlinks",
+                patched_hyperlinks(template, package, sheet, &links)?,
+            ));
+            links.relationships
+        } else {
+            source_relationships
+        };
+        if comments_changed {
+            let sheet_directory = part_directory(&source.path);
+            match plan_sheet_comments(
+                sheet,
+                &mut merged,
+                &sheet_directory,
+                package,
+                used_paths,
+                &mut output_extras,
+            )? {
+                Some(plan) => {
+                    let namespace = template.root_namespace().unwrap_or(NS_MAIN);
+                    output_extras
+                        .comment_parts
+                        .push((plan.comments_path.clone(), comments_xml(sheet, namespace)?));
+                    output_extras
+                        .comment_parts
+                        .push((plan.vml_path.clone(), vml_drawing_xml(sheet)?));
+                    output_extras.wrote_vml = true;
+                    replacements.push((
+                        "legacyDrawing",
+                        Some(legacy_drawing_fragment(
+                            template,
+                            package,
+                            &plan.vml_rel_id,
+                        )?),
+                    ));
+                }
+                None => replacements.push(("legacyDrawing", None)),
+            }
+        }
+        relationships = Some(merged);
     }
 
-    Ok(WorksheetOutput {
-        bytes: template.render(replacements, worksheet_child_rank)?,
-        relationships,
+    output_extras.bytes = template.render(replacements, worksheet_child_rank)?;
+    output_extras.relationships = relationships;
+    Ok(output_extras)
+}
+
+/// Rebinds the sheet's comments and VML relationships to regenerated parts,
+/// reusing the source ids and paths when they exist and dropping both parts
+/// when the sheet no longer has comments.
+fn plan_sheet_comments(
+    sheet: &Sheet,
+    relationships: &mut Vec<Relationship>,
+    sheet_directory: &str,
+    package: &PreservedPackage,
+    used_paths: &mut HashSet<String>,
+    output: &mut WorksheetOutput,
+) -> Result<Option<CommentPlan>, ParseError> {
+    let source_comments = relationships
+        .iter()
+        .find(|relationship| relationship.has_type("comments"))
+        .cloned();
+    let source_vml = relationships
+        .iter()
+        .find(|relationship| relationship.has_type("vmlDrawing"))
+        .cloned();
+    relationships.retain(|relationship| {
+        !relationship.has_type("comments") && !relationship.has_type("vmlDrawing")
+    });
+    let source_comments_path = source_comments
+        .as_ref()
+        .and_then(Relationship::target)
+        .map(|target| resolve_part_path(sheet_directory, target));
+    let source_vml_path = source_vml
+        .as_ref()
+        .and_then(Relationship::target)
+        .map(|target| resolve_part_path(sheet_directory, target));
+    if sheet.comments.is_empty() {
+        output.removed_parts.extend(source_comments_path);
+        output.removed_parts.extend(source_vml_path);
+        return Ok(None);
+    }
+
+    let mut used_ids: HashSet<String> = relationships
+        .iter()
+        .filter_map(Relationship::id)
+        .map(str::to_owned)
+        .collect();
+    let comments_rel_id = match source_comments.as_ref().and_then(Relationship::id) {
+        Some(id) if used_ids.insert(id.to_owned()) => id.to_owned(),
+        _ => next_relationship_id(&mut used_ids),
+    };
+    let vml_rel_id = match source_vml.as_ref().and_then(Relationship::id) {
+        Some(id) if used_ids.insert(id.to_owned()) => id.to_owned(),
+        _ => next_relationship_id(&mut used_ids),
+    };
+    let comments_path = match source_comments_path {
+        Some(path) => path,
+        None => {
+            let path = next_part_path(used_paths, |index| format!("xl/comments{index}.xml"));
+            output.new_comment_overrides.push(path.clone());
+            path
+        }
+    };
+    let vml_path = source_vml_path.unwrap_or_else(|| {
+        next_part_path(used_paths, |index| {
+            format!("xl/drawings/vmlDrawing{index}.vml")
+        })
+    });
+    let plan = CommentPlan {
+        comments_path,
+        vml_path,
+        comments_rel_id,
+        vml_rel_id,
+    };
+    relationships.extend(plan.relationships(
+        sheet_directory,
+        &relationship_type(package, "comments", REL_COMMENTS),
+        &relationship_type(package, "vmlDrawing", REL_VML),
+    ));
+    Ok(Some(plan))
+}
+
+fn legacy_drawing_fragment(
+    template: &XmlTemplate,
+    package: &PreservedPackage,
+    vml_rel_id: &str,
+) -> Result<Vec<u8>, ParseError> {
+    let namespace = fragment_relationship_namespace(template, package)?;
+    let declared = template.declares_namespace(GENERATED_REL_PREFIX, &namespace);
+    fragment(|writer| {
+        let mut element = BytesStart::new("legacyDrawing");
+        if !declared {
+            element.push_attribute((REL_PREFIX_DECLARATION, namespace.as_str()));
+        }
+        element.push_attribute((REL_ID_ATTRIBUTE, vml_rel_id));
+        writer.write_event(Event::Empty(element))?;
+        Ok(())
     })
 }
 

@@ -3,8 +3,8 @@
 
 use xlsx_model::styles::{BorderStyle, Color, Fill, FormatCode, HAlign, VAlign};
 use xlsx_model::{
-    AutoFilter, AutoFilterColumn, Cell, CellRange, CellRef, CellValue, DateSystem, DefinedName,
-    ErrorValue, FreezePane, Hyperlink, SheetId, Workbook,
+    AutoFilter, AutoFilterColumn, Cell, CellRange, CellRef, CellValue, Comment, DateSystem,
+    DefinedName, ErrorValue, FreezePane, Hyperlink, SheetId, Workbook,
 };
 
 use crate::write::{serialize_workbook_with_package, serialize_workbook_with_package_and_origins};
@@ -407,6 +407,7 @@ type Snapshot = (
         Vec<(u32, f64)>,
         Option<FreezePane>,
         Vec<Hyperlink>,
+        Vec<(String, Comment)>,
     )>,
     DateSystem,
     Vec<String>,
@@ -425,6 +426,11 @@ fn snapshot(wb: &Workbook) -> Snapshot {
             let merges = s.merges.iter().map(|m| m.to_a1()).collect();
             let widths = s.col_widths.iter().map(|(&k, &v)| (k, v)).collect();
             let heights = s.row_heights.iter().map(|(&k, &v)| (k, v)).collect();
+            let comments = s
+                .comments
+                .iter()
+                .map(|(&(row, col), comment)| (CellRef::new(row, col).to_a1(), comment.clone()))
+                .collect();
             (
                 s.name.clone(),
                 cells,
@@ -433,6 +439,7 @@ fn snapshot(wb: &Workbook) -> Snapshot {
                 heights,
                 s.freeze_pane,
                 s.hyperlinks.clone(),
+                comments,
             )
         })
         .collect();
@@ -1896,4 +1903,238 @@ fn keeps_saving_ordinary_edits_to_a_charted_workbook() {
     )
     .unwrap();
     assert_eq!(parse_workbook(&added).unwrap().sheets.len(), 3);
+}
+
+fn note(author: &str, text: &str) -> Comment {
+    Comment {
+        author: author.into(),
+        text: text.into(),
+    }
+}
+
+fn commented_package() -> Vec<(String, Vec<u8>)> {
+    let body = r#"<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData><legacyDrawing r:id="rIdVml"/>"#;
+    let mut parts = package(body, &[], false);
+    parts.push((
+        "xl/worksheets/_rels/sheet1.xml.rels".to_owned(),
+        br#"<Relationships><Relationship Id="rIdComments" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/><Relationship Id="rIdVml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing1.vml"/></Relationships>"#.to_vec(),
+    ));
+    parts.push((
+        "xl/comments1.xml".to_owned(),
+        concat!(
+            r#"<comments><authors><author>Ada</author><author>Grace</author></authors>"#,
+            r#"<commentList>"#,
+            r#"<comment ref="A1" authorId="0"><text><t>plain note</t></text></comment>"#,
+            r#"<comment ref="C3" authorId="1"><text><r><rPr><b/></rPr><t>Rich </t></r><r><t>runs</t></r></text></comment>"#,
+            r#"</commentList></comments>"#,
+        )
+        .as_bytes()
+        .to_vec(),
+    ));
+    parts.push((
+        "xl/drawings/vmlDrawing1.vml".to_owned(),
+        br#"<xml xmlns:v="urn:schemas-microsoft-com:vml"><v:shape id="_x0000_s1025"/></xml>"#
+            .to_vec(),
+    ));
+    parts
+}
+
+#[test]
+fn parses_comments_with_plain_and_rich_run_text() {
+    let parsed = parse_workbook(&commented_package()).unwrap();
+    let comments = &parsed.sheets[0].comments;
+    assert_eq!(comments.len(), 2);
+    assert_eq!(comments.get(&(0, 0)), Some(&note("Ada", "plain note")));
+    assert_eq!(comments.get(&(2, 2)), Some(&note("Grace", "Rich runs")));
+}
+
+#[test]
+fn serialized_comments_round_trip_with_vml_rels_and_content_types() {
+    let parsed = parse_workbook(&commented_package()).unwrap();
+    let saved = serialize_workbook(&parsed).unwrap();
+
+    let comments = String::from_utf8(part_bytes(&saved, "xl/comments1.xml")).unwrap();
+    assert!(
+        comments.contains(r#"<comment ref="A1" authorId="0">"#),
+        "{comments}"
+    );
+    assert!(comments.contains("<author>Ada</author>"), "{comments}");
+    assert!(comments.find("<authors>").unwrap() < comments.find("<commentList>").unwrap());
+
+    let vml = String::from_utf8(part_bytes(&saved, "xl/drawings/vmlDrawing1.vml")).unwrap();
+    assert!(vml.contains(r#"<v:shapetype id="_x0000_t202""#), "{vml}");
+    assert!(vml.contains(r#"<x:ClientData ObjectType="Note">"#), "{vml}");
+    assert!(vml.contains("<x:Row>0</x:Row>"), "{vml}");
+    assert!(vml.contains("<x:Row>2</x:Row>"), "{vml}");
+    assert_eq!(vml.matches("<v:shape ").count(), 2);
+
+    let sheet = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    let legacy_id = sheet
+        .split_once(r#"<legacyDrawing r:id=""#)
+        .map(|(_, rest)| rest.split_once('"').unwrap().0.to_owned())
+        .expect("worksheet must reference the legacy drawing");
+    let rels =
+        String::from_utf8(part_bytes(&saved, "xl/worksheets/_rels/sheet1.xml.rels")).unwrap();
+    assert!(rels.contains(&format!(r#"Id="{legacy_id}""#)), "{rels}");
+    assert!(rels.contains("../comments1.xml"), "{rels}");
+    assert!(rels.contains("../drawings/vmlDrawing1.vml"), "{rels}");
+
+    let content_types = String::from_utf8(part_bytes(&saved, "[Content_Types].xml")).unwrap();
+    assert!(
+        content_types.contains(
+            r#"PartName="/xl/comments1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml""#
+        ),
+        "{content_types}"
+    );
+    assert!(
+        content_types.contains(
+            r#"Extension="vml" ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing""#
+        ),
+        "{content_types}"
+    );
+
+    let reparsed = parse_workbook(&saved).unwrap();
+    assert_eq!(snapshot(&reparsed), snapshot(&parsed));
+    assert_eq!(reparsed.sheets[0].comments, parsed.sheets[0].comments);
+}
+
+#[test]
+fn unchanged_comments_keep_source_parts_byte_identical() {
+    let parts = commented_package();
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+
+    let mut workbook = parsed.workbook.clone();
+    workbook.sheets[0].set_cell(
+        CellRef::parse_a1("B9").unwrap(),
+        Cell {
+            value: CellValue::Number { value: 5.0 },
+            ..Cell::default()
+        },
+    );
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+
+    assert_eq!(
+        part_bytes(&saved, "xl/comments1.xml"),
+        part_bytes(&parts, "xl/comments1.xml")
+    );
+    assert_eq!(
+        part_bytes(&saved, "xl/drawings/vmlDrawing1.vml"),
+        part_bytes(&parts, "xl/drawings/vmlDrawing1.vml")
+    );
+    assert_eq!(
+        part_bytes(&saved, "xl/worksheets/_rels/sheet1.xml.rels"),
+        part_bytes(&parts, "xl/worksheets/_rels/sheet1.xml.rels")
+    );
+    let sheet = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(
+        sheet.contains(r#"<legacyDrawing r:id="rIdVml"/>"#),
+        "{sheet}"
+    );
+}
+
+#[test]
+fn edited_comments_regenerate_parts_and_keep_source_paths_and_ids() {
+    let parts = commented_package();
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+
+    let mut workbook = parsed.workbook.clone();
+    workbook.sheets[0].set_comment(
+        CellRef::parse_a1("A1").unwrap(),
+        Some(note("Ada", "rewritten")),
+    );
+    workbook.sheets[0].set_comment(CellRef::parse_a1("C3").unwrap(), None);
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+
+    let comments = String::from_utf8(part_bytes(&saved, "xl/comments1.xml")).unwrap();
+    assert!(comments.contains("rewritten"), "{comments}");
+    assert!(!comments.contains("Rich"), "{comments}");
+    let vml = String::from_utf8(part_bytes(&saved, "xl/drawings/vmlDrawing1.vml")).unwrap();
+    assert_eq!(vml.matches("<v:shape ").count(), 1);
+    let rels =
+        String::from_utf8(part_bytes(&saved, "xl/worksheets/_rels/sheet1.xml.rels")).unwrap();
+    assert!(rels.contains(r#"Id="rIdComments""#), "{rels}");
+    assert!(rels.contains(r#"Id="rIdVml""#), "{rels}");
+    let sheet = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(sheet.contains(r#"<legacyDrawing"#), "{sheet}");
+    assert!(sheet.contains(r#"r:id="rIdVml""#), "{sheet}");
+
+    assert_eq!(
+        parse_workbook(&saved).unwrap().sheets[0].comments,
+        workbook.sheets[0].comments
+    );
+}
+
+#[test]
+fn adding_comments_to_a_plain_sheet_wires_parts_rels_and_content_types() {
+    let parts = package(r#"<sheetData/>"#, &[], false);
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+
+    let mut workbook = parsed.workbook.clone();
+    workbook.sheets[0].set_comment(
+        CellRef::parse_a1("B2").unwrap(),
+        Some(note("Ada", "fresh note")),
+    );
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+
+    let comments = String::from_utf8(part_bytes(&saved, "xl/comments1.xml")).unwrap();
+    assert!(comments.contains("fresh note"), "{comments}");
+    part_bytes(&saved, "xl/drawings/vmlDrawing1.vml");
+    let sheet = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    let legacy_id = sheet
+        .split_once(r#"<legacyDrawing"#)
+        .and_then(|(_, rest)| rest.split_once(r#"id=""#))
+        .map(|(_, rest)| rest.split_once('"').unwrap().0.to_owned())
+        .expect("worksheet must reference the legacy drawing");
+    let rels =
+        String::from_utf8(part_bytes(&saved, "xl/worksheets/_rels/sheet1.xml.rels")).unwrap();
+    assert!(rels.contains(&format!(r#"Id="{legacy_id}""#)), "{rels}");
+    let content_types = String::from_utf8(part_bytes(&saved, "[Content_Types].xml")).unwrap();
+    assert!(
+        content_types.contains(r#"PartName="/xl/comments1.xml""#),
+        "{content_types}"
+    );
+    assert!(
+        content_types.contains(r#"Extension="vml""#),
+        "{content_types}"
+    );
+
+    assert_eq!(
+        parse_workbook(&saved).unwrap().sheets[0].comments,
+        workbook.sheets[0].comments
+    );
+}
+
+#[test]
+fn clearing_every_comment_drops_the_parts_rels_and_content_types() {
+    let parts = commented_package();
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+
+    let mut workbook = parsed.workbook.clone();
+    workbook.sheets[0].comments.clear();
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+
+    assert!(!saved.iter().any(|(name, _)| name == "xl/comments1.xml"));
+    assert!(
+        !saved
+            .iter()
+            .any(|(name, _)| name == "xl/drawings/vmlDrawing1.vml")
+    );
+    let sheet = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(!sheet.contains("<legacyDrawing"), "{sheet}");
+    assert!(
+        !saved
+            .iter()
+            .any(|(name, _)| name == "xl/worksheets/_rels/sheet1.xml.rels"),
+        "an empty relationship part must be dropped with its last relationship"
+    );
+    let content_types = String::from_utf8(part_bytes(&saved, "[Content_Types].xml")).unwrap();
+    assert!(
+        !content_types.contains("/xl/comments1.xml"),
+        "{content_types}"
+    );
+    assert!(
+        parse_workbook(&saved).unwrap().sheets[0]
+            .comments
+            .is_empty()
+    );
 }

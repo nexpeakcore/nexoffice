@@ -3890,3 +3890,289 @@ fn collaborative_sessions_refuse_every_op_that_rewrites_defined_names() {
         .unwrap();
     assert_eq!(left.model().defined_names, right.model().defined_names);
 }
+
+fn comment(author: &str, text: &str) -> betteroffice_xlsx::Comment {
+    betteroffice_xlsx::Comment {
+        author: author.to_owned(),
+        text: text.to_owned(),
+    }
+}
+
+#[test]
+fn comments_survive_save_and_reopen_via_the_json_op_path() {
+    let mut model = WorkbookModel::default();
+    let mut sheet = Sheet::new("Data");
+    sheet.set_cell(
+        cell("A1"),
+        Cell {
+            value: CellValue::Number { value: 1.0 },
+            ..Cell::default()
+        },
+    );
+    model.sheets.push(sheet);
+    let original =
+        ooxml_opc::rezip_parts(&xlsx_parse::serialize_workbook(&model).unwrap()).unwrap();
+
+    let mut workbook = Workbook::open(&original).unwrap();
+    let op: Op = serde_json::from_value(serde_json::json!({
+        "type": "setComment",
+        "sheet": 0,
+        "cell": {"row": 0, "col": 0},
+        "comment": {"author": "Ada", "text": "checked by hand"}
+    }))
+    .unwrap();
+    let result = workbook
+        .apply_ops(vec![op], CalculationOptions::default())
+        .unwrap();
+    assert!(result.applied);
+    assert_eq!(
+        workbook.model().sheets[0].comment_at(cell("A1")),
+        Some(&comment("Ada", "checked by hand"))
+    );
+
+    let reopened = Workbook::open(&workbook.save().unwrap()).unwrap();
+    assert_eq!(
+        reopened.model().sheets[0].comment_at(cell("A1")),
+        Some(&comment("Ada", "checked by hand"))
+    );
+    let parts = package_map(&workbook.save().unwrap());
+    assert!(parts.contains_key("xl/comments1.xml"));
+    assert!(parts.contains_key("xl/drawings/vmlDrawing1.vml"));
+    assert!(
+        String::from_utf8(parts["xl/worksheets/sheet1.xml"].clone())
+            .unwrap()
+            .contains("<legacyDrawing")
+    );
+}
+
+#[test]
+fn set_comment_is_one_undo_step_and_redo_replays_it() {
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    workbook
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(0),
+                cell: cell("A1"),
+                comment: Some(comment("Ada", "first")),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    workbook
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(0),
+                cell: cell("A1"),
+                comment: Some(comment("Grace", "second")),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+
+    workbook.undo(CalculationOptions::default()).unwrap();
+    assert_eq!(
+        workbook.model().sheets[0].comment_at(cell("A1")),
+        Some(&comment("Ada", "first"))
+    );
+    workbook.undo(CalculationOptions::default()).unwrap();
+    assert!(workbook.model().sheets[0].comments.is_empty());
+    workbook.redo(CalculationOptions::default()).unwrap();
+    workbook.redo(CalculationOptions::default()).unwrap();
+    assert_eq!(
+        workbook.model().sheets[0].comment_at(cell("A1")),
+        Some(&comment("Grace", "second"))
+    );
+}
+
+#[test]
+fn structural_edits_move_comments_and_undo_restores_them() {
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    workbook
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(0),
+                cell: cell("A2"),
+                comment: Some(comment("Ada", "movable")),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    let before = workbook.model().sheets[0].comments.clone();
+
+    workbook
+        .apply_ops(
+            vec![Op::InsertRows {
+                sheet: SheetId(0),
+                at: 0,
+                count: 3,
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        workbook.model().sheets[0].comment_at(cell("A5")),
+        Some(&comment("Ada", "movable"))
+    );
+    workbook.undo(CalculationOptions::default()).unwrap();
+    assert_eq!(workbook.model().sheets[0].comments, before);
+
+    workbook
+        .apply_ops(
+            vec![Op::DeleteRows {
+                sheet: SheetId(0),
+                at: 1,
+                count: 1,
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    assert!(workbook.model().sheets[0].comments.is_empty());
+    workbook.undo(CalculationOptions::default()).unwrap();
+    assert_eq!(workbook.model().sheets[0].comments, before);
+}
+
+#[test]
+fn untouched_comments_keep_source_parts_byte_identical_through_edits() {
+    let original = preservation_fixture();
+    let before = package_map(&original);
+    let mut workbook = Workbook::open(&original).unwrap();
+    assert_eq!(
+        workbook.model().sheets[0].comment_at(cell("B2")),
+        Some(&comment("BetterOffice", "keep me"))
+    );
+    workbook
+        .edit_cell(
+            SheetId(0),
+            cell("A1"),
+            "edited",
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    let after = package_map(&workbook.save().unwrap());
+    assert_eq!(after["xl/comments1.xml"], before["xl/comments1.xml"]);
+    assert_eq!(
+        after["xl/drawings/vmlDrawing1.vml"],
+        before["xl/drawings/vmlDrawing1.vml"]
+    );
+    assert_eq!(
+        after["xl/worksheets/_rels/sheet1.xml.rels"],
+        before["xl/worksheets/_rels/sheet1.xml.rels"]
+    );
+}
+
+#[test]
+fn editing_a_comment_regenerates_the_parts_and_survives_reopen() {
+    let mut workbook = Workbook::open(&preservation_fixture()).unwrap();
+    workbook
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(0),
+                cell: cell("B2"),
+                comment: Some(comment("BetterOffice", "rewritten note")),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    let saved = workbook.save().unwrap();
+    let parts = package_map(&saved);
+    let comments = String::from_utf8(parts["xl/comments1.xml"].clone()).unwrap();
+    assert!(comments.contains("rewritten note"), "{comments}");
+    assert!(!comments.contains("keep me"), "{comments}");
+    let rels = String::from_utf8(parts["xl/worksheets/_rels/sheet1.xml.rels"].clone()).unwrap();
+    assert!(rels.contains(r#"Id="rIdComments""#), "{rels}");
+    assert!(rels.contains(r#"Id="rIdVml""#), "{rels}");
+    let worksheet = String::from_utf8(parts["xl/worksheets/sheet1.xml"].clone()).unwrap();
+    assert!(worksheet.contains(r#"r:id="rIdVml""#), "{worksheet}");
+
+    let reopened = Workbook::open(&saved).unwrap();
+    assert_eq!(
+        reopened.model().sheets[0].comment_at(cell("B2")),
+        Some(&comment("BetterOffice", "rewritten note"))
+    );
+}
+
+#[test]
+fn comments_reach_collaborative_replicas_and_local_comment_ops_are_refused() {
+    let original = preservation_fixture();
+    let mut left = Workbook::open_collaborative(&original, 1301).unwrap();
+    let mut right = Workbook::open_collaborative(&original, 1302).unwrap();
+    assert_eq!(
+        left.model().sheets[0].comment_at(cell("B2")),
+        Some(&comment("BetterOffice", "keep me"))
+    );
+
+    let error = left
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(0),
+                cell: cell("B2"),
+                comment: None,
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(error, Error::CollaborativeStructureOperation));
+
+    left.edit_cell(
+        SheetId(0),
+        cell("A1"),
+        "sync",
+        CalculationOptions::default(),
+    )
+    .unwrap();
+    let update = left
+        .encode_diff_v1(&right.encode_state_vector_v1())
+        .unwrap();
+    right
+        .apply_update_v1(&update, CalculationOptions::default())
+        .unwrap();
+    assert_eq!(
+        right.model().sheets[0].comment_at(cell("B2")),
+        Some(&comment("BetterOffice", "keep me"))
+    );
+    assert_eq!(
+        left.model().sheets[0].comments,
+        right.model().sheets[0].comments
+    );
+}
+
+#[test]
+fn set_comment_validates_sheet_cell_and_field_lengths() {
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    let missing_sheet = workbook
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(9),
+                cell: cell("A1"),
+                comment: Some(comment("Ada", "nope")),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(missing_sheet, Error::SheetOutOfRange(_)));
+
+    let out_of_range = workbook
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(0),
+                cell: CellRef::new(2_000_000, 0),
+                comment: Some(comment("Ada", "nope")),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(out_of_range, Error::CellOutOfRange(_)));
+
+    let oversized = workbook
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(0),
+                cell: cell("A1"),
+                comment: Some(comment("Ada", &"x".repeat(40_000))),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(oversized, Error::InvalidOperation(_)));
+    assert!(workbook.model().sheets[0].comments.is_empty());
+}

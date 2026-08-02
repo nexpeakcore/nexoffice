@@ -52,6 +52,14 @@ pub struct AutoFilterColumn {
     pub show_blanks: bool,
 }
 
+/// a classic cell note: plain text plus its author. rich runs collapse to
+/// concatenated text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Comment {
+    pub author: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hyperlink {
     pub range: CellRange,
@@ -82,6 +90,7 @@ pub struct Sheet {
     /// rows explicitly hidden (by a filter or a manual hide).
     pub hidden_rows: BTreeSet<RowId>,
     pub auto_filter: Option<AutoFilter>,
+    pub comments: BTreeMap<(RowId, ColId), Comment>,
 }
 
 impl Sheet {
@@ -135,6 +144,19 @@ impl Sheet {
 
     pub fn is_row_hidden(&self, row: RowId) -> bool {
         self.hidden_rows.contains(&row)
+    }
+
+    pub fn comment_at(&self, at: CellRef) -> Option<&Comment> {
+        self.comments.get(&(at.row, at.col))
+    }
+
+    /// set, replace, or (`None`) delete the comment at `at`, returning the
+    /// previous one.
+    pub fn set_comment(&mut self, at: CellRef, comment: Option<Comment>) -> Option<Comment> {
+        match comment {
+            Some(comment) => self.comments.insert((at.row, at.col), comment),
+            None => self.comments.remove(&(at.row, at.col)),
+        }
     }
 
     pub fn hyperlink_at(&self, at: CellRef) -> Option<&Hyperlink> {
@@ -378,6 +400,28 @@ mod tests {
         sheet.show_row(3);
         assert!(!sheet.is_row_hidden(3));
         assert!(sheet.is_row_hidden(5));
+    }
+
+    #[test]
+    fn comments_set_replace_and_delete() {
+        let mut sheet = Sheet::new("Data");
+        let b2 = CellRef::parse_a1("B2").unwrap();
+        assert!(sheet.comment_at(b2).is_none());
+
+        let first = Comment {
+            author: "Ada".into(),
+            text: "check this".into(),
+        };
+        assert_eq!(sheet.set_comment(b2, Some(first.clone())), None);
+        assert_eq!(sheet.comment_at(b2), Some(&first));
+
+        let second = Comment {
+            author: "Grace".into(),
+            text: "done".into(),
+        };
+        assert_eq!(sheet.set_comment(b2, Some(second.clone())), Some(first));
+        assert_eq!(sheet.set_comment(b2, None), Some(second));
+        assert!(sheet.comments.is_empty());
     }
 
     #[test]

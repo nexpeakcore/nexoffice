@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 use xlsx_model::{
-    AutoFilter, Cell, CellFormat, CellRange, CellRef, CellValue, DateSystem, DefinedName,
-    ErrorValue, FreezePane, Hyperlink, MAX_COLS, MAX_ROWS, RowId, Sheet, SheetId, Stylesheet,
-    Workbook as WorkbookModel,
+    AutoFilter, Cell, CellFormat, CellRange, CellRef, CellValue, ColId, Comment, DateSystem,
+    DefinedName, ErrorValue, FreezePane, Hyperlink, MAX_COLS, MAX_ROWS, RowId, Sheet, SheetId,
+    Stylesheet, Workbook as WorkbookModel,
 };
 use xlsx_ops::Op;
 use yrs::block::{
@@ -32,10 +32,12 @@ const SHEETS: &str = "xlsx:sheets";
 const MIN_SUPPORTED_SCHEMA_VERSION: i64 = 3;
 const FREEZE_PANE_SCHEMA_VERSION: i64 = 4;
 const HYPERLINKS_SCHEMA_VERSION: i64 = 5;
-const SCHEMA_VERSION: i64 = 6;
+const AUTO_FILTER_SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 const BASE_FINGERPRINT: &str = "baseFingerprint";
 const STRUCTURE_GENERATION: &str = "structureGeneration";
 const AUTO_FILTER: &str = "autoFilter";
+const COMMENTS: &str = "comments";
 const CONTENTS: &str = "contents";
 const COL_WIDTHS: &str = "colWidths";
 const FREEZE_PANE: &str = "freezePane";
@@ -55,6 +57,8 @@ const MAX_UPDATE_VALUES: usize = 1_000_000;
 const MAX_UPDATE_DELETE_RANGES: usize = 1_000_000;
 const MAX_HYPERLINKS_PER_SHEET: usize = 65_536;
 const MAX_HYPERLINK_FIELD_BYTES: usize = 32_767;
+const MAX_COMMENTS_PER_SHEET: usize = 65_536;
+const MAX_COMMENT_FIELD_BYTES: usize = 32_767;
 const UNDO_CAPTURE_TIMEOUT_MS: u64 = 500;
 pub(crate) const MAX_STATE_VECTOR_ENTRIES: u32 = 65_536;
 
@@ -89,6 +93,7 @@ pub(crate) enum AuthorityError {
 struct WorkbookBase {
     auto_filters: Vec<Option<AutoFilter>>,
     bootstrap_client_id: u64,
+    comments: Vec<BTreeMap<(RowId, ColId), Comment>>,
     date_system: DateSystem,
     defined_names: Vec<DefinedName>,
     fingerprint: String,
@@ -120,6 +125,11 @@ impl WorkbookBase {
                 .map(|sheet| sheet.auto_filter.clone())
                 .collect(),
             bootstrap_client_id,
+            comments: model
+                .sheets
+                .iter()
+                .map(|sheet| sheet.comments.clone())
+                .collect(),
             date_system: model.date_system,
             defined_names: model.defined_names.clone(),
             fingerprint,
@@ -599,9 +609,16 @@ impl WorkbookAuthority {
                     .map_err(|error| format!("cannot encode sheet auto filter: {error}"))?;
                 let hidden_rows = serde_json::to_string(&sheet.hidden_rows)
                     .map_err(|error| format!("cannot encode sheet hidden rows: {error}"))?;
+                let comments = comments_to_json(&sheet.comments)?;
                 Ok((
                     key.clone(),
-                    (sheet.freeze_pane, hyperlinks, auto_filter, hidden_rows),
+                    (
+                        sheet.freeze_pane,
+                        hyperlinks,
+                        auto_filter,
+                        hidden_rows,
+                        comments,
+                    ),
                 ))
             })
             .collect::<Result<BTreeMap<_, _>, String>>()?;
@@ -615,26 +632,32 @@ impl WorkbookAuthority {
                 .get(&txn, &key)
                 .and_then(|value| value.cast::<MapRef>().ok())
                 .ok_or_else(|| format!("sheet {key} is not a map"))?;
-            let (freeze_pane, hyperlinks, auto_filter, hidden_rows) = features
+            let (freeze_pane, hyperlinks, auto_filter, hidden_rows, comments) = features
                 .get(&key)
-                .map(|(freeze_pane, hyperlinks, auto_filter, hidden_rows)| {
-                    (
-                        *freeze_pane,
-                        hyperlinks.as_str(),
-                        auto_filter.as_str(),
-                        hidden_rows.as_str(),
-                    )
-                })
-                .unwrap_or((None, "[]", "null", "[]"));
+                .map(
+                    |(freeze_pane, hyperlinks, auto_filter, hidden_rows, comments)| {
+                        (
+                            *freeze_pane,
+                            hyperlinks.as_str(),
+                            auto_filter.as_str(),
+                            hidden_rows.as_str(),
+                            comments.as_str(),
+                        )
+                    },
+                )
+                .unwrap_or((None, "[]", "null", "[]", "[]"));
             if version < FREEZE_PANE_SCHEMA_VERSION {
                 sheet.try_update(&mut txn, FREEZE_PANE, freeze_pane_to_any(freeze_pane));
             }
             if version < HYPERLINKS_SCHEMA_VERSION {
                 sheet.try_update(&mut txn, HYPERLINKS, hyperlinks);
             }
-            if version < SCHEMA_VERSION {
+            if version < AUTO_FILTER_SCHEMA_VERSION {
                 sheet.try_update(&mut txn, AUTO_FILTER, auto_filter);
                 sheet.try_update(&mut txn, HIDDEN_ROWS, hidden_rows);
+            }
+            if version < SCHEMA_VERSION {
+                sheet.try_update(&mut txn, COMMENTS, comments);
             }
         }
         let meta = txn
@@ -738,6 +761,7 @@ impl WorkbookAuthority {
             }
             let fallback = SheetFallback {
                 auto_filter: self.base.auto_filters.get(index).and_then(Option::as_ref),
+                comments: self.base.comments.get(index),
                 freeze_pane: self.base.freeze_panes.get(index).copied().flatten(),
                 hidden_rows: self.base.hidden_rows.get(index),
                 hyperlinks: self
@@ -1118,6 +1142,7 @@ pub(crate) fn is_structural_op(op: &Op) -> bool {
             | Op::SetAutoFilter { .. }
             | Op::SetHiddenRows { .. }
             | Op::SetHyperlinks { .. }
+            | Op::SetComment { .. }
             | Op::MergeCells { .. }
             | Op::UnmergeCells { .. }
             | Op::AddSheet { .. }
@@ -1888,6 +1913,7 @@ fn requires_full_semantic_sync(op: &Op) -> bool {
             | Op::SetAutoFilter { .. }
             | Op::SetHiddenRows { .. }
             | Op::SetHyperlinks { .. }
+            | Op::SetComment { .. }
             | Op::RenameSheet { .. }
             | Op::RestoreSheet { .. }
     )
@@ -1982,6 +2008,7 @@ fn op_sheet(op: &Op) -> Option<SheetId> {
         | Op::SetAutoFilter { sheet, .. }
         | Op::SetHiddenRows { sheet, .. }
         | Op::SetHyperlinks { sheet, .. }
+        | Op::SetComment { sheet, .. }
         | Op::MergeCells { sheet, .. }
         | Op::UnmergeCells { sheet, .. }
         | Op::PatchRangeStyle { sheet, .. }
@@ -2077,6 +2104,7 @@ fn sync_sheet(
     let auto_filter = serde_json::to_string(&sheet.auto_filter)
         .map_err(|error| format!("cannot encode sheet auto filter: {error}"))?;
     sheet_map.try_update(txn, AUTO_FILTER, auto_filter);
+    sheet_map.try_update(txn, COMMENTS, comments_to_json(&sheet.comments)?);
     sheet_map.try_update(txn, FREEZE_PANE, freeze_pane_to_any(sheet.freeze_pane));
     let hidden_rows = serde_json::to_string(&sheet.hidden_rows)
         .map_err(|error| format!("cannot encode sheet hidden rows: {error}"))?;
@@ -2302,6 +2330,7 @@ fn sync_number(map: &MapRef, txn: &mut TransactionMut<'_>, index: u32, value: Op
 #[derive(Default)]
 struct SheetFallback<'a> {
     auto_filter: Option<&'a AutoFilter>,
+    comments: Option<&'a BTreeMap<(RowId, ColId), Comment>>,
     freeze_pane: Option<FreezePane>,
     hidden_rows: Option<&'a BTreeSet<RowId>>,
     hyperlinks: &'a [Hyperlink],
@@ -2377,7 +2406,7 @@ fn materialize_sheet<T: ReadTxn>(
         _ => fallback.hyperlinks.to_vec(),
     };
     sheet.auto_filter = match (version, sheet_map.get(txn, AUTO_FILTER)) {
-        (SCHEMA_VERSION.., Some(value)) => {
+        (AUTO_FILTER_SCHEMA_VERSION.., Some(value)) => {
             let json = value
                 .cast::<String>()
                 .map_err(|_| "sheet auto filter is not a string".to_string())?;
@@ -2388,11 +2417,13 @@ fn materialize_sheet<T: ReadTxn>(
             }
             auto_filter
         }
-        (SCHEMA_VERSION.., None) => return Err("sheet is missing its auto filter".to_string()),
+        (AUTO_FILTER_SCHEMA_VERSION.., None) => {
+            return Err("sheet is missing its auto filter".to_string());
+        }
         _ => fallback.auto_filter.cloned(),
     };
     sheet.hidden_rows = match (version, sheet_map.get(txn, HIDDEN_ROWS)) {
-        (SCHEMA_VERSION.., Some(value)) => {
+        (AUTO_FILTER_SCHEMA_VERSION.., Some(value)) => {
             let json = value
                 .cast::<String>()
                 .map_err(|_| "sheet hidden rows are not a string".to_string())?;
@@ -2401,8 +2432,20 @@ fn materialize_sheet<T: ReadTxn>(
             validate_hidden_rows(&rows)?;
             rows.into_iter().collect()
         }
-        (SCHEMA_VERSION.., None) => return Err("sheet is missing its hidden rows".to_string()),
+        (AUTO_FILTER_SCHEMA_VERSION.., None) => {
+            return Err("sheet is missing its hidden rows".to_string());
+        }
         _ => fallback.hidden_rows.cloned().unwrap_or_default(),
+    };
+    sheet.comments = match (version, sheet_map.get(txn, COMMENTS)) {
+        (SCHEMA_VERSION.., Some(value)) => {
+            let json = value
+                .cast::<String>()
+                .map_err(|_| "sheet comments are not a string".to_string())?;
+            comments_from_json(&json)?
+        }
+        (SCHEMA_VERSION.., None) => return Err("sheet is missing its comments".to_string()),
+        _ => fallback.comments.cloned().unwrap_or_default(),
     };
     sheet.merges = match sheet_map.get(txn, MERGES) {
         Some(Out::Any(value)) => merges_from_any(&value)?,
@@ -2521,11 +2564,25 @@ fn sheet_schema_keys(version: i64) -> &'static [&'static str] {
         ROW_HEIGHTS,
         STYLES,
     ];
+    const V7: &[&str] = &[
+        AUTO_FILTER,
+        COL_WIDTHS,
+        COMMENTS,
+        CONTENTS,
+        FREEZE_PANE,
+        HIDDEN_ROWS,
+        HYPERLINKS,
+        MERGES,
+        NAME,
+        ROW_HEIGHTS,
+        STYLES,
+    ];
     match version {
         MIN_SUPPORTED_SCHEMA_VERSION => V3,
         FREEZE_PANE_SCHEMA_VERSION => V4,
         HYPERLINKS_SCHEMA_VERSION => V5,
-        _ => V6,
+        AUTO_FILTER_SCHEMA_VERSION => V6,
+        _ => V7,
     }
 }
 
@@ -2838,6 +2895,38 @@ fn validate_hidden_rows(rows: &[RowId]) -> Result<(), String> {
     Ok(())
 }
 
+/// comments serialize as `[row, col, {author, text}]` entries because JSON
+/// map keys cannot carry the tuple address.
+fn comments_to_json(comments: &BTreeMap<(RowId, ColId), Comment>) -> Result<String, String> {
+    let entries = comments
+        .iter()
+        .map(|(&(row, col), comment)| (row, col, comment))
+        .collect::<Vec<_>>();
+    serde_json::to_string(&entries)
+        .map_err(|error| format!("cannot encode sheet comments: {error}"))
+}
+
+fn comments_from_json(json: &str) -> Result<BTreeMap<(RowId, ColId), Comment>, String> {
+    let entries: Vec<(RowId, ColId, Comment)> = serde_json::from_str(json)
+        .map_err(|error| format!("sheet comments are invalid: {error}"))?;
+    if entries.len() > MAX_COMMENTS_PER_SHEET {
+        return Err("sheet has too many comments".to_string());
+    }
+    let mut comments = BTreeMap::new();
+    for (row, col, comment) in entries {
+        if row >= MAX_ROWS || col >= MAX_COLS {
+            return Err("sheet comment cell is out of bounds".to_string());
+        }
+        if comment.author.len() > MAX_COMMENT_FIELD_BYTES
+            || comment.text.len() > MAX_COMMENT_FIELD_BYTES
+        {
+            return Err("sheet comment field exceeds its length limit".to_string());
+        }
+        comments.insert((row, col), comment);
+    }
+    Ok(comments)
+}
+
 fn merges_from_any(value: &Any) -> Result<Vec<CellRange>, String> {
     let Any::Array(merges) = value else {
         return Err("sheet merges are not an array".to_string());
@@ -2913,7 +3002,8 @@ fn fingerprint_model_with_schema(
         3 => b"betteroffice-xlsx-yrs-v3".as_slice(),
         4 => b"betteroffice-xlsx-yrs-v4".as_slice(),
         5 => b"betteroffice-xlsx-yrs-v5".as_slice(),
-        _ => b"betteroffice-xlsx-yrs-v6".as_slice(),
+        6 => b"betteroffice-xlsx-yrs-v6".as_slice(),
+        _ => b"betteroffice-xlsx-yrs-v7".as_slice(),
     };
     hasher.update(domain);
     let base = if include_defined_names {
@@ -2982,13 +3072,22 @@ fn fingerprint_model_with_schema(
                 .map_err(|error| format!("cannot fingerprint sheet hyperlinks: {error}"))?;
             hash_bytes(&mut hasher, &hyperlinks);
         }
-        if schema_version >= SCHEMA_VERSION {
+        if schema_version >= AUTO_FILTER_SCHEMA_VERSION {
             let auto_filter = serde_json::to_vec(&sheet.auto_filter)
                 .map_err(|error| format!("cannot fingerprint sheet auto filter: {error}"))?;
             hash_bytes(&mut hasher, &auto_filter);
             hash_u64(&mut hasher, sheet.hidden_rows.len() as u64);
             for &row in &sheet.hidden_rows {
                 hash_u32(&mut hasher, row);
+            }
+        }
+        if schema_version >= SCHEMA_VERSION {
+            hash_u64(&mut hasher, sheet.comments.len() as u64);
+            for (&(row, col), comment) in &sheet.comments {
+                hash_u32(&mut hasher, row);
+                hash_u32(&mut hasher, col);
+                hash_bytes(&mut hasher, comment.author.as_bytes());
+                hash_bytes(&mut hasher, comment.text.as_bytes());
             }
         }
     }
@@ -3080,6 +3179,13 @@ mod tests {
             }],
         });
         first.hidden_rows.insert(4);
+        first.set_comment(
+            CellRef::new(1, 0),
+            Some(Comment {
+                author: "Ada".into(),
+                text: "shared note".into(),
+            }),
+        );
         first.hyperlinks.push(Hyperlink {
             range: CellRange::new(CellRef::new(1, 0), CellRef::new(1, 0)),
             external_target: Some("https://example.com".into()),
@@ -3127,6 +3233,9 @@ mod tests {
                     .and_then(|value| value.cast::<MapRef>().ok())
                     .unwrap();
                 if version < SCHEMA_VERSION {
+                    sheet.remove(&mut txn, COMMENTS);
+                }
+                if version < AUTO_FILTER_SCHEMA_VERSION {
                     sheet.remove(&mut txn, AUTO_FILTER);
                     sheet.remove(&mut txn, HIDDEN_ROWS);
                 }
@@ -3180,7 +3289,7 @@ mod tests {
     fn known_schema_versions_materialize_and_upgrade_to_current() {
         let model = rich_model();
         for (index, (version, include_defined_names)) in
-            [(3, false), (3, true), (4, true), (5, true)]
+            [(3, false), (3, true), (4, true), (5, true), (6, true)]
                 .into_iter()
                 .enumerate()
         {
@@ -3199,7 +3308,9 @@ mod tests {
     #[test]
     fn legacy_snapshot_merges_into_current_bootstrap() {
         let model = rich_model();
-        for (version, include_defined_names) in [(3, false), (3, true), (4, true), (5, true)] {
+        for (version, include_defined_names) in
+            [(3, false), (3, true), (4, true), (5, true), (6, true)]
+        {
             let update = legacy_update(&model, version, include_defined_names);
             let authority = WorkbookAuthority::from_model_with_client_id(&model, 108).unwrap();
             let staged = authority.stage_updates_v1(&[&update]).unwrap();
@@ -3224,7 +3335,7 @@ mod tests {
         };
         assert_eq!(
             error,
-            "unsupported schema version 7; supported versions are 3 through 6"
+            "unsupported schema version 8; supported versions are 3 through 7"
         );
     }
 

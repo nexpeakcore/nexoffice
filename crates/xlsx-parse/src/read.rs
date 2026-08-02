@@ -6,15 +6,17 @@ use std::collections::BTreeMap;
 use quick_xml::events::Event;
 use xlsx_model::addr::{MAX_COLS, MAX_ROWS};
 use xlsx_model::{
-    AutoFilter, AutoFilterColumn, Cell, CellRange, CellRef, CellValue, DateSystem, DefinedName,
-    ErrorValue, FreezePane, Hyperlink, Sheet, SheetId, Workbook,
+    AutoFilter, AutoFilterColumn, Cell, CellRange, CellRef, CellValue, ColId, Comment, DateSystem,
+    DefinedName, ErrorValue, FreezePane, Hyperlink, RowId, Sheet, SheetId, Workbook,
 };
 
 use crate::styles::parse_stylesheet;
 use crate::xml::{
     attr, collect_text, find_part, local_name, next_event, reader, resolve_part_path,
 };
-use crate::{MAX_CELLS, MAX_DEFINED_NAMES, MAX_HYPERLINKS, MAX_SHARED_STRINGS, ParseError};
+use crate::{
+    MAX_CELLS, MAX_COMMENTS, MAX_DEFINED_NAMES, MAX_HYPERLINKS, MAX_SHARED_STRINGS, ParseError,
+};
 
 /// parse a full workbook from opc parts, resolving sheets through the
 /// workbook relationships.
@@ -66,13 +68,17 @@ pub(crate) fn parse_workbook_indexed(
             .transpose()?
             .unwrap_or_default();
         let mut indices = SharedStringCells::new();
-        sheets.push(parse_worksheet(
+        let mut sheet = parse_worksheet(
             &entry.name,
             bytes,
             &shared_strings,
             &sheet_rels,
             &mut indices,
-        )?);
+        )?;
+        if let Some(bytes) = comments_part(parts, &path, &sheet_rels) {
+            sheet.comments = parse_comments(bytes)?;
+        }
+        sheets.push(sheet);
         shared_string_cells.push(indices);
     }
 
@@ -460,6 +466,72 @@ fn parse_worksheet(
     }
     normalize_merges(&mut sheet.merges);
     Ok(sheet)
+}
+
+/// resolve the worksheet's comments part through its relationships, relative
+/// to the worksheet's own directory.
+fn comments_part<'a>(
+    parts: &'a [(String, Vec<u8>)],
+    worksheet_path: &str,
+    relationships: &BTreeMap<String, Relationship>,
+) -> Option<&'a [u8]> {
+    let directory = worksheet_path
+        .rsplit_once('/')
+        .map(|(directory, _)| directory)
+        .unwrap_or("");
+    let relationship = relationships.values().find(|relationship| {
+        !relationship.external
+            && relationship
+                .kind
+                .as_deref()
+                .is_some_and(|kind| kind.ends_with("/comments"))
+    })?;
+    find_part(parts, &resolve_part_path(directory, &relationship.target))
+}
+
+/// parse a classic `xl/comments{N}.xml` part: the shared authors list plus one
+/// entry per commented cell. `<t>` and rich `<r>` runs both flatten to text.
+fn parse_comments(data: &[u8]) -> Result<BTreeMap<(RowId, ColId), Comment>, ParseError> {
+    let mut reader = reader(data);
+    let mut buf = Vec::new();
+    let mut depth = 0;
+    let mut authors: Vec<String> = Vec::new();
+    let mut comments = BTreeMap::new();
+    let mut current: Option<(CellRef, Option<usize>)> = None;
+
+    loop {
+        match next_event(&mut reader, &mut buf, &mut depth)? {
+            Event::Start(e) => match local_name(&e).as_slice() {
+                b"author" => authors.push(collect_text(&mut reader, &mut buf, &mut depth)?),
+                b"comment" => {
+                    if comments.len() >= MAX_COMMENTS {
+                        return Err(ParseError::TooManyComments);
+                    }
+                    let reference = attr(&e, b"ref")?.unwrap_or_default();
+                    let at = CellRef::parse_a1(&reference).map_err(|_| {
+                        ParseError::Malformed(format!("bad comment ref {reference:?}"))
+                    })?;
+                    let author = attr(&e, b"authorId")?.and_then(|v| v.parse::<usize>().ok());
+                    current = Some((at, author));
+                }
+                b"text" => {
+                    let text = collect_text(&mut reader, &mut buf, &mut depth)?;
+                    if let Some((at, author)) = current.take() {
+                        let author = author
+                            .and_then(|index| authors.get(index))
+                            .cloned()
+                            .unwrap_or_default();
+                        comments.insert((at.row, at.col), Comment { author, text });
+                    }
+                }
+                _ => {}
+            },
+            Event::End(e) if e.name().local_name().as_ref() == b"comment" => current = None,
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(comments)
 }
 
 fn parse_hyperlink(

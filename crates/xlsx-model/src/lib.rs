@@ -16,6 +16,6 @@ pub use styles::{
 };
 pub use value::{CellValue, ErrorValue};
 pub use workbook::{
-    AutoFilter, AutoFilterColumn, Cell, CellProvider, DefinedName, FreezePane, Hyperlink, Sheet,
-    Workbook,
+    AutoFilter, AutoFilterColumn, Cell, CellProvider, Comment, DefinedName, FreezePane, Hyperlink,
+    Sheet, Workbook,
 };

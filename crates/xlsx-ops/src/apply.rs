@@ -7,8 +7,8 @@ use std::fmt;
 
 use xlsx_model::addr::{MAX_COLS, MAX_ROWS};
 use xlsx_model::{
-    AutoFilter, Cell, CellRange, CellRef, CellValue, ColId, DefinedName, RowId, Sheet, SheetId,
-    Workbook,
+    AutoFilter, Cell, CellRange, CellRef, CellValue, ColId, Comment, DefinedName, RowId, Sheet,
+    SheetId, Workbook,
 };
 
 use crate::formatting::{mutate_number_format, patch_cell_format};
@@ -210,6 +210,19 @@ pub fn apply(wb: &mut Workbook, op: &Op) -> Result<InvertedOp, OpError> {
             Ok(InvertedOp(vec![Op::SetHiddenRows {
                 sheet: *sheet,
                 hidden: old,
+            }]))
+        }
+        Op::SetComment {
+            sheet,
+            cell,
+            comment,
+        } => {
+            let s = sheet_mut(wb, *sheet)?;
+            let old = s.set_comment(*cell, comment.clone());
+            Ok(InvertedOp(vec![Op::SetComment {
+                sheet: *sheet,
+                cell: *cell,
+                comment: old,
             }]))
         }
         Op::SetHyperlinks { sheet, hyperlinks } => {
@@ -702,6 +715,7 @@ fn insert_rows(
     remap_hyperlinks(s, op);
     remap_auto_filter(s, op);
     remap_hidden_rows(s, op);
+    let dropped_comments = remap_comments(s, op);
 
     let mut inv = vec![Op::DeleteRows { sheet, at, count }];
     for (r, c) in dropped {
@@ -711,6 +725,7 @@ fn insert_rows(
             cell: CellState::from(&c),
         });
     }
+    inv.extend(comment_restore_ops(sheet, dropped_comments));
     inv.push(Op::SetHyperlinks {
         sheet,
         hyperlinks: old_hyperlinks,
@@ -743,6 +758,7 @@ fn delete_rows(
     remap_hyperlinks(s, op);
     remap_auto_filter(s, op);
     remap_hidden_rows(s, op);
+    let dropped_comments = remap_comments(s, op);
 
     let mut inv = vec![Op::InsertRows { sheet, at, count }];
     for (r, c) in deleted {
@@ -762,6 +778,7 @@ fn delete_rows(
     for range in dropped_merges {
         inv.push(Op::MergeCells { sheet, range });
     }
+    inv.extend(comment_restore_ops(sheet, dropped_comments));
     inv.push(Op::SetHyperlinks {
         sheet,
         hyperlinks: old_hyperlinks,
@@ -793,6 +810,7 @@ fn insert_cols(
     remap_merges_keep(s, op);
     remap_hyperlinks(s, op);
     remap_auto_filter(s, op);
+    let dropped_comments = remap_comments(s, op);
 
     let mut inv = vec![Op::DeleteCols { sheet, at, count }];
     for (r, c) in dropped {
@@ -802,6 +820,7 @@ fn insert_cols(
             cell: CellState::from(&c),
         });
     }
+    inv.extend(comment_restore_ops(sheet, dropped_comments));
     inv.push(Op::SetHyperlinks {
         sheet,
         hyperlinks: old_hyperlinks,
@@ -833,6 +852,7 @@ fn delete_cols(
     let dropped_merges = remap_merges_drop(s, op);
     remap_hyperlinks(s, op);
     remap_auto_filter(s, op);
+    let dropped_comments = remap_comments(s, op);
 
     let mut inv = vec![Op::InsertCols { sheet, at, count }];
     for (r, c) in deleted {
@@ -852,6 +872,7 @@ fn delete_cols(
     for range in dropped_merges {
         inv.push(Op::MergeCells { sheet, range });
     }
+    inv.extend(comment_restore_ops(sheet, dropped_comments));
     inv.push(Op::SetHyperlinks {
         sheet,
         hyperlinks: old_hyperlinks,
@@ -989,6 +1010,34 @@ fn remap_hidden_rows(sheet: &mut Sheet, op: &Op) {
             _ => Some(row),
         })
         .collect();
+}
+
+/// remap comment anchors through a structural op, returning the comments
+/// whose cell was deleted so the inverse can restore them.
+fn remap_comments(sheet: &mut Sheet, op: &Op) -> Vec<(CellRef, Comment)> {
+    let old = std::mem::take(&mut sheet.comments);
+    let mut dropped = Vec::new();
+    for ((row, col), comment) in old {
+        let at = CellRef::new(row, col);
+        match remap_ref(at, op) {
+            Some(moved) => {
+                sheet.comments.insert((moved.row, moved.col), comment);
+            }
+            None => dropped.push((at, comment)),
+        }
+    }
+    dropped
+}
+
+fn comment_restore_ops(sheet: SheetId, dropped: Vec<(CellRef, Comment)>) -> Vec<Op> {
+    dropped
+        .into_iter()
+        .map(|(cell, comment)| Op::SetComment {
+            sheet,
+            cell,
+            comment: Some(comment),
+        })
+        .collect()
 }
 
 /// remap the auto filter through a structural op: its range shifts with the
@@ -1177,6 +1226,13 @@ fn remove_sheet(wb: &mut Workbook, index: usize) -> Result<InvertedOp, OpError> 
         inv.push(Op::SetHyperlinks {
             sheet,
             hyperlinks: removed.hyperlinks,
+        });
+    }
+    for ((row, col), comment) in removed.comments {
+        inv.push(Op::SetComment {
+            sheet,
+            cell: CellRef::new(row, col),
+            comment: Some(comment),
         });
     }
     if let Some(defined_names) = previous_defined_names {
@@ -1973,6 +2029,164 @@ mod tests {
         assert!(!sheet.is_row_hidden(1));
         assert!(sheet.is_row_hidden(2));
 
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+    }
+
+    fn note(author: &str, text: &str) -> Comment {
+        Comment {
+            author: author.into(),
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn set_comment_applies_replaces_deletes_and_inverts() {
+        let mut wb = wb_one_sheet();
+        let at = r("B2");
+        let first = note("Ada", "check this");
+        let inv_set = apply(
+            &mut wb,
+            &Op::SetComment {
+                sheet: SheetId(0),
+                cell: at,
+                comment: Some(first.clone()),
+            },
+        )
+        .unwrap();
+        assert_eq!(wb.sheets[0].comment_at(at), Some(&first));
+
+        let second = note("Grace", "done");
+        let inv_replace = apply(
+            &mut wb,
+            &Op::SetComment {
+                sheet: SheetId(0),
+                cell: at,
+                comment: Some(second.clone()),
+            },
+        )
+        .unwrap();
+        assert_eq!(wb.sheets[0].comment_at(at), Some(&second));
+
+        let inv_delete = apply(
+            &mut wb,
+            &Op::SetComment {
+                sheet: SheetId(0),
+                cell: at,
+                comment: None,
+            },
+        )
+        .unwrap();
+        assert!(wb.sheets[0].comments.is_empty());
+
+        apply_ops(&mut wb, &inv_delete.0).unwrap();
+        assert_eq!(wb.sheets[0].comment_at(at), Some(&second));
+        apply_ops(&mut wb, &inv_replace.0).unwrap();
+        assert_eq!(wb.sheets[0].comment_at(at), Some(&first));
+        apply_ops(&mut wb, &inv_set.0).unwrap();
+        assert!(wb.sheets[0].comments.is_empty());
+    }
+
+    #[test]
+    fn set_comment_missing_sheet_errors() {
+        let mut wb = wb_one_sheet();
+        let err = apply(
+            &mut wb,
+            &Op::SetComment {
+                sheet: SheetId(9),
+                cell: r("A1"),
+                comment: None,
+            },
+        );
+        assert_eq!(err.unwrap_err(), OpError::SheetNotFound(SheetId(9)));
+    }
+
+    #[test]
+    fn row_and_column_edits_remap_comments_and_undo_restores_them() {
+        let mut wb = wb_one_sheet();
+        let s = wb.sheet_mut(SheetId(0)).unwrap();
+        s.set_comment(r("A1"), Some(note("Ada", "header")));
+        s.set_comment(r("B3"), Some(note("Grace", "moved")));
+        let before = wb.clone();
+
+        let inv = apply(
+            &mut wb,
+            &Op::InsertRows {
+                sheet: SheetId(0),
+                at: 1,
+                count: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            wb.sheets[0].comment_at(r("A1")),
+            Some(&note("Ada", "header"))
+        );
+        assert_eq!(
+            wb.sheets[0].comment_at(r("B5")),
+            Some(&note("Grace", "moved"))
+        );
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+
+        let inv = apply(
+            &mut wb,
+            &Op::DeleteRows {
+                sheet: SheetId(0),
+                at: 1,
+                count: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(wb.sheets[0].comments.len(), 1);
+        assert_eq!(
+            wb.sheets[0].comment_at(r("A1")),
+            Some(&note("Ada", "header"))
+        );
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+
+        let inv = apply(
+            &mut wb,
+            &Op::DeleteCols {
+                sheet: SheetId(0),
+                at: 1,
+                count: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(wb.sheets[0].comments.len(), 1);
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+
+        let inv = apply(
+            &mut wb,
+            &Op::InsertCols {
+                sheet: SheetId(0),
+                at: 0,
+                count: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            wb.sheets[0].comment_at(r("C3")),
+            Some(&note("Grace", "moved"))
+        );
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+    }
+
+    #[test]
+    fn removing_a_sheet_restores_its_comments_on_undo() {
+        let mut wb = wb_one_sheet();
+        wb.sheets.push(Sheet::new("Two"));
+        wb.sheet_mut(SheetId(1))
+            .unwrap()
+            .set_comment(r("C4"), Some(note("Ada", "keep me")));
+        let before = wb.clone();
+
+        let inv = apply(&mut wb, &Op::RemoveSheet { index: 1 }).unwrap();
+        assert_eq!(wb.sheets.len(), 1);
         apply_ops(&mut wb, &inv.0).unwrap();
         assert_eq!(wb, before);
     }

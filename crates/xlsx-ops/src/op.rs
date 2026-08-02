@@ -3,8 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 use xlsx_model::{
-    AutoFilter, Cell, CellRange, CellRef, CellValue, ColId, DefinedName, FreezePane, Hyperlink,
-    RowId, SheetId,
+    AutoFilter, Cell, CellRange, CellRef, CellValue, ColId, Comment, DefinedName, FreezePane,
+    Hyperlink, RowId, SheetId,
 };
 
 use crate::formatting::{CapturedFormat, NumberFormatMutation, StylePatch};
@@ -126,6 +126,12 @@ pub enum Op {
     SetHyperlinks {
         sheet: SheetId,
         hyperlinks: Vec<Hyperlink>,
+    },
+    SetComment {
+        sheet: SheetId,
+        cell: CellRef,
+        /// `None` deletes the comment.
+        comment: Option<Comment>,
     },
     MergeCells {
         sheet: SheetId,
@@ -285,6 +291,48 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({"type": "setAutoFilter", "sheet": 0, "filter": null})
+        );
+        let decoded: Op = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, clear);
+    }
+
+    #[test]
+    fn set_comment_wire_shape() {
+        let op = Op::SetComment {
+            sheet: SheetId(0),
+            cell: CellRef::new(1, 2),
+            comment: Some(Comment {
+                author: "Ada".into(),
+                text: "check this".into(),
+            }),
+        };
+        let json = serde_json::to_value(&op).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "setComment",
+                "sheet": 0,
+                "cell": {"row": 1, "col": 2},
+                "comment": {"author": "Ada", "text": "check this"}
+            })
+        );
+        let decoded: Op = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, op);
+
+        let clear = Op::SetComment {
+            sheet: SheetId(0),
+            cell: CellRef::new(1, 2),
+            comment: None,
+        };
+        let json = serde_json::to_value(&clear).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "setComment",
+                "sheet": 0,
+                "cell": {"row": 1, "col": 2},
+                "comment": null
+            })
         );
         let decoded: Op = serde_json::from_value(json).unwrap();
         assert_eq!(decoded, clear);
