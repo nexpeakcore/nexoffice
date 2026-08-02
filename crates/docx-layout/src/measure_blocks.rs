@@ -492,55 +492,272 @@ fn measure_paragraph_with_context(
         .or_else(|_| Ok(synthetic_paragraph_extent(paragraph, content_width)))
 }
 
-fn synthetic_paragraph_extent(paragraph: &ParagraphBlock, content_width: f64) -> ParagraphExtent {
-    let mut font_size = paragraph
-        .attrs
-        .as_ref()
-        .and_then(|attrs| attrs.default_font_size)
-        .unwrap_or(11.0);
-    let mut character_count = 0;
-    for run in &paragraph.runs {
-        let Run::Text(text) = run else {
-            continue;
-        };
-        character_count += text.text.encode_utf16().count();
-        if let Some(size) = text.fmt.font_size.filter(|size| size.is_finite()) {
-            font_size = font_size.max(size);
+const SYNTHETIC_WRAP_SLACK_PX: f64 = 0.5;
+
+/// Deterministic per-character advance estimate in em for the fontless
+/// fallback, loosely following Liberation Sans class widths.
+fn synthetic_char_em(ch: char) -> f64 {
+    match ch {
+        ' ' | '\u{00A0}' => 0.28,
+        'i' | 'j' | 'l' | '.' | ',' | ':' | ';' | '\'' | '|' | '!' => 0.24,
+        'f' | 't' | 'r' | 'I' | '(' | ')' | '[' | ']' | '-' | '"' | '/' => 0.34,
+        'm' | 'w' | 'M' | 'W' | '@' => 0.86,
+        '\u{2E80}'..='\u{303E}' | '\u{3041}'..='\u{33FF}' | '\u{3400}'..='\u{9FFF}' => 1.0,
+        '\u{F900}'..='\u{FAFF}' | '\u{FF01}'..='\u{FF60}' | '\u{AC00}'..='\u{D7A3}' => 1.0,
+        _ if ch.is_uppercase() => 0.70,
+        _ => 0.52,
+    }
+}
+
+struct SyntheticCluster {
+    run: usize,
+    start: u32,
+    end: u32,
+    advance: f64,
+    is_space: bool,
+    forces_break: bool,
+    font_size_px: f64,
+}
+
+fn synthetic_run_font_px(fmt: &crate::types::RunFormatting, default_font_size: f64) -> f64 {
+    let size = fmt
+        .font_size
+        .filter(|size| size.is_finite() && *size > 0.0)
+        .unwrap_or(default_font_size);
+    size * 96.0 / 72.0
+}
+
+fn synthetic_clusters(paragraph: &ParagraphBlock, default_font_size: f64) -> Vec<SyntheticCluster> {
+    let mut clusters = Vec::new();
+    for (run_index, run) in paragraph.runs.iter().enumerate() {
+        match run {
+            Run::Text(text) => {
+                let font_size_px = synthetic_run_font_px(&text.fmt, default_font_size);
+                let letter_spacing = text.fmt.letter_spacing.unwrap_or(0.0);
+                let mut offset = 0_u32;
+                for ch in text.text.chars() {
+                    let len = ch.len_utf16() as u32;
+                    clusters.push(SyntheticCluster {
+                        run: run_index,
+                        start: offset,
+                        end: offset + len,
+                        advance: (synthetic_char_em(ch) * font_size_px + letter_spacing).max(0.0),
+                        is_space: ch == ' ',
+                        forces_break: false,
+                        font_size_px,
+                    });
+                    offset += len;
+                }
+            }
+            Run::Field(field) => {
+                let font_size_px = synthetic_run_font_px(&field.fmt, default_font_size);
+                let text = field.fallback.as_deref().unwrap_or("");
+                let advance: f64 = text
+                    .chars()
+                    .map(|ch| synthetic_char_em(ch) * font_size_px)
+                    .sum();
+                clusters.push(SyntheticCluster {
+                    run: run_index,
+                    start: 0,
+                    end: 1,
+                    advance,
+                    is_space: false,
+                    forces_break: false,
+                    font_size_px,
+                });
+            }
+            Run::Tab(tab) => {
+                let font_size_px = synthetic_run_font_px(&tab.fmt, default_font_size);
+                clusters.push(SyntheticCluster {
+                    run: run_index,
+                    start: 0,
+                    end: 1,
+                    advance: tab.width.unwrap_or(48.0),
+                    is_space: true,
+                    forces_break: false,
+                    font_size_px,
+                });
+            }
+            Run::Image(image) => clusters.push(SyntheticCluster {
+                run: run_index,
+                start: 0,
+                end: 1,
+                advance: image.width,
+                is_space: false,
+                forces_break: false,
+                font_size_px: default_font_size * 96.0 / 72.0,
+            }),
+            Run::LineBreak(_) => clusters.push(SyntheticCluster {
+                run: run_index,
+                start: 0,
+                end: 0,
+                advance: 0.0,
+                is_space: false,
+                forces_break: true,
+                font_size_px: default_font_size * 96.0 / 72.0,
+            }),
+            Run::Unsupported => {}
         }
     }
-    if !font_size.is_finite() || font_size <= 0.0 {
-        font_size = 11.0;
+    clusters
+}
+
+fn synthetic_row(
+    paragraph: &ParagraphBlock,
+    clusters: &[SyntheticCluster],
+    default_font_px: f64,
+) -> crate::types::TypesetRow {
+    let head = clusters.first();
+    let last = clusters.last();
+    let (tail_run, tail_char) = last.map_or_else(
+        || {
+            let tail_run = paragraph.runs.len().saturating_sub(1);
+            let tail_char = paragraph.runs.get(tail_run).map_or(0, |run| match run {
+                Run::Text(text) => text.text.encode_utf16().count(),
+                _ => 0,
+            });
+            (tail_run, tail_char)
+        },
+        |cluster| (cluster.run, cluster.end as usize),
+    );
+    let max_px = clusters
+        .iter()
+        .map(|cluster| cluster.font_size_px)
+        .fold(default_font_px, f64::max);
+    let mut x = 0.0_f64;
+    let mut run_advances: Vec<crate::types::TypesetRunAdvance> = Vec::new();
+    for cluster in clusters {
+        match run_advances
+            .last_mut()
+            .filter(|last| last.run_index == Some(cluster.run as u64))
+        {
+            Some(last) => {
+                last.end_char = Some(cluster.end as u64);
+                last.advance = Some(last.advance.unwrap_or(0.0) + cluster.advance);
+            }
+            None => run_advances.push(crate::types::TypesetRunAdvance {
+                run_index: Some(cluster.run as u64),
+                start_char: Some(cluster.start as u64),
+                end_char: Some(cluster.end as u64),
+                advance: Some(cluster.advance),
+                logical_order: None,
+            }),
+        }
+        x += cluster.advance;
     }
-    let font_size_px = font_size * 96.0 / 72.0;
-    let line_height = font_size_px * 1.15;
-    let tail_run = paragraph.runs.len().saturating_sub(1);
-    let tail_char = paragraph.runs.get(tail_run).map_or(0, |run| match run {
-        Run::Text(text) => text.text.encode_utf16().count(),
-        _ => 0,
-    });
-    let spacing = paragraph
-        .attrs
-        .as_ref()
-        .and_then(|attrs| attrs.spacing.as_ref());
+    crate::types::TypesetRow {
+        head_run: head.map_or(0, |cluster| cluster.run),
+        head_char: head.map_or(0, |cluster| cluster.start as usize),
+        tail_run,
+        tail_char,
+        width: x,
+        ascent: max_px * 0.8,
+        descent: max_px * 0.2,
+        line_height: max_px * 1.15,
+        run_advances: (!run_advances.is_empty()).then_some(run_advances),
+        ..crate::types::TypesetRow::default()
+    }
+}
+
+fn synthetic_paragraph_extent(paragraph: &ParagraphBlock, content_width: f64) -> ParagraphExtent {
+    let attrs = paragraph.attrs.as_ref();
+    let mut default_font_size = attrs
+        .and_then(|attrs| attrs.default_font_size)
+        .unwrap_or(11.0);
+    if !default_font_size.is_finite() || default_font_size <= 0.0 {
+        default_font_size = 11.0;
+    }
+    let default_font_px = default_font_size * 96.0 / 72.0;
+    let spacing = attrs.and_then(|attrs| attrs.spacing.as_ref());
+    let spacing_before = spacing.and_then(|value| value.before).unwrap_or(0.0);
+    let spacing_after = spacing.and_then(|value| value.after).unwrap_or(0.0);
+
+    let clusters = if content_width.is_finite() && content_width > 0.0 {
+        synthetic_clusters(paragraph, default_font_size)
+    } else {
+        Vec::new()
+    };
+    if clusters.is_empty() {
+        let row = synthetic_row(paragraph, &[], default_font_px);
+        let line_height = row.line_height;
+        return ParagraphExtent {
+            lines: vec![row],
+            total_height: spacing_before + line_height + spacing_after,
+        };
+    }
+
+    let indent = attrs.and_then(|attrs| attrs.indent.as_ref());
+    let indent_left = indent.and_then(|indent| indent.left).unwrap_or(0.0);
+    let indent_right = indent.and_then(|indent| indent.right).unwrap_or(0.0);
+    let first_line_offset = indent.and_then(|indent| indent.first_line).unwrap_or(0.0)
+        - indent.and_then(|indent| indent.hanging).unwrap_or(0.0);
+    let body_width = (content_width - indent_left - indent_right).max(1.0);
+    let first_line_width = (body_width - first_line_offset).max(1.0);
+
+    let mut lines = Vec::new();
+    let mut index = 0;
+    while index < clusters.len() {
+        let available = if lines.is_empty() {
+            first_line_width
+        } else {
+            body_width
+        };
+        let line_start = index;
+        let mut width = 0.0_f64;
+        while index < clusters.len() {
+            if clusters[index].forces_break {
+                index += 1;
+                break;
+            }
+            let word_start = index;
+            let mut word_end = index;
+            while word_end < clusters.len()
+                && !clusters[word_end].is_space
+                && !clusters[word_end].forces_break
+            {
+                word_end += 1;
+            }
+            while word_end < clusters.len() && clusters[word_end].is_space {
+                word_end += 1;
+            }
+            let word_width: f64 = clusters[word_start..word_end]
+                .iter()
+                .map(|cluster| cluster.advance)
+                .sum();
+            if width > 0.0 && width + word_width > available + SYNTHETIC_WRAP_SLACK_PX {
+                break;
+            }
+            if width == 0.0 && word_width > available + SYNTHETIC_WRAP_SLACK_PX {
+                let mut chunk_width = 0.0_f64;
+                let mut chunk_end = word_start;
+                while chunk_end < word_end {
+                    let next = chunk_width + clusters[chunk_end].advance;
+                    if chunk_end > word_start && next > available + SYNTHETIC_WRAP_SLACK_PX {
+                        break;
+                    }
+                    chunk_width = next;
+                    chunk_end += 1;
+                }
+                index = chunk_end;
+                break;
+            }
+            width += word_width;
+            index = word_end;
+        }
+        if index == line_start {
+            index += 1;
+        }
+        lines.push(synthetic_row(
+            paragraph,
+            &clusters[line_start..index],
+            default_font_px,
+        ));
+    }
+
+    let content_height: f64 = lines.iter().map(|line| line.line_height).sum();
     ParagraphExtent {
-        lines: vec![crate::types::TypesetRow {
-            head_run: 0,
-            head_char: 0,
-            tail_run,
-            tail_char,
-            width: if content_width.is_finite() && content_width > 0.0 {
-                content_width.min(character_count as f64 * font_size_px * 0.5)
-            } else {
-                0.0
-            },
-            ascent: font_size_px * 0.8,
-            descent: font_size_px * 0.2,
-            line_height,
-            ..crate::types::TypesetRow::default()
-        }],
-        total_height: spacing.and_then(|value| value.before).unwrap_or(0.0)
-            + line_height
-            + spacing.and_then(|value| value.after).unwrap_or(0.0),
+        lines,
+        total_height: spacing_before + content_height + spacing_after,
     }
 }
 
@@ -1177,9 +1394,76 @@ mod tests {
             panic!("paragraph expected");
         };
 
-        assert_eq!(extent.lines[0].width, 32.0);
+        assert_eq!(extent.lines.len(), 1);
+        assert!((extent.lines[0].width - 33.28).abs() < 1e-9);
         assert_eq!(extent.lines[0].ascent, 12.8);
         assert_eq!(extent.lines[0].descent, 3.2);
-        assert_eq!(extent.total_height, 23.4);
+        assert!((extent.total_height - 23.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn synthetic_extent_wraps_within_content_width() {
+        crate::clear_measure_fonts();
+        let mut block: LayoutBlock = serde_json::from_value(json!({
+            "kind": "paragraph",
+            "id": "p",
+            "runs": [{
+                "kind": "text",
+                "text": "alpha bravo charlie delta echo foxtrot golf hotel india",
+                "fontSize": 10
+            }]
+        }))
+        .unwrap();
+
+        let BlockExtent::Paragraph(extent) =
+            measure_block(&mut block, 120.0, &MeasurementConfig::default()).unwrap()
+        else {
+            panic!("paragraph expected");
+        };
+
+        assert!(extent.lines.len() > 1, "long text must wrap");
+        for line in &extent.lines {
+            let trailing_space_width = 0.28 * (10.0 * 96.0 / 72.0);
+            assert!(
+                line.width <= 120.0 + trailing_space_width + 0.5,
+                "line width {} exceeds the wrap width",
+                line.width
+            );
+        }
+        let total_utf16: usize = 55;
+        assert_eq!(extent.lines[0].head_char, 0);
+        assert_eq!(extent.lines.last().unwrap().tail_char, total_utf16);
+    }
+
+    #[test]
+    fn synthetic_extent_keeps_space_only_run_advances_positive() {
+        crate::clear_measure_fonts();
+        let mut block: LayoutBlock = serde_json::from_value(json!({
+            "kind": "paragraph",
+            "id": "p",
+            "runs": [
+                {"kind": "text", "text": "AAA", "bold": true, "fontSize": 10},
+                {"kind": "text", "text": " ", "bold": true, "fontSize": 10, "letterSpacing": -0.4},
+                {"kind": "text", "text": "BBB", "bold": true, "fontSize": 10}
+            ]
+        }))
+        .unwrap();
+
+        let BlockExtent::Paragraph(extent) =
+            measure_block(&mut block, 500.0, &MeasurementConfig::default()).unwrap()
+        else {
+            panic!("paragraph expected");
+        };
+
+        assert_eq!(extent.lines.len(), 1);
+        let runs = extent.lines[0].run_advances.as_ref().expect("run advances");
+        assert_eq!(runs.len(), 3);
+        let space = &runs[1];
+        assert_eq!(space.run_index, Some(1));
+        assert!(
+            space.advance.unwrap() > 0.0,
+            "space run keeps a positive advance"
+        );
+        assert!(runs.iter().all(|run| run.advance.unwrap() > 0.0));
     }
 }
