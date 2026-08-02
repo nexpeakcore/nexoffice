@@ -41,7 +41,15 @@ export function App() {
     if (!isDocx) return
     const timer = setInterval(() => {
       const stats = docxRef.current?.getStats()
-      if (stats) setDocStats(stats)
+      if (!stats) return
+      setDocStats((prev) =>
+        prev.words === stats.words &&
+        prev.characters === stats.characters &&
+        prev.page === stats.page &&
+        prev.pages === stats.pages
+          ? prev
+          : stats,
+      )
     }, 700)
     return () => clearInterval(timer)
   }, [isDocx])
@@ -71,9 +79,15 @@ export function App() {
 
   const getEditorText = useCallback(() => docxRef.current?.getText() ?? '', [])
 
+  // Dirty flips state once; the revision (spell check trigger) is debounced so
+  // steady typing causes no App re-render per keystroke.
+  const editRevisionTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const markEdited = useCallback(() => {
     setDocument((prev) => (prev && !prev.dirty ? { ...prev, dirty: true } : prev))
-    setEditRevision((revision) => revision + 1)
+    if (editRevisionTimer.current) clearTimeout(editRevisionTimer.current)
+    editRevisionTimer.current = setTimeout(() => {
+      setEditRevision((revision) => revision + 1)
+    }, 700)
   }, [])
 
   const getCurrentBytes = useCallback(async (current: DocumentState): Promise<Uint8Array> => {

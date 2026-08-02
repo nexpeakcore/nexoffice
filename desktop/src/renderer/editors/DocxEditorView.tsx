@@ -1,7 +1,6 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { DocxEditor, type BundledFontProvider, type DocxEditorRef } from '@betteroffice/docx-react'
 import '@betteroffice/docx-react/styles.css'
-import type { Document as DocxDocument } from '@betteroffice/docx/types/document'
 import {
   loadBundledFontBytes,
   resolveLastResortFace,
@@ -47,6 +46,8 @@ function countWords(text: string): number {
   return matches?.length ?? 0
 }
 
+const TEXT_REFRESH_DELAY_MS = 500
+
 export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>(
   function DocxEditorView({ document, onChange }, ref) {
     const editorRef = useRef<DocxEditorRef>(null)
@@ -69,14 +70,45 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
     const [error, setError] = useState<string | null>(null)
     const textRef = useRef('')
     const statsRef = useRef({ words: 0, characters: 0, page: 1, pages: 1 })
-    const parsed = useRef(false)
+    const onChangeRef = useRef(onChange)
+    onChangeRef.current = onChange
+
+    // Projecting the full document out of the CRDT is expensive, so word count
+    // and spell check text refresh only after typing pauses — never per edit.
+    const refreshText = useCallback(() => {
+      const doc = editorRef.current?.getDocument()
+      if (!doc) return
+      const text = extractText((doc.package?.document?.content as unknown[]) ?? [])
+      textRef.current = text
+      statsRef.current = { ...statsRef.current, words: countWords(text) }
+    }, [])
 
     useEffect(() => {
-      parsed.current = false
       setError(null)
       textRef.current = ''
       statsRef.current = { words: 0, characters: 0, page: 1, pages: 1 }
-    }, [document.path, document.data])
+
+      let unsubscribe: (() => void) | null = null
+      let refreshTimer: ReturnType<typeof setTimeout> | null = null
+      const sessionPoll = setInterval(() => {
+        const session = editorRef.current?.getEditorRef()?.getYrsSession()
+        if (!session) return
+        clearInterval(sessionPoll)
+        refreshText()
+        unsubscribe = session.onUpdate((_update, origin) => {
+          if (origin !== 'local') return
+          onChangeRef.current?.()
+          if (refreshTimer) clearTimeout(refreshTimer)
+          refreshTimer = setTimeout(refreshText, TEXT_REFRESH_DELAY_MS)
+        })
+      }, 300)
+
+      return () => {
+        clearInterval(sessionPoll)
+        if (refreshTimer) clearTimeout(refreshTimer)
+        unsubscribe?.()
+      }
+    }, [document.path, document.data, refreshText])
 
     useImperativeHandle(ref, () => ({
       save: async () => (await editorRef.current?.save()) ?? null,
@@ -115,16 +147,6 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
             <span className="text-sm text-neutral-500">Loading {document.name}…</span>
           </div>
         }
-        onChange={(doc: DocxDocument) => {
-          const text = extractText((doc.package?.document?.content as unknown[]) ?? [])
-          textRef.current = text
-          statsRef.current = { ...statsRef.current, words: countWords(text) }
-          if (!parsed.current) {
-            parsed.current = true
-            return
-          }
-          onChange?.()
-        }}
         onError={(err) => setError(err.message)}
       />
     )
