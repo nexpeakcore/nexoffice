@@ -112,7 +112,9 @@
     "freezeFirstColumn": "Freeze first column",
     "unfreeze": "Unfreeze",
     "filterLabel": "Filter",
-    "filterToggle": "Filter"
+    "filterToggle": "Filter",
+    "commentLabel": "Comments",
+    "commentToggle": "Comment"
   },
   "editor": {
     "appLabel": "Spreadsheet editor",
@@ -127,6 +129,13 @@
     "apply": "Apply",
     "clear": "Clear",
     "truncated": "Showing the first {count} values"
+  },
+  "comment": {
+    "viewLabel": "Comment on {cell}",
+    "editLabel": "Edit comment on {cell}",
+    "textPlaceholder": "Enter a comment",
+    "save": "Save",
+    "delete": "Delete"
   },
   "proposals": {
     "panelLabel": "Agent proposals",

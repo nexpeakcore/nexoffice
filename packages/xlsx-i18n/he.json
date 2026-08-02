@@ -21,7 +21,9 @@
     "freezeFirstColumn": "הקפא עמודה ראשונה",
     "unfreeze": "בטל הקפאה",
     "filterLabel": "סינון",
-    "filterToggle": "סינון"
+    "filterToggle": "סינון",
+    "commentLabel": "הערות",
+    "commentToggle": "הערה"
   },
   "editor": {
     "appLabel": null,
@@ -36,6 +38,13 @@
     "apply": "החל",
     "clear": "נקה",
     "truncated": "מוצגים {count} הערכים הראשונים"
+  },
+  "comment": {
+    "viewLabel": "הערה בתא {cell}",
+    "editLabel": "עריכת הערה בתא {cell}",
+    "textPlaceholder": "הזנת הערה",
+    "save": "שמירה",
+    "delete": "מחיקה"
   },
   "proposals": {
     "panelLabel": null,

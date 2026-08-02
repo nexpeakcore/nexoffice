@@ -21,7 +21,9 @@
     "freezeFirstColumn": "Bekukan kolom pertama",
     "unfreeze": "Batalkan pembekuan",
     "filterLabel": "Filter",
-    "filterToggle": "Filter"
+    "filterToggle": "Filter",
+    "commentLabel": "Komentar",
+    "commentToggle": "Komentar"
   },
   "editor": {
     "appLabel": null,
@@ -36,6 +38,13 @@
     "apply": "Terapkan",
     "clear": "Hapus",
     "truncated": "Menampilkan {count} nilai pertama"
+  },
+  "comment": {
+    "viewLabel": "Komentar pada {cell}",
+    "editLabel": "Edit komentar pada {cell}",
+    "textPlaceholder": "Masukkan komentar",
+    "save": "Simpan",
+    "delete": "Hapus"
   },
   "proposals": {
     "panelLabel": null,

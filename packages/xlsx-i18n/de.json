@@ -21,7 +21,9 @@
     "freezeFirstColumn": "Erste Spalte fixieren",
     "unfreeze": "Fixierung aufheben",
     "filterLabel": "Filter",
-    "filterToggle": "Filter"
+    "filterToggle": "Filter",
+    "commentLabel": "Kommentare",
+    "commentToggle": "Kommentar"
   },
   "editor": {
     "appLabel": null,
@@ -36,6 +38,13 @@
     "apply": "Anwenden",
     "clear": "Löschen",
     "truncated": "Die ersten {count} Werte werden angezeigt"
+  },
+  "comment": {
+    "viewLabel": "Kommentar zu {cell}",
+    "editLabel": "Kommentar zu {cell} bearbeiten",
+    "textPlaceholder": "Kommentar eingeben",
+    "save": "Speichern",
+    "delete": "Löschen"
   },
   "proposals": {
     "panelLabel": null,

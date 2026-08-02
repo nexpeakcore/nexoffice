@@ -21,7 +21,9 @@
     "freezeFirstColumn": "İlk sütunu dondur",
     "unfreeze": "Dondurmayı kaldır",
     "filterLabel": "Filtre",
-    "filterToggle": "Filtre"
+    "filterToggle": "Filtre",
+    "commentLabel": "Yorumlar",
+    "commentToggle": "Yorum"
   },
   "editor": {
     "appLabel": null,
@@ -36,6 +38,13 @@
     "apply": "Uygula",
     "clear": "Temizle",
     "truncated": "İlk {count} değer gösteriliyor"
+  },
+  "comment": {
+    "viewLabel": "{cell} hücresindeki yorum",
+    "editLabel": "{cell} hücresindeki yorumu düzenle",
+    "textPlaceholder": "Yorum girin",
+    "save": "Kaydet",
+    "delete": "Sil"
   },
   "proposals": {
     "panelLabel": null,

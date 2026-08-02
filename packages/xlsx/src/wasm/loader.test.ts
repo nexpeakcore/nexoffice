@@ -260,6 +260,81 @@ describe('wasm loader', () => {
     }
   });
 
+  it('reads a sheet auto filter back through the wasm boundary', () => {
+    const handle = openWorkbook(sampleBytes());
+    try {
+      expect(handle.sheetAutoFilter(0)).toBeNull();
+      const spec = {
+        range: { startRow: 1, startCol: 0, endRow: 11, endCol: 3 },
+        columns: [{ col: 0, values: ['Line item 3'], showBlanks: false }],
+      };
+      handle.setAutoFilter(0, spec);
+      expect(handle.sheetAutoFilter(0)).toEqual(spec);
+      expect(handle.sheetAutoFilter(1)).toBeNull();
+      expect(() => handle.sheetAutoFilter(9)).toThrow();
+
+      // a persisted filter is readable after save/reopen, not just in-session.
+      const reopened = openWorkbook(handle.save());
+      try {
+        expect(reopened.sheetAutoFilter(0)).toEqual(spec);
+      } finally {
+        reopened.dispose();
+      }
+
+      handle.undo();
+      expect(handle.sheetAutoFilter(0)).toBeNull();
+      handle.redo();
+      expect(handle.sheetAutoFilter(0)).toEqual(spec);
+      handle.setAutoFilter(0, null);
+      expect(handle.sheetAutoFilter(0)).toBeNull();
+    } finally {
+      handle.dispose();
+    }
+  });
+
+  it('sets, reads, and deletes cell comments as undoable steps', () => {
+    const handle = openWorkbook(sampleBytes());
+    try {
+      expect(handle.sheetComments(0)).toEqual([]);
+      const added = handle.setComment(0, 1, 0, { author: 'Ada', text: 'Check this header' });
+      expect(added.applied).toBe(true);
+      expect(handle.sheetComments(0)).toEqual([
+        { row: 1, col: 0, author: 'Ada', text: 'Check this header' },
+      ]);
+      handle.setComment(0, 2, 1, { author: 'Grace', text: 'Second note' });
+      expect(handle.sheetComments(0)).toHaveLength(2);
+      expect(handle.sheetComments(1)).toEqual([]);
+
+      // comments survive save/reopen.
+      const reopened = openWorkbook(handle.save());
+      try {
+        expect(reopened.sheetComments(0)).toHaveLength(2);
+      } finally {
+        reopened.dispose();
+      }
+
+      handle.undo();
+      expect(handle.sheetComments(0)).toEqual([
+        { row: 1, col: 0, author: 'Ada', text: 'Check this header' },
+      ]);
+      handle.redo();
+
+      // replacing edits in place; null deletes.
+      handle.setComment(0, 2, 1, { author: 'Grace', text: 'Revised note' });
+      expect(handle.sheetComments(0)).toContainEqual({
+        row: 2,
+        col: 1,
+        author: 'Grace',
+        text: 'Revised note',
+      });
+      const deleted = handle.setComment(0, 2, 1, null);
+      expect(deleted.applied).toBe(true);
+      expect(handle.sheetComments(0)).toHaveLength(1);
+    } finally {
+      handle.dispose();
+    }
+  });
+
   it('round-trips formatting, format capture, merge metadata, and history state', () => {
     const handle = openWorkbook(sampleBytes());
     try {

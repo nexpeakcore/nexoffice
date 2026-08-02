@@ -76,6 +76,18 @@ export interface AutoFilterSpec {
   columns: { col: number; values: string[] | null; showBlanks: boolean }[];
 }
 
+/** A classic cell note: plain text plus its author. Mirrors the Rust `Comment`. */
+export interface CellComment {
+  author: string;
+  text: string;
+}
+
+/** A cell note with its coordinates, as returned by {@link WorkbookHandle.sheetComments}. */
+export interface SheetComment extends CellComment {
+  row: number;
+  col: number;
+}
+
 export type NumberFormat =
   | 'automatic'
   | 'plainText'
@@ -325,6 +337,15 @@ export interface WorkbookHandle extends CollaborationReplica {
   ): EditResult;
   /** set or replace a sheet's auto filter; `null` clears it and unhides its rows. */
   setAutoFilter(sheet: number, filter: AutoFilterSpec | null): EditResult;
+  /** the sheet's current auto filter, or `null` when it has none. */
+  sheetAutoFilter(sheet: number): AutoFilterSpec | null;
+  /** every comment on a sheet in row-major order; empty when it has none. */
+  sheetComments(sheet: number): SheetComment[];
+  /**
+   * set or replace the comment at a cell; `null` deletes it. one undo step;
+   * persists through save.
+   */
+  setComment(sheet: number, row: number, col: number, comment: CellComment | null): EditResult;
   undo(): EditResult;
   redo(): EditResult;
   /** the editable view of one cell (formula bar / in-cell editor prefill). */
@@ -661,6 +682,24 @@ export function openWorkbook(
           }
         : null;
       const ops = [{ type: 'setAutoFilter', sheet, filter: wire }];
+      return parseJson(() => doc.applyOpsJson(JSON.stringify({ ops })), true);
+    },
+    sheetAutoFilter(sheet: number): AutoFilterSpec | null {
+      return parseJson(() => doc.sheetAutoFilterJson(JSON.stringify({ sheet })));
+    },
+    sheetComments(sheet: number): SheetComment[] {
+      const parsed = parseJson<{ comments: SheetComment[] }>(() =>
+        doc.sheetCommentsJson(JSON.stringify({ sheet }))
+      );
+      return parsed.comments;
+    },
+    setComment(
+      sheet: number,
+      row: number,
+      col: number,
+      comment: CellComment | null
+    ): EditResult {
+      const ops = [{ type: 'setComment', sheet, cell: { row, col }, comment }];
       return parseJson(() => doc.applyOpsJson(JSON.stringify({ ops })), true);
     },
     undo(): EditResult {

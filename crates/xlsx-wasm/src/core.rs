@@ -59,6 +59,48 @@ struct CellArgs {
     col: u32,
 }
 
+#[derive(Deserialize)]
+struct SheetArgs {
+    sheet: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AutoFilterRange {
+    start_row: u32,
+    start_col: u32,
+    end_row: u32,
+    end_col: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AutoFilterColumnSpec {
+    col: u32,
+    values: Option<Vec<String>>,
+    show_blanks: bool,
+}
+
+#[derive(Serialize)]
+struct AutoFilterSpec {
+    range: AutoFilterRange,
+    columns: Vec<AutoFilterColumnSpec>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SheetComment {
+    row: u32,
+    col: u32,
+    author: String,
+    text: String,
+}
+
+#[derive(Serialize)]
+struct SheetComments {
+    comments: Vec<SheetComment>,
+}
+
 #[derive(Serialize)]
 struct CellPosition {
     x: f32,
@@ -495,6 +537,53 @@ impl Session {
             )
             .map_err(|error| error.to_string())?;
         self.edit_result(result)
+    }
+
+    pub fn sheet_auto_filter_json(&self, args: &str) -> Result<String, String> {
+        let args: SheetArgs =
+            serde_json::from_str(args).map_err(|error| format!("bad sheet args: {error}"))?;
+        let sheet = self
+            .workbook
+            .sheet(SheetId(args.sheet))
+            .map_err(|error| error.to_string())?;
+        let filter = sheet.auto_filter.as_ref().map(|filter| AutoFilterSpec {
+            range: AutoFilterRange {
+                start_row: filter.range.start.row,
+                start_col: filter.range.start.col,
+                end_row: filter.range.end.row,
+                end_col: filter.range.end.col,
+            },
+            columns: filter
+                .columns
+                .iter()
+                .map(|column| AutoFilterColumnSpec {
+                    col: column.col,
+                    values: column.values.clone(),
+                    show_blanks: column.show_blanks,
+                })
+                .collect(),
+        });
+        serde_json::to_string(&filter).map_err(|error| error.to_string())
+    }
+
+    pub fn sheet_comments_json(&self, args: &str) -> Result<String, String> {
+        let args: SheetArgs =
+            serde_json::from_str(args).map_err(|error| format!("bad sheet args: {error}"))?;
+        let sheet = self
+            .workbook
+            .sheet(SheetId(args.sheet))
+            .map_err(|error| error.to_string())?;
+        let comments = sheet
+            .comments
+            .iter()
+            .map(|(&(row, col), comment)| SheetComment {
+                row,
+                col,
+                author: comment.author.clone(),
+                text: comment.text.clone(),
+            })
+            .collect();
+        serde_json::to_string(&SheetComments { comments }).map_err(|error| error.to_string())
     }
 
     pub fn merged_ranges_json(&self, args: &str) -> Result<String, String> {
@@ -1047,6 +1136,62 @@ mod tests {
                 .unwrap()
                 .contains(r#""input":"=SUM(A1:A2)""#)
         );
+    }
+
+    #[test]
+    fn auto_filter_and_comments_read_back_across_the_json_boundary() {
+        let mut session = Session::open(&sample_xlsx(), None).unwrap();
+        assert_eq!(
+            session.sheet_auto_filter_json(r#"{"sheet":0}"#).unwrap(),
+            "null"
+        );
+        assert_eq!(
+            session.sheet_comments_json(r#"{"sheet":0}"#).unwrap(),
+            r#"{"comments":[]}"#
+        );
+
+        session
+            .apply_ops_json(
+                r#"{"ops":[{"type":"setAutoFilter","sheet":0,"filter":{"range":{"start":{"row":0,"col":0},"end":{"row":1,"col":1}},"columns":[{"col":0,"values":["Hello"],"show_blanks":false}]}}]}"#,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            session.sheet_auto_filter_json(r#"{"sheet":0}"#).unwrap(),
+            r#"{"range":{"startRow":0,"startCol":0,"endRow":1,"endCol":1},"columns":[{"col":0,"values":["Hello"],"showBlanks":false}]}"#
+        );
+        session.undo_json(None).unwrap();
+        assert_eq!(
+            session.sheet_auto_filter_json(r#"{"sheet":0}"#).unwrap(),
+            "null"
+        );
+
+        session
+            .apply_ops_json(
+                r#"{"ops":[{"type":"setComment","sheet":0,"cell":{"row":0,"col":1},"comment":{"author":"Ada","text":"check this"}}]}"#,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            session.sheet_comments_json(r#"{"sheet":0}"#).unwrap(),
+            r#"{"comments":[{"row":0,"col":1,"author":"Ada","text":"check this"}]}"#
+        );
+        assert_eq!(
+            session.sheet_comments_json(r#"{"sheet":1}"#).unwrap(),
+            r#"{"comments":[]}"#
+        );
+        session
+            .apply_ops_json(
+                r#"{"ops":[{"type":"setComment","sheet":0,"cell":{"row":0,"col":1},"comment":null}]}"#,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            session.sheet_comments_json(r#"{"sheet":0}"#).unwrap(),
+            r#"{"comments":[]}"#
+        );
+        assert!(session.sheet_comments_json(r#"{"sheet":9}"#).is_err());
+        assert!(session.sheet_auto_filter_json(r#"{"sheet":9}"#).is_err());
     }
 
     #[test]

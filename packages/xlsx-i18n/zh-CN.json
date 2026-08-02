@@ -21,7 +21,9 @@
     "freezeFirstColumn": "冻结首列",
     "unfreeze": "取消冻结",
     "filterLabel": "筛选",
-    "filterToggle": "筛选"
+    "filterToggle": "筛选",
+    "commentLabel": "批注",
+    "commentToggle": "批注"
   },
   "editor": {
     "appLabel": null,
@@ -36,6 +38,13 @@
     "apply": "应用",
     "clear": "清除",
     "truncated": "仅显示前 {count} 个值"
+  },
+  "comment": {
+    "viewLabel": "{cell} 的批注",
+    "editLabel": "编辑 {cell} 的批注",
+    "textPlaceholder": "输入批注",
+    "save": "保存",
+    "delete": "删除"
   },
   "proposals": {
     "panelLabel": null,

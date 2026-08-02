@@ -21,7 +21,9 @@
     "freezeFirstColumn": "Zablokuj pierwszą kolumnę",
     "unfreeze": "Odblokuj okienka",
     "filterLabel": "Filtr",
-    "filterToggle": "Filtr"
+    "filterToggle": "Filtr",
+    "commentLabel": "Komentarze",
+    "commentToggle": "Komentarz"
   },
   "editor": {
     "appLabel": null,
@@ -36,6 +38,13 @@
     "apply": "Zastosuj",
     "clear": "Wyczyść",
     "truncated": "Wyświetlane są pierwsze {count} wartości"
+  },
+  "comment": {
+    "viewLabel": "Komentarz do {cell}",
+    "editLabel": "Edytuj komentarz do {cell}",
+    "textPlaceholder": "Wpisz komentarz",
+    "save": "Zapisz",
+    "delete": "Usuń"
   },
   "proposals": {
     "panelLabel": null,

@@ -21,7 +21,9 @@
     "freezeFirstColumn": "पहला स्तंभ फ़्रीज़ करें",
     "unfreeze": "फ़्रीज़ हटाएँ",
     "filterLabel": "फ़िल्टर",
-    "filterToggle": "फ़िल्टर"
+    "filterToggle": "फ़िल्टर",
+    "commentLabel": "टिप्पणियाँ",
+    "commentToggle": "टिप्पणी"
   },
   "editor": {
     "appLabel": null,
@@ -36,6 +38,13 @@
     "apply": "लागू करें",
     "clear": "साफ़ करें",
     "truncated": "पहले {count} मान दिखाए जा रहे हैं"
+  },
+  "comment": {
+    "viewLabel": "{cell} पर टिप्पणी",
+    "editLabel": "{cell} पर टिप्पणी संपादित करें",
+    "textPlaceholder": "टिप्पणी दर्ज करें",
+    "save": "सहेजें",
+    "delete": "हटाएँ"
   },
   "proposals": {
     "panelLabel": null,

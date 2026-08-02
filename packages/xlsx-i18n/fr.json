@@ -21,7 +21,9 @@
     "freezeFirstColumn": "Figer la première colonne",
     "unfreeze": "Libérer les volets",
     "filterLabel": "Filtre",
-    "filterToggle": "Filtre"
+    "filterToggle": "Filtre",
+    "commentLabel": "Commentaires",
+    "commentToggle": "Commentaire"
   },
   "editor": {
     "appLabel": null,
@@ -36,6 +38,13 @@
     "apply": "Appliquer",
     "clear": "Effacer",
     "truncated": "Affichage des {count} premières valeurs"
+  },
+  "comment": {
+    "viewLabel": "Commentaire sur {cell}",
+    "editLabel": "Modifier le commentaire sur {cell}",
+    "textPlaceholder": "Saisir un commentaire",
+    "save": "Enregistrer",
+    "delete": "Supprimer"
   },
   "proposals": {
     "panelLabel": null,

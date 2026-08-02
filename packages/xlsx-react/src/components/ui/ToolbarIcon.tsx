@@ -29,6 +29,7 @@ export type ToolbarIconName =
   | 'sortDesc'
   | 'freeze'
   | 'filter'
+  | 'comment'
   | 'proposals';
 
 export interface ToolbarIconProps {
@@ -170,6 +171,9 @@ export function ToolbarIcon({ name, size = 20, style }: ToolbarIconProps) {
       )}
       {name === 'filter' && (
         <path d="M4 5h16l-6.2 7.2V19l-3.6-2.2v-4.6L4 5Z" />
+      )}
+      {name === 'comment' && (
+        <path d="M20 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z" />
       )}
       {name === 'proposals' && (
         <>
