@@ -13,13 +13,29 @@
     "redo": null,
     "sortLabel": "Urutkan",
     "sortAsc": "Urutkan A ke Z",
-    "sortDesc": "Urutkan Z ke A"
+    "sortDesc": "Urutkan Z ke A",
+    "freezeLabel": "Bekukan panel",
+    "freezeUpToRow": "Bekukan hingga baris {row}",
+    "freezeUpToColumn": "Bekukan hingga kolom {column}",
+    "freezeFirstRow": "Bekukan baris pertama",
+    "freezeFirstColumn": "Bekukan kolom pertama",
+    "unfreeze": "Batalkan pembekuan",
+    "filterLabel": "Filter",
+    "filterToggle": "Filter"
   },
   "editor": {
     "appLabel": null,
     "demoCellText": null,
     "openError": null,
     "sheetTabsLabel": null
+  },
+  "filter": {
+    "columnButton": "Filter kolom {column}",
+    "selectAll": "Pilih semua",
+    "blanks": "(Kosong)",
+    "apply": "Terapkan",
+    "clear": "Hapus",
+    "truncated": "Menampilkan {count} nilai pertama"
   },
   "proposals": {
     "panelLabel": null,

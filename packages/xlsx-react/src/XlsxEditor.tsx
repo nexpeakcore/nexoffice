@@ -59,8 +59,26 @@ import type {
   MergeAction,
   SelectionFormatting,
 } from './components/Toolbar';
-import { ToolbarButton, ToolbarGroup } from './components/ui/ToolbarPrimitives';
+import {
+  ToolbarButton,
+  ToolbarDropdown,
+  ToolbarGroup,
+  ToolbarMenuItem,
+  ToolbarMenuSeparator,
+} from './components/ui/ToolbarPrimitives';
 import { ToolbarIcon } from './components/ui/ToolbarIcon';
+import { FilterPopover } from './components/filters/FilterPopover';
+import {
+  collectFilterValues,
+  columnCriteria,
+  columnLabel,
+  emptyFilterSpec,
+  expandDataRegion,
+  filterColumnIndices,
+  hasCriteria,
+  withColumnCriteria,
+} from './components/filters/filterSpec';
+import type { FilterSpec } from './components/filters/filterSpec';
 import {
   expandRangeToMergedCells,
   PresenceStrip,
@@ -99,6 +117,8 @@ export interface XlsxEditorProps {
   fileName?: string;
   /** Receive saved bytes instead of triggering a browser download. */
   onSave?: (bytes: Uint8Array) => void;
+  /** Called after every applied local edit — dirty tracking without polling. */
+  onEdit?: () => void;
   /** Open a network-ready Yrs replica and repaint when peer updates arrive. */
   collaboration?: XlsxEditorCollaborationOptions;
   i18n?: Translations;
@@ -118,6 +138,23 @@ interface EditState {
   col: number;
   value: string;
 }
+
+/** the open filter popover: its column and the distinct values read for it. */
+interface OpenFilterState {
+  col: number;
+  values: string[];
+  hasBlanks: boolean;
+  truncated: boolean;
+}
+
+function cellA1(row: number, col: number): string {
+  return `${columnLabel(col)}${row + 1}`;
+}
+
+const XLSX_MAX_ROW = 1_048_575;
+const XLSX_MAX_COL = 16_383;
+const MAX_FILTER_REGION_ROWS = 10_000;
+const MAX_FILTER_REGION_COLS = 256;
 
 const COL_W = 96;
 const ROW_H = 24;
@@ -355,6 +392,7 @@ function XlsxEditorContent({
   file,
   fileName,
   onSave,
+  onEdit,
   collaboration,
   onReady,
   className,
@@ -380,6 +418,10 @@ function XlsxEditorContent({
   // callback identity never reopens the workbook.
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
+  // latest onEdit, read by applyResult so a changing callback identity never
+  // invalidates every mutation callback.
+  const onEditRef = useRef(onEdit);
+  onEditRef.current = onEdit;
 
   const [sheetInfo, setSheetInfo] = useState<SheetInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -401,6 +443,10 @@ function XlsxEditorContent({
   const [borderStyleChoice, setBorderStyleChoice] = useState<SelectionFormatting['borderStyle']>();
   const [borderColorChoice, setBorderColorChoice] = useState<string>();
   const [capturedFormat, setCapturedFormat] = useState<CapturedFormat | null>(null);
+  // in-session auto filters keyed by sheet index; the engine has no read API
+  // for a persisted filter, so filters created before this session are invisible.
+  const [filterSpecs, setFilterSpecs] = useState<Record<number, FilterSpec>>({});
+  const [openFilter, setOpenFilter] = useState<OpenFilterState | null>(null);
   const paintSourceRef = useRef<string | null>(null);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [proposalsPanelOpen, setProposalsPanelOpen] = useState(false);
@@ -465,6 +511,8 @@ function XlsxEditorContent({
     setBorderStyleChoice(undefined);
     setBorderColorChoice(undefined);
     setCapturedFormat(null);
+    setFilterSpecs({});
+    setOpenFilter(null);
     paintSourceRef.current = null;
     pendingSheetViewRef.current = false;
     if (!file) {
@@ -758,6 +806,7 @@ function XlsxEditorContent({
       setSheetInfo(result.sheetInfo);
       setRevision((r) => r + 1);
       refreshProposals();
+      if (result.applied) onEditRef.current?.();
     },
     [refreshProposals]
   );
@@ -1079,6 +1128,130 @@ function XlsxEditorContent({
   );
 
   const searchMenus = useCallback(() => undefined, []);
+
+  const freezePanes = useCallback(
+    (rows: number | null, cols: number | null) => {
+      const handle = handleRef.current;
+      if (!handle) return;
+      try {
+        applyResult(handle.setFreezePane(activeSheet, rows, cols));
+        focusContainer();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [activeSheet, applyResult, focusContainer]
+  );
+
+  // the contiguous non-empty block around the selection (with its header row),
+  // probed one boundary row/column per step through the wasm cell reader.
+  const dataRegionForSelection = useCallback((): {
+    top: number;
+    left: number;
+    bottom: number;
+    right: number;
+  } | null => {
+    const handle = handleRef.current;
+    if (!handle || !selection) return null;
+    const normalized = normalizeRange(selection);
+    const anyContent = (fromRow: number, fromCol: number, toRow: number, toCol: number) =>
+      handle
+        .rangeCells(activeSheet, `${cellA1(fromRow, fromCol)}:${cellA1(toRow, toCol)}`)
+        .some((row) => row.some((cell) => cell.input !== ''));
+    return expandDataRegion(
+      normalized,
+      {
+        rowHasContent: (row, left, right) => anyContent(row, left, row, right),
+        colHasContent: (col, top, bottom) => anyContent(top, col, bottom, col),
+      },
+      {
+        maxRow: Math.min(XLSX_MAX_ROW, normalized.top + MAX_FILTER_REGION_ROWS - 1),
+        maxCol: Math.min(XLSX_MAX_COL, normalized.left + MAX_FILTER_REGION_COLS - 1),
+      }
+    );
+  }, [selection, activeSheet]);
+
+  const toggleFilter = useCallback(() => {
+    const handle = handleRef.current;
+    if (!handle || !selection) return;
+    try {
+      if (filterSpecs[activeSheet]) {
+        applyResult(handle.setAutoFilter(activeSheet, null));
+        setFilterSpecs(({ [activeSheet]: _removed, ...rest }) => rest);
+      } else {
+        const region = dataRegionForSelection();
+        if (!region) return;
+        const spec = emptyFilterSpec({
+          startRow: region.top,
+          startCol: region.left,
+          endRow: region.bottom,
+          endCol: region.right,
+        });
+        applyResult(handle.setAutoFilter(activeSheet, spec));
+        setFilterSpecs((specs) => ({ ...specs, [activeSheet]: spec }));
+      }
+      setOpenFilter(null);
+      focusContainer();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [
+    selection,
+    activeSheet,
+    filterSpecs,
+    dataRegionForSelection,
+    applyResult,
+    focusContainer,
+  ]);
+
+  // open (or toggle closed) a column's popover, reading the distinct raw cell
+  // texts of its body rows — the same texts the engine matches criteria against.
+  const openFilterFor = useCallback(
+    (col: number) => {
+      const handle = handleRef.current;
+      const spec = filterSpecs[activeSheet];
+      if (!handle || !spec) return;
+      if (openFilter?.col === col) {
+        setOpenFilter(null);
+        return;
+      }
+      const bodyStart = spec.range.startRow + 1;
+      if (bodyStart > spec.range.endRow) {
+        setOpenFilter({ col, values: [], hasBlanks: false, truncated: false });
+        return;
+      }
+      try {
+        const cells = handle
+          .rangeCells(
+            activeSheet,
+            `${cellA1(bodyStart, col)}:${cellA1(spec.range.endRow, col)}`
+          )
+          .map((row) => row[0]);
+        setOpenFilter({ col, ...collectFilterValues(cells) });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [filterSpecs, activeSheet, openFilter]
+  );
+
+  const applyColumnFilter = useCallback(
+    (col: number, values: string[] | null, showBlanks: boolean) => {
+      const handle = handleRef.current;
+      const spec = filterSpecs[activeSheet];
+      if (!handle || !spec) return;
+      const next = withColumnCriteria(spec, col, values, showBlanks);
+      try {
+        applyResult(handle.setAutoFilter(activeSheet, next));
+        setFilterSpecs((specs) => ({ ...specs, [activeSheet]: next }));
+        setOpenFilter(null);
+        focusContainer();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [filterSpecs, activeSheet, applyResult, focusContainer]
+  );
 
   const mergeSelection = useCallback(
     (action: MergeAction) => {
@@ -1447,6 +1620,29 @@ function XlsxEditorContent({
   const scaledFocusRect = focusRect ? scaledRect(focusRect, zoom) : null;
   const scaledEditRect = editRect ? scaledRect(editRect, zoom) : null;
 
+  const anchorRow = selection?.anchor.row ?? 0;
+  const anchorCol = selection?.anchor.col ?? 0;
+  const frozenRows = sheetInfo?.frozenRows ?? 0;
+  const frozenCols = sheetInfo?.frozenCols ?? 0;
+
+  const activeFilterSpec = sheetInfo ? filterSpecs[activeSheet] ?? null : null;
+  const filterButtonRects =
+    activeFilterSpec && grid
+      ? filterColumnIndices(activeFilterSpec.range).flatMap((col) => {
+          const rect = cellRect(grid, activeFilterSpec.range.startRow, col);
+          return rect ? [{ col, rect: scaledRect(rect, zoom) }] : [];
+        })
+      : [];
+  const openFilterHeaderRect =
+    activeFilterSpec && grid && openFilter
+      ? cellRect(grid, activeFilterSpec.range.startRow, openFilter.col)
+      : null;
+  const scaledOpenFilterRect = openFilterHeaderRect
+    ? scaledRect(openFilterHeaderRect, zoom)
+    : null;
+  const openFilterCriteria =
+    activeFilterSpec && openFilter ? columnCriteria(activeFilterSpec, openFilter.col) : null;
+
   const spacerWidth = sheetInfo ? sheetInfo.contentWidth * zoom : undefined;
   const spacerHeight = sheetInfo ? sheetInfo.contentHeight * zoom : undefined;
   const formulaValue = formulaDraft ?? focusedCell?.input ?? '';
@@ -1469,6 +1665,7 @@ function XlsxEditorContent({
       setEditing(null);
       setFormulaDraft(null);
       setCapturedFormat(null);
+      setOpenFilter(null);
       paintSourceRef.current = null;
       setSheetInfo(handle.sheetInfo());
     } catch (e) {
@@ -1563,6 +1760,78 @@ function XlsxEditorContent({
                 title={t('toolbar.sortDesc')}
               >
                 <ToolbarIcon name="sortDesc" size={18} />
+              </ToolbarButton>
+            </ToolbarGroup>
+            <ToolbarGroup
+              style={{ ...xlsxToolbarStyles.group }}
+              label={t('toolbar.freezeLabel')}
+            >
+              <ToolbarDropdown
+                testId="xlsx-freeze"
+                title={t('toolbar.freezeLabel')}
+                disabled={!sheetInfo}
+                menuWidth={240}
+                trigger={
+                  <>
+                    <ToolbarIcon name="freeze" size={18} />
+                    <ToolbarIcon name="chevronDown" size={13} />
+                  </>
+                }
+              >
+                {(close) => (
+                  <>
+                    <ToolbarMenuItem
+                      label={t('toolbar.freezeUpToRow', { row: Math.max(1, anchorRow) })}
+                      disabled={anchorRow < 1}
+                      onClick={() =>
+                        freezePanes(anchorRow, frozenCols > 0 ? frozenCols : null)
+                      }
+                      close={close}
+                    />
+                    <ToolbarMenuItem
+                      label={t('toolbar.freezeUpToColumn', {
+                        column: columnLabel(Math.max(0, anchorCol - 1)),
+                      })}
+                      disabled={anchorCol < 1}
+                      onClick={() =>
+                        freezePanes(frozenRows > 0 ? frozenRows : null, anchorCol)
+                      }
+                      close={close}
+                    />
+                    <ToolbarMenuSeparator />
+                    <ToolbarMenuItem
+                      label={t('toolbar.freezeFirstRow')}
+                      onClick={() => freezePanes(1, null)}
+                      close={close}
+                    />
+                    <ToolbarMenuItem
+                      label={t('toolbar.freezeFirstColumn')}
+                      onClick={() => freezePanes(null, 1)}
+                      close={close}
+                    />
+                    <ToolbarMenuSeparator />
+                    <ToolbarMenuItem
+                      label={t('toolbar.unfreeze')}
+                      disabled={frozenRows === 0 && frozenCols === 0}
+                      onClick={() => freezePanes(null, null)}
+                      close={close}
+                    />
+                  </>
+                )}
+              </ToolbarDropdown>
+            </ToolbarGroup>
+            <ToolbarGroup
+              style={{ ...xlsxToolbarStyles.group }}
+              label={t('toolbar.filterLabel')}
+            >
+              <ToolbarButton
+                testId="xlsx-filter-toggle"
+                onClick={toggleFilter}
+                disabled={!sheetInfo || !selection}
+                active={activeFilterSpec !== null}
+                title={t('toolbar.filterToggle')}
+              >
+                <ToolbarIcon name="filter" size={18} />
               </ToolbarButton>
             </ToolbarGroup>
             <div
@@ -1725,6 +1994,72 @@ function XlsxEditorContent({
               zoom={zoom}
               mergedRanges={visibleMergedRanges}
             />
+            {filterButtonRects.map(({ col, rect }) => {
+              const size = Math.min(16, Math.max(10, rect.h - 6));
+              const constrained = activeFilterSpec
+                ? hasCriteria(columnCriteria(activeFilterSpec, col))
+                : false;
+              return (
+                <button
+                  key={col}
+                  type="button"
+                  data-xlsx-filter-trigger
+                  data-testid={`xlsx-filter-button-${col}`}
+                  aria-label={t('filter.columnButton', { column: columnLabel(col) })}
+                  aria-expanded={openFilter?.col === col}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onDoubleClick={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openFilterFor(col);
+                  }}
+                  style={{
+                    position: 'absolute',
+                    left: rect.x + rect.w - size - 2,
+                    top: rect.y + (rect.h - size) / 2,
+                    width: size,
+                    height: size,
+                    display: 'grid',
+                    placeItems: 'center',
+                    padding: 0,
+                    border: `1px solid ${constrained ? BRAND : '#c7cacf'}`,
+                    borderRadius: 3,
+                    background: constrained ? BRAND : '#ffffff',
+                    color: constrained ? '#ffffff' : '#3c4043',
+                    cursor: 'pointer',
+                    pointerEvents: 'auto',
+                    boxSizing: 'border-box',
+                  }}
+                >
+                  <ToolbarIcon name="chevronDown" size={size - 4} />
+                </button>
+              );
+            })}
+            {openFilter && scaledOpenFilterRect && openFilterCriteria && (
+              <FilterPopover
+                key={`${activeSheet}:${openFilter.col}`}
+                columnName={columnLabel(openFilter.col)}
+                values={openFilter.values}
+                hasBlanks={openFilter.hasBlanks}
+                truncated={openFilter.truncated}
+                initialValues={openFilterCriteria.values}
+                initialShowBlanks={openFilterCriteria.showBlanks}
+                style={{
+                  position: 'absolute',
+                  left: Math.max(0, scaledOpenFilterRect.x),
+                  top: scaledOpenFilterRect.y + scaledOpenFilterRect.h + 2,
+                  pointerEvents: 'auto',
+                }}
+                onApply={(values, showBlanks) =>
+                  applyColumnFilter(openFilter.col, values, showBlanks)
+                }
+                onClear={() => applyColumnFilter(openFilter.col, null, true)}
+                onClose={() => setOpenFilter(null)}
+              />
+            )}
             {editing && scaledEditRect && (
               <input
                 ref={editorInputRef}

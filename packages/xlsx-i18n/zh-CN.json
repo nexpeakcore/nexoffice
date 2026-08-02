@@ -13,13 +13,29 @@
     "redo": null,
     "sortLabel": "排序",
     "sortAsc": "升序排序",
-    "sortDesc": "降序排序"
+    "sortDesc": "降序排序",
+    "freezeLabel": "冻结窗格",
+    "freezeUpToRow": "冻结至第 {row} 行",
+    "freezeUpToColumn": "冻结至 {column} 列",
+    "freezeFirstRow": "冻结首行",
+    "freezeFirstColumn": "冻结首列",
+    "unfreeze": "取消冻结",
+    "filterLabel": "筛选",
+    "filterToggle": "筛选"
   },
   "editor": {
     "appLabel": null,
     "demoCellText": null,
     "openError": null,
     "sheetTabsLabel": null
+  },
+  "filter": {
+    "columnButton": "筛选 {column} 列",
+    "selectAll": "全选",
+    "blanks": "（空白）",
+    "apply": "应用",
+    "clear": "清除",
+    "truncated": "仅显示前 {count} 个值"
   },
   "proposals": {
     "panelLabel": null,

@@ -104,13 +104,29 @@
     "redo": "Redo",
     "sortLabel": "Sort",
     "sortAsc": "Sort A to Z",
-    "sortDesc": "Sort Z to A"
+    "sortDesc": "Sort Z to A",
+    "freezeLabel": "Freeze panes",
+    "freezeUpToRow": "Freeze up to row {row}",
+    "freezeUpToColumn": "Freeze up to column {column}",
+    "freezeFirstRow": "Freeze first row",
+    "freezeFirstColumn": "Freeze first column",
+    "unfreeze": "Unfreeze",
+    "filterLabel": "Filter",
+    "filterToggle": "Filter"
   },
   "editor": {
     "appLabel": "Spreadsheet editor",
     "demoCellText": "OpenOOXML xlsx",
     "openError": "Couldn't open this workbook",
     "sheetTabsLabel": "Sheets"
+  },
+  "filter": {
+    "columnButton": "Filter column {column}",
+    "selectAll": "Select all",
+    "blanks": "(Blanks)",
+    "apply": "Apply",
+    "clear": "Clear",
+    "truncated": "Showing the first {count} values"
   },
   "proposals": {
     "panelLabel": "Agent proposals",

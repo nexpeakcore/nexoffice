@@ -13,13 +13,29 @@
     "redo": null,
     "sortLabel": "क्रमबद्ध करें",
     "sortAsc": "A से Z क्रमबद्ध करें",
-    "sortDesc": "Z से A क्रमबद्ध करें"
+    "sortDesc": "Z से A क्रमबद्ध करें",
+    "freezeLabel": "पेन फ़्रीज़ करें",
+    "freezeUpToRow": "पंक्ति {row} तक फ़्रीज़ करें",
+    "freezeUpToColumn": "स्तंभ {column} तक फ़्रीज़ करें",
+    "freezeFirstRow": "पहली पंक्ति फ़्रीज़ करें",
+    "freezeFirstColumn": "पहला स्तंभ फ़्रीज़ करें",
+    "unfreeze": "फ़्रीज़ हटाएँ",
+    "filterLabel": "फ़िल्टर",
+    "filterToggle": "फ़िल्टर"
   },
   "editor": {
     "appLabel": null,
     "demoCellText": null,
     "openError": null,
     "sheetTabsLabel": null
+  },
+  "filter": {
+    "columnButton": "स्तंभ {column} फ़िल्टर करें",
+    "selectAll": "सभी चुनें",
+    "blanks": "(रिक्त)",
+    "apply": "लागू करें",
+    "clear": "साफ़ करें",
+    "truncated": "पहले {count} मान दिखाए जा रहे हैं"
   },
   "proposals": {
     "panelLabel": null,

@@ -13,13 +13,29 @@
     "redo": null,
     "sortLabel": "מיון",
     "sortAsc": "מיין מא׳ עד ת׳",
-    "sortDesc": "מיין מת׳ עד א׳"
+    "sortDesc": "מיין מת׳ עד א׳",
+    "freezeLabel": "הקפאת חלוניות",
+    "freezeUpToRow": "הקפא עד שורה {row}",
+    "freezeUpToColumn": "הקפא עד עמודה {column}",
+    "freezeFirstRow": "הקפא שורה ראשונה",
+    "freezeFirstColumn": "הקפא עמודה ראשונה",
+    "unfreeze": "בטל הקפאה",
+    "filterLabel": "סינון",
+    "filterToggle": "סינון"
   },
   "editor": {
     "appLabel": null,
     "demoCellText": null,
     "openError": null,
     "sheetTabsLabel": null
+  },
+  "filter": {
+    "columnButton": "סנן עמודה {column}",
+    "selectAll": "בחר הכל",
+    "blanks": "(ריקים)",
+    "apply": "החל",
+    "clear": "נקה",
+    "truncated": "מוצגים {count} הערכים הראשונים"
   },
   "proposals": {
     "panelLabel": null,

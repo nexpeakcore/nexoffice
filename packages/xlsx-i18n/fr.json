@@ -13,13 +13,29 @@
     "redo": null,
     "sortLabel": "Trier",
     "sortAsc": "Trier de A à Z",
-    "sortDesc": "Trier de Z à A"
+    "sortDesc": "Trier de Z à A",
+    "freezeLabel": "Figer les volets",
+    "freezeUpToRow": "Figer jusqu'à la ligne {row}",
+    "freezeUpToColumn": "Figer jusqu'à la colonne {column}",
+    "freezeFirstRow": "Figer la première ligne",
+    "freezeFirstColumn": "Figer la première colonne",
+    "unfreeze": "Libérer les volets",
+    "filterLabel": "Filtre",
+    "filterToggle": "Filtre"
   },
   "editor": {
     "appLabel": null,
     "demoCellText": null,
     "openError": null,
     "sheetTabsLabel": null
+  },
+  "filter": {
+    "columnButton": "Filtrer la colonne {column}",
+    "selectAll": "Tout sélectionner",
+    "blanks": "(Vides)",
+    "apply": "Appliquer",
+    "clear": "Effacer",
+    "truncated": "Affichage des {count} premières valeurs"
   },
   "proposals": {
     "panelLabel": null,
