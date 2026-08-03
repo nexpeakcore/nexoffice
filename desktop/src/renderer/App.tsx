@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { DocumentKind, MenuAction, OpenedDocument } from '../shared/ipc.js'
+import type { DocumentKind, MenuAction, OpenedDocument, WebEditAction } from '../shared/ipc.js'
 import { SpellCheckPanel } from './components/SpellCheckPanel.js'
 import { DocxEditorView, type DocxEditorViewRef } from './editors/DocxEditorView.js'
 import { XlsxEditorView, type XlsxEditorViewRef } from './editors/XlsxEditorView.js'
@@ -102,11 +102,11 @@ export function App() {
   }, [])
 
   const saveDocument = useCallback(
-    async (forceDialog: boolean): Promise<boolean> => {
+    async (forceDialog: boolean, bytesOverride?: Uint8Array): Promise<boolean> => {
       const current = documentRef.current
       if (!current) return false
       try {
-        const data = await getCurrentBytes(current)
+        const data = bytesOverride ?? (await getCurrentBytes(current))
         const save = forceDialog ? window.nexoffice.saveFileAs : window.nexoffice.saveFile
         const result = await save(current.path, current.kind, data)
         if (result.canceled || !result.path) {
@@ -178,6 +178,43 @@ export function App() {
     })
   }, [ensureSaved])
 
+  // Edit-menu commands go to the office editor that owns the interaction; a
+  // focused plain DOM field (formula bar, dialogs) keeps native behavior via
+  // the main process, matching what the previous Electron role items did.
+  const editActionTarget = useCallback((): 'docx' | 'xlsx' | 'dom' | null => {
+    const kind = documentRef.current?.kind ?? null
+    if (kind === 'docx' && docxRef.current?.isEditorFocused()) return 'docx'
+    const active = window.document.activeElement
+    if (
+      active instanceof HTMLInputElement ||
+      active instanceof HTMLTextAreaElement ||
+      (active instanceof HTMLElement && active.isContentEditable)
+    ) {
+      return 'dom'
+    }
+    if (kind === 'xlsx') return 'xlsx'
+    if (kind === 'docx') return 'docx'
+    return null
+  }, [])
+
+  const runEditAction = useCallback(
+    (verb: WebEditAction) => {
+      const target = editActionTarget()
+      if (target === 'dom') {
+        window.nexoffice.webEditAction(verb)
+        return
+      }
+      const editor = target === 'xlsx' ? xlsxRef.current : target === 'docx' ? docxRef.current : null
+      if (!editor) return
+      if (verb === 'undo') editor.undo()
+      else if (verb === 'redo') editor.redo()
+      else if (verb === 'cut') void editor.cut()
+      else if (verb === 'copy') void editor.copy()
+      else void editor.paste()
+    },
+    [editActionTarget],
+  )
+
   useEffect(() => {
     const handle = (action: MenuAction) => {
       switch (action) {
@@ -221,6 +258,21 @@ export function App() {
             )
           break
         }
+        case 'edit:undo':
+          runEditAction('undo')
+          break
+        case 'edit:redo':
+          runEditAction('redo')
+          break
+        case 'edit:cut':
+          runEditAction('cut')
+          break
+        case 'edit:copy':
+          runEditAction('copy')
+          break
+        case 'edit:paste':
+          runEditAction('paste')
+          break
         case 'view:spellCheck':
           setSpellPanelOpen((prev) => !prev)
           break
@@ -250,7 +302,7 @@ export function App() {
       }
     }
     return window.nexoffice.onMenuAction(handle)
-  }, [openDocument, saveDocument, ensureSaved, getCurrentBytes])
+  }, [openDocument, saveDocument, ensureSaved, getCurrentBytes, runEditAction])
 
   useEffect(() => {
     window.nexoffice.rendererReady()
@@ -272,7 +324,12 @@ export function App() {
             document.kind === 'docx' ? (
               <DocxEditorView ref={docxRef} document={document} onChange={markEdited} />
             ) : document.kind === 'xlsx' ? (
-              <XlsxEditorView ref={xlsxRef} document={document} onChange={markEdited} />
+              <XlsxEditorView
+                ref={xlsxRef}
+                document={document}
+                onChange={markEdited}
+                onSaveRequest={(bytes) => void saveDocument(false, bytes)}
+              />
             ) : (
               <section className="flex w-full items-center justify-center p-8">
                 <div className="w-full max-w-3xl rounded-lg border border-neutral-200 bg-white p-8 shadow-sm">

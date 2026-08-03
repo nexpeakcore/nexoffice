@@ -7,6 +7,7 @@ export const IPC = {
   readFile: 'fs:readFile',
   platform: 'app:platform',
   menuAction: 'menu:action',
+  webEditAction: 'edit:webAction',
   rendererReady: 'renderer:ready',
   closeRequest: 'window:closeRequest',
   closeResponse: 'window:closeResponse',
@@ -61,12 +62,19 @@ export type PrintRenderResult =
   | { ok: true; pages: number; truncated: boolean }
   | { ok: false; error: string }
 
+export type WebEditAction = 'undo' | 'redo' | 'cut' | 'copy' | 'paste'
+
 export type MenuAction =
   | 'file:new'
   | 'file:open'
   | 'file:save'
   | 'file:saveAs'
   | 'file:exportPdf'
+  | 'edit:undo'
+  | 'edit:redo'
+  | 'edit:cut'
+  | 'edit:copy'
+  | 'edit:paste'
   | 'edit:find'
   | 'view:wordCount'
   | 'view:spellCheck'

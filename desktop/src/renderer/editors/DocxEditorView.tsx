@@ -13,6 +13,12 @@ export interface DocxEditorViewRef {
   save: () => Promise<ArrayBuffer | null>
   getText: () => string
   getStats: () => { words: number; characters: number; page: number; pages: number }
+  isEditorFocused: () => boolean
+  undo: () => void
+  redo: () => void
+  cut: () => Promise<void>
+  copy: () => Promise<void>
+  paste: () => Promise<void>
 }
 
 interface DocxEditorViewProps {
@@ -121,6 +127,35 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
           page: editor?.getCurrentPage() ?? 1,
           pages: editor?.getTotalPages() ?? 1,
         }
+      },
+      isEditorFocused: () => editorRef.current?.getEditorRef()?.isFocused() ?? false,
+      undo: () => {
+        editorRef.current?.getEditorRef()?.undo()
+      },
+      redo: () => {
+        editorRef.current?.getEditorRef()?.redo()
+      },
+      cut: async () => {
+        const paged = editorRef.current?.getEditorRef()
+        if (!paged) return
+        const text = paged.getSelectedText()
+        if (text) await navigator.clipboard.writeText(text).catch(() => undefined)
+        paged.deleteSelection()
+      },
+      copy: async () => {
+        const text = editorRef.current?.getEditorRef()?.getSelectedText() ?? ''
+        if (text) await navigator.clipboard.writeText(text).catch(() => undefined)
+      },
+      paste: async () => {
+        const paged = editorRef.current?.getEditorRef()
+        if (!paged) return
+        let text = ''
+        try {
+          text = await navigator.clipboard.readText()
+        } catch {
+          return
+        }
+        if (text) paged.insertText(text)
       },
     }))
 

@@ -17,6 +17,7 @@ import {
   type SaveRequest,
   type SaveResult,
   type UnsavedChoice,
+  type WebEditAction,
 } from '../shared/ipc.js'
 
 const isDev = !app.isPackaged
@@ -347,6 +348,16 @@ function registerIpc(): void {
     }
   })
 
+  ipcMain.on(IPC.webEditAction, (event, action: WebEditAction) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) return
+    const contents = mainWindow.webContents
+    if (action === 'undo') contents.undo()
+    else if (action === 'redo') contents.redo()
+    else if (action === 'cut') contents.cut()
+    else if (action === 'copy') contents.copy()
+    else contents.paste()
+  })
+
   ipcMain.on(IPC.rendererReady, (event) => {
     if (!mainWindow || event.sender !== mainWindow.webContents) return
     rendererReady = true
@@ -365,6 +376,13 @@ function registerIpc(): void {
     window.destroy()
     if (quitting) app.quit()
   })
+}
+
+function documentPathsFromArgv(argv: string[], cwd: string): string[] {
+  return argv
+    .slice(1)
+    .filter((arg) => !arg.startsWith('-') && /\.(docx|xlsx|pptx)$/i.test(arg))
+    .map((arg) => resolve(cwd, arg))
 }
 
 function openPathInWindow(filePath: string): void {
@@ -397,13 +415,13 @@ app.on('before-quit', () => {
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  app.on('second-instance', (_event, argv) => {
+  app.on('second-instance', (_event, argv, workingDirectory) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.focus()
     }
-    for (const arg of argv.slice(1)) {
-      if (/\.(docx|xlsx|pptx)$/i.test(arg)) openPathInWindow(arg)
+    for (const filePath of documentPathsFromArgv(argv, workingDirectory)) {
+      openPathInWindow(filePath)
     }
   })
 
@@ -412,6 +430,10 @@ if (!app.requestSingleInstanceLock()) {
     registerIpc()
     mainWindow = createWindow()
     buildMenu(sendMenuAction)
+
+    for (const filePath of documentPathsFromArgv(process.argv, process.cwd())) {
+      openPathInWindow(filePath)
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

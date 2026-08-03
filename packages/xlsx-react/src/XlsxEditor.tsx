@@ -96,11 +96,23 @@ import { ProposalsPanel } from './proposals/ProposalsPanel';
 /**
  * The imperative surface handed to {@link XlsxEditorProps.onReady}: the open
  * workbook handle plus a `refreshProposals` to re-read the pending list after an
- * external caller (e.g. a demo agent) stages proposals on the same handle.
+ * external caller (e.g. a demo agent) stages proposals on the same handle, and
+ * the editor's own history/clipboard actions so a host shell (menus, command
+ * palettes) can drive them against the live selection.
  */
 export interface XlsxEditorApi {
   handle: WorkbookHandle;
   refreshProposals: () => void;
+  /** Undo the last edit through the editor's history pipeline. */
+  undo: () => void;
+  /** Redo the last undone edit through the editor's history pipeline. */
+  redo: () => void;
+  /** Copy the current selection to the system clipboard as TSV. */
+  copySelection: () => Promise<void>;
+  /** Copy the current selection to the clipboard, then clear it. */
+  cutSelection: () => Promise<void>;
+  /** Paste clipboard TSV into the grid at the current selection. */
+  pasteSelection: () => Promise<void>;
 }
 
 export interface XlsxEditorCollaborationOptions {
@@ -439,6 +451,15 @@ function XlsxEditorContent({
   // invalidates every mutation callback.
   const onEditRef = useRef(onEdit);
   onEditRef.current = onEdit;
+  // latest history/clipboard callbacks, read by the api handed to onReady so
+  // its stable methods always act on the current selection.
+  const editorActionsRef = useRef<{
+    undo: () => void;
+    redo: () => void;
+    copySelection: () => Promise<void>;
+    cutSelection: () => Promise<void>;
+    pasteSelection: () => Promise<void>;
+  } | null>(null);
 
   const [sheetInfo, setSheetInfo] = useState<SheetInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -616,7 +637,18 @@ function XlsxEditorContent({
           setCollaborationReplica(handle);
           setError(null);
           refreshProposals();
-          const cleanup = onReadyRef.current?.({ handle, refreshProposals });
+          const cleanup = onReadyRef.current?.({
+            handle,
+            refreshProposals,
+            undo: () => editorActionsRef.current?.undo(),
+            redo: () => editorActionsRef.current?.redo(),
+            copySelection: () =>
+              editorActionsRef.current?.copySelection() ?? Promise.resolve(),
+            cutSelection: () =>
+              editorActionsRef.current?.cutSelection() ?? Promise.resolve(),
+            pasteSelection: () =>
+              editorActionsRef.current?.pasteSelection() ?? Promise.resolve(),
+          });
           if (typeof cleanup === 'function') cleanupReady = cleanup;
         } catch (e) {
           runReadyCleanup();
@@ -1161,6 +1193,8 @@ function XlsxEditorContent({
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [applyResult]);
+
+  editorActionsRef.current = { undo, redo, copySelection, cutSelection, pasteSelection };
 
   const print = useCallback(() => window.print(), []);
 

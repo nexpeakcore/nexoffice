@@ -51,12 +51,16 @@ export function buildMenu(dispatch: Dispatch): Menu {
     {
       label: '&Edit',
       submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
+        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: send('edit:undo') },
+        {
+          label: 'Redo',
+          accelerator: process.platform === 'win32' ? 'Ctrl+Y' : 'Shift+CmdOrCtrl+Z',
+          click: send('edit:redo'),
+        },
         { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        { role: 'paste' },
+        { label: 'Cut', accelerator: 'CmdOrCtrl+X', click: send('edit:cut') },
+        { label: 'Copy', accelerator: 'CmdOrCtrl+C', click: send('edit:copy') },
+        { label: 'Paste', accelerator: 'CmdOrCtrl+V', click: send('edit:paste') },
         ...(isMac
           ? ([{ role: 'pasteAndMatchStyle' }, { role: 'delete' }, { role: 'selectAll' }] as MenuItemConstructorOptions[])
           : ([{ role: 'delete' }, { type: 'separator' }, { role: 'selectAll' }] as MenuItemConstructorOptions[])),

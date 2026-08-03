@@ -9,6 +9,7 @@ import {
   type PrintRenderResult,
   type SaveResult,
   type UnsavedChoice,
+  type WebEditAction,
 } from '../shared/ipc.js'
 
 const api = {
@@ -39,6 +40,8 @@ const api = {
 
   confirmUnsaved: (name: string): Promise<UnsavedChoice> =>
     ipcRenderer.invoke(IPC.confirmUnsaved, name),
+
+  webEditAction: (action: WebEditAction): void => ipcRenderer.send(IPC.webEditAction, action),
 
   rendererReady: (): void => ipcRenderer.send(IPC.rendererReady),
 

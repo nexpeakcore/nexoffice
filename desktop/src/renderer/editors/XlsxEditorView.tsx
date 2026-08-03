@@ -4,6 +4,11 @@ import type { OpenedDocument } from '../../shared/ipc.js'
 
 export interface XlsxEditorViewRef {
   save: () => Uint8Array | null
+  undo: () => void
+  redo: () => void
+  cut: () => Promise<void>
+  copy: () => Promise<void>
+  paste: () => Promise<void>
   freezeTopRow: () => void
   freezeFirstColumn: () => void
   unfreeze: () => void
@@ -12,14 +17,17 @@ export interface XlsxEditorViewRef {
 interface XlsxEditorViewProps {
   document: OpenedDocument
   onChange?: () => void
+  onSaveRequest?: (bytes: Uint8Array) => void
 }
 
 export const XlsxEditorView = forwardRef<XlsxEditorViewRef, XlsxEditorViewProps>(
-  function XlsxEditorView({ document, onChange }, ref) {
+  function XlsxEditorView({ document, onChange, onSaveRequest }, ref) {
     const [error] = useState<string | null>(null)
     const apiRef = useRef<XlsxEditorApi | null>(null)
     const onChangeRef = useRef(onChange)
     onChangeRef.current = onChange
+    const onSaveRequestRef = useRef(onSaveRequest)
+    onSaveRequestRef.current = onSaveRequest
 
     const setFreezePane = (row: number | null, col: number | null) => {
       const handle = apiRef.current?.handle
@@ -33,6 +41,11 @@ export const XlsxEditorView = forwardRef<XlsxEditorViewRef, XlsxEditorViewProps>
         const handle = apiRef.current?.handle
         return handle ? handle.save() : null
       },
+      undo: () => apiRef.current?.undo(),
+      redo: () => apiRef.current?.redo(),
+      cut: () => apiRef.current?.cutSelection() ?? Promise.resolve(),
+      copy: () => apiRef.current?.copySelection() ?? Promise.resolve(),
+      paste: () => apiRef.current?.pasteSelection() ?? Promise.resolve(),
       freezeTopRow: () => setFreezePane(1, null),
       freezeFirstColumn: () => setFreezePane(null, 1),
       unfreeze: () => setFreezePane(null, null),
@@ -53,7 +66,7 @@ export const XlsxEditorView = forwardRef<XlsxEditorViewRef, XlsxEditorViewProps>
       <XlsxEditor
         file={document.data}
         fileName={document.name}
-        onSave={() => onChange?.()}
+        onSave={(bytes: Uint8Array) => onSaveRequestRef.current?.(bytes)}
         onEdit={() => onChangeRef.current?.()}
         onReady={(api: XlsxEditorApi) => {
           apiRef.current = api

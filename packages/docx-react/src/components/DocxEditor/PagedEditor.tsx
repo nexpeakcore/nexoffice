@@ -356,6 +356,8 @@ export interface PagedEditorRef {
   selectAll(): void;
   /** Get the current display-position selection. */
   getSelectionRange(): { from: number; to: number } | null;
+  /** Plain text covered by the current selection; `''` when collapsed. */
+  getSelectedText(): string;
   /** Resolve a display position into the authoritative Yrs location. */
   displayPositionToYrsLoc(position: number): YrsLoc | null;
   /** Live authoritative yrs session. */
