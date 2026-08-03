@@ -21,14 +21,16 @@ jobs:
     runs-on: ubuntu-latest
     # the bot login is hardcoded here and in GIT_AUTHOR_*; without this guard
     # the bot's own comments would re-trigger the workflow and self-sign
+    # CLA signing only applies to the upstream open-source repo; forks lack the App secrets
     if: |
-      github.event_name == 'pull_request_target' ||
-      (github.event_name == 'issue_comment' &&
-       github.event.issue.pull_request != null &&
-       github.event.comment.user.login != 'openooxml-bot[bot]' &&
-       (contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA') ||
-        contains(github.event.comment.body, 'I have read the CCLA Document and I hereby sign the CCLA') ||
-        contains(github.event.comment.body, '!cla-check')))
+      github.repository_owner == 'openooxml' &&
+      (github.event_name == 'pull_request_target' ||
+       (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        github.event.comment.user.login != 'openooxml-bot[bot]' &&
+        (contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA') ||
+         contains(github.event.comment.body, 'I have read the CCLA Document and I hereby sign the CCLA') ||
+         contains(github.event.comment.body, '!cla-check'))))
     steps:
       - name: Mint App installation token
         id: app-token
