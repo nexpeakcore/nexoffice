@@ -1,5 +1,5 @@
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, describe, expect, it } from 'bun:test';
 import { useState } from 'react';
 import { EditableCombobox } from './EditableCombobox';
 
@@ -7,6 +7,9 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 const { cleanup, fireEvent, render } = await import('@testing-library/react');
 
 afterEach(cleanup);
+// happy-dom's fetch rejects file: URLs; leave the runner's globals clean for
+// later test files that load wasm from disk.
+afterAll(() => GlobalRegistrator.unregister());
 
 describe('EditableCombobox', () => {
   it('restores the applied value after a rejected commit', () => {

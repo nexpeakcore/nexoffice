@@ -1,5 +1,5 @@
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, describe, expect, it } from 'bun:test';
 import type { ShapeFormattingAction } from './Toolbar';
 import { LocaleProvider } from '../i18n';
 import { Toolbar } from './Toolbar';
@@ -12,6 +12,9 @@ Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
 const { cleanup, fireEvent, render } = await import('@testing-library/react');
 
 afterEach(cleanup);
+// happy-dom's fetch rejects file: URLs; leave the runner's globals clean for
+// later test files that load wasm from disk.
+afterAll(() => GlobalRegistrator.unregister());
 
 describe('Toolbar shape controls', () => {
   it('arms a preset shape placement tool', () => {

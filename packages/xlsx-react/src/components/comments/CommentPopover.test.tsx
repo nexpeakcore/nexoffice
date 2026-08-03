@@ -1,5 +1,5 @@
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, describe, expect, it } from 'bun:test';
 import { CommentEditorPopover, CommentViewPopover } from './CommentPopover';
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
@@ -8,6 +8,9 @@ const { cleanup, fireEvent, getByTestId, queryByTestId, render } = await import(
 );
 
 afterEach(cleanup);
+// happy-dom's fetch rejects file: URLs; leave the runner's globals clean for
+// later test files that load wasm from disk.
+afterAll(() => GlobalRegistrator.unregister());
 
 function renderEditor(overrides?: Partial<Parameters<typeof CommentEditorPopover>[0]>) {
   const saved: string[] = [];

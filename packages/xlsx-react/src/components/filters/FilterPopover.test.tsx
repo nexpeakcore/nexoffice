@@ -1,11 +1,14 @@
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, describe, expect, it } from 'bun:test';
 import { FilterPopover } from './FilterPopover';
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 const { cleanup, fireEvent, getByTestId, render } = await import('@testing-library/react');
 
 afterEach(cleanup);
+// happy-dom's fetch rejects file: URLs; leave the runner's globals clean for
+// later test files that load wasm from disk.
+afterAll(() => GlobalRegistrator.unregister());
 
 interface Applied {
   values: string[] | null;
