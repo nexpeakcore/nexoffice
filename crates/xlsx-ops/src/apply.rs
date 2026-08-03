@@ -495,7 +495,8 @@ fn find_sort_merge_conflict(s: &Sheet, range: CellRange) -> Option<CellRange> {
 
 /// move whole rows of cells within `range`'s columns; every `(from, to)` pair
 /// is applied simultaneously, so sources are read before any destination is
-/// written. cells carry their style and formula. returns the inverse pairs.
+/// written. cells carry their style, formula, and comment. returns the
+/// inverse pairs.
 fn move_row_cells(
     s: &mut Sheet,
     range: CellRange,
@@ -528,7 +529,38 @@ fn move_row_cells(
             s.set_cell(CellRef::new(to, col), cell);
         }
     }
+    move_row_comments(s, range, moves);
     moves.iter().map(|&(from, to)| (to, from)).collect()
+}
+
+/// permute comments alongside their rows under the same simultaneous
+/// semantics as `move_row_cells`: read every source row's comments within
+/// `range`'s columns, clear the destinations, then write.
+fn move_row_comments(s: &mut Sheet, range: CellRange, moves: &[(RowId, RowId)]) {
+    let mut writes = Vec::with_capacity(moves.len());
+    for &(from, to) in moves {
+        let comments: Vec<(ColId, Comment)> = s
+            .comments
+            .range((from, range.start.col)..=(from, range.end.col))
+            .map(|(&(_, col), comment)| (col, comment.clone()))
+            .collect();
+        writes.push((to, comments));
+    }
+    for &(_, to) in moves {
+        let cleared: Vec<(RowId, ColId)> = s
+            .comments
+            .range((to, range.start.col)..=(to, range.end.col))
+            .map(|(&key, _)| key)
+            .collect();
+        for key in cleared {
+            s.comments.remove(&key);
+        }
+    }
+    for (to, comments) in writes {
+        for (col, comment) in comments {
+            s.comments.insert((to, col), comment);
+        }
+    }
 }
 
 /// sort-key ordering: empties sort last regardless of direction; otherwise
@@ -1995,6 +2027,88 @@ mod tests {
                 CellValue::Number { value: 3.0 },
             ]
         );
+
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+    }
+
+    #[test]
+    fn sort_range_moves_comments_with_their_rows_and_undo_restores_them() {
+        let mut wb = wb_one_sheet();
+        let s = wb.sheet_mut(SheetId(0)).unwrap();
+        for (row, value) in [(0, 3.0), (1, 1.0), (2, 2.0)] {
+            s.set_cell(
+                CellRef::new(row, 0),
+                Cell {
+                    value: CellValue::Number { value },
+                    ..Cell::default()
+                },
+            );
+        }
+        s.set_comment(r("A1"), Some(note("Ada", "on the 3.0 row")));
+        s.set_comment(r("B2"), Some(note("Grace", "on the 1.0 row")));
+        s.set_comment(r("C1"), Some(note("Lin", "outside the sorted columns")));
+        s.set_comment(r("A4"), Some(note("Mei", "below the sorted rows")));
+        let before = wb.clone();
+
+        let inv = apply(
+            &mut wb,
+            &Op::SortRange {
+                sheet: SheetId(0),
+                range: rng("A1:B3"),
+                key_col: 0,
+                ascending: true,
+            },
+        )
+        .unwrap();
+        let sheet = &wb.sheets[0];
+        assert_eq!(
+            sheet.comment_at(r("A3")),
+            Some(&note("Ada", "on the 3.0 row"))
+        );
+        assert_eq!(
+            sheet.comment_at(r("B1")),
+            Some(&note("Grace", "on the 1.0 row"))
+        );
+        assert_eq!(sheet.comment_at(r("A1")), None);
+        assert_eq!(sheet.comment_at(r("B2")), None);
+        assert_eq!(
+            sheet.comment_at(r("C1")),
+            Some(&note("Lin", "outside the sorted columns"))
+        );
+        assert_eq!(
+            sheet.comment_at(r("A4")),
+            Some(&note("Mei", "below the sorted rows"))
+        );
+        assert_eq!(sheet.comments.len(), 4);
+
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+    }
+
+    #[test]
+    fn move_rows_swaps_comments_between_commented_and_uncommented_rows() {
+        let mut wb = wb_one_sheet();
+        let s = wb.sheet_mut(SheetId(0)).unwrap();
+        s.set_cell(r("A1"), text_cell("first"));
+        s.set_cell(r("A2"), text_cell("second"));
+        s.set_comment(r("A2"), Some(note("Ada", "swap me")));
+        let before = wb.clone();
+
+        let inv = apply(
+            &mut wb,
+            &Op::MoveRows {
+                sheet: SheetId(0),
+                range: rng("A1:A2"),
+                moves: vec![(0, 1), (1, 0)],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            wb.sheets[0].comment_at(r("A1")),
+            Some(&note("Ada", "swap me"))
+        );
+        assert_eq!(wb.sheets[0].comment_at(r("A2")), None);
 
         apply_ops(&mut wb, &inv.0).unwrap();
         assert_eq!(wb, before);
