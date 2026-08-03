@@ -1,0 +1,168 @@
+{
+  "menu": {
+    "app": {
+      "checkForUpdates": "Kiểm tra bản cập nhật…",
+      "services": "Dịch vụ",
+      "hide": "Ẩn NexOffice",
+      "hideOthers": "Ẩn ứng dụng khác",
+      "unhide": "Hiện tất cả",
+      "quit": "Thoát NexOffice"
+    },
+    "file": {
+      "label": "&Tệp",
+      "new": "Tạo mới",
+      "open": "Mở…",
+      "openRecent": "Mở gần đây",
+      "noRecentFiles": "Không có tệp gần đây",
+      "clearRecent": "Xóa danh sách",
+      "save": "Lưu",
+      "saveAs": "Lưu dưới dạng…",
+      "exportPdf": "Xuất ra PDF…",
+      "closeWindow": "Đóng cửa sổ",
+      "exit": "Thoát"
+    },
+    "edit": {
+      "label": "&Chỉnh sửa",
+      "undo": "Hoàn tác",
+      "redo": "Làm lại",
+      "cut": "Cắt",
+      "copy": "Sao chép",
+      "paste": "Dán",
+      "pasteAndMatchStyle": "Dán và khớp kiểu",
+      "delete": "Xóa",
+      "selectAll": "Chọn tất cả",
+      "find": "Tìm kiếm…"
+    },
+    "view": {
+      "label": "&Xem",
+      "zoomIn": "Phóng to",
+      "zoomOut": "Thu nhỏ",
+      "actualSize": "Kích thước thực",
+      "wordCount": "Đếm từ",
+      "spellCheck": "Kiểm tra chính tả",
+      "freezeTopRow": "Cố định hàng đầu tiên",
+      "freezeFirstColumn": "Cố định cột đầu tiên",
+      "unfreeze": "Bỏ cố định",
+      "language": "Ngôn ngữ",
+      "fullScreen": "Bật/tắt toàn màn hình"
+    },
+    "window": {
+      "label": "&Cửa sổ",
+      "minimize": "Thu nhỏ",
+      "zoom": "Thu phóng",
+      "front": "Đưa tất cả ra trước"
+    },
+    "help": {
+      "label": "Trợ giúp",
+      "documentation": "Tài liệu hướng dẫn NexOffice",
+      "checkForUpdates": "Kiểm tra bản cập nhật…",
+      "about": "Giới thiệu NexOffice"
+    }
+  },
+  "dialog": {
+    "filters": {
+      "officeDocuments": "Tài liệu Office",
+      "wordDocument": "Tài liệu Word",
+      "excelWorkbook": "Sổ làm việc Excel",
+      "powerpointPresentation": "Bản trình chiếu PowerPoint",
+      "pdfDocument": "Tài liệu PDF",
+      "allFiles": "Tất cả tệp"
+    },
+    "fileNotFound": {
+      "message": "Không tìm thấy tệp",
+      "detail": "{path}\n\nTệp không còn tồn tại và đã được xóa khỏi danh sách Mở gần đây."
+    },
+    "about": {
+      "title": "Giới thiệu NexOffice",
+      "version": "Phiên bản {version}"
+    },
+    "unsaved": {
+      "message": "Bạn có muốn lưu các thay đổi trong {name} không?",
+      "detail": "Các thay đổi sẽ bị mất nếu bạn không lưu.",
+      "save": "Lưu",
+      "dontSave": "Không lưu",
+      "cancel": "Hủy"
+    },
+    "pdfTruncated": {
+      "message": "Xuất PDF bị cắt bớt",
+      "detail": "Tài liệu vượt quá giới hạn xuất {cap} trang; chỉ {pages} trang đầu được xuất."
+    },
+    "pdfFailed": {
+      "title": "Xuất PDF thất bại"
+    },
+    "openFailed": {
+      "title": "Không thể mở tệp"
+    }
+  },
+  "app": {
+    "edited": " — Đã chỉnh sửa",
+    "kind": {
+      "docx": "Tài liệu",
+      "xlsx": "Sổ làm việc",
+      "pptx": "Bản trình chiếu"
+    },
+    "meta": {
+      "type": "Loại",
+      "size": "Kích thước",
+      "path": "Đường dẫn"
+    },
+    "presentationComingSoon": "Trình soạn bản trình chiếu sẽ sớm ra mắt.",
+    "empty": {
+      "subtitle": "Mở tệp .docx, .xlsx hoặc .pptx để bắt đầu.",
+      "openFile": "Mở tệp"
+    }
+  },
+  "status": {
+    "ready": "Sẵn sàng",
+    "newDocument": "Tài liệu mới",
+    "opened": "Đã mở {name}",
+    "openFailed": "Mở tệp thất bại: {message}",
+    "unsupported": "Định dạng tệp không được hỗ trợ: {name}",
+    "saved": "Đã lưu {path}",
+    "saveCanceled": "Đã hủy lưu",
+    "saveFailed": "Lưu thất bại: {message}",
+    "openFirst": "Hãy mở một tài liệu trước",
+    "openWordFirst": "Hãy mở một tài liệu Word trước",
+    "exportingPdf": "Đang xuất PDF…",
+    "pdfCanceled": "Đã hủy xuất PDF",
+    "pdfFailed": "Xuất PDF thất bại: {message}",
+    "exported": "Đã xuất {path}",
+    "exportedPagesOne": "Đã xuất {path} (1 trang)",
+    "exportedPagesMany": "Đã xuất {path} ({pages} trang)",
+    "truncatedSuffix": " — đã cắt bớt do vượt giới hạn trang",
+    "wordCount": "Số từ: {words} · Ký tự: {characters} · Trang {page}/{pages}",
+    "frozeTopRow": "Đã cố định hàng đầu tiên",
+    "frozeFirstColumn": "Đã cố định cột đầu tiên",
+    "unfroze": "Đã bỏ cố định",
+    "notImplemented": "{action} chưa được hỗ trợ"
+  },
+  "footer": {
+    "stats": "{words} từ · {characters} ký tự · Trang {page}/{pages}",
+    "misspelledOne": "1 từ sai chính tả",
+    "misspelledMany": "{count} từ sai chính tả",
+    "spellingOk": "Chính tả đúng",
+    "loadingDictionary": "Đang tải từ điển…",
+    "dictError": "Lỗi từ điển"
+  },
+  "spellPanel": {
+    "title": "Kiểm tra chính tả",
+    "close": "Đóng",
+    "none": "Không tìm thấy từ sai chính tả.",
+    "countOne": "1 từ sai chính tả",
+    "countMany": "{count} từ sai chính tả"
+  },
+  "update": {
+    "ready": "Bản cập nhật {version} đã sẵn sàng",
+    "restart": "Khởi động lại để cập nhật",
+    "checking": "Đang kiểm tra bản cập nhật…",
+    "downloading": "Đang tải bản cập nhật {version}…",
+    "downloadingPercent": "Đang tải bản cập nhật… {percent}%",
+    "upToDate": "NexOffice đã là phiên bản mới nhất",
+    "devDisabled": "Cập nhật bị tắt trong bản phát triển",
+    "failed": "Kiểm tra cập nhật thất bại: {message}"
+  },
+  "editor": {
+    "loading": "Đang tải {name}…",
+    "couldNotOpen": "Không thể mở {name}"
+  }
+}

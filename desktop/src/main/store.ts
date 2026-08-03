@@ -12,6 +12,7 @@ export interface WindowState {
 interface PersistedState {
   recents: string[]
   window: WindowState | null
+  locale: string | null
 }
 
 let state: PersistedState | null = null
@@ -35,6 +36,7 @@ function load(): PersistedState {
   if (state) return state
   let recents: string[] = []
   let window: WindowState | null = null
+  let locale: string | null = null
   try {
     const raw = JSON.parse(readFileSync(storePath(), 'utf8')) as Record<string, unknown>
     if (Array.isArray(raw['recents'])) {
@@ -44,10 +46,11 @@ function load(): PersistedState {
     if (savedWindow && isRectangle(savedWindow['bounds'])) {
       window = { bounds: savedWindow['bounds'], maximized: savedWindow['maximized'] === true }
     }
+    if (typeof raw['locale'] === 'string') locale = raw['locale']
   } catch {
     // Missing or corrupt store starts fresh.
   }
-  state = { recents, window }
+  state = { recents, window, locale }
   return state
 }
 
@@ -91,5 +94,14 @@ export function getWindowState(): WindowState | null {
 
 export function setWindowState(windowState: WindowState): void {
   load().window = windowState
+  persist()
+}
+
+export function getStoredLocale(): string | null {
+  return load().locale
+}
+
+export function setStoredLocale(locale: string): void {
+  load().locale = locale
   persist()
 }

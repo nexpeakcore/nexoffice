@@ -124,8 +124,10 @@
       "devDependencies": {
         "@betteroffice/docx": "workspace:*",
         "@betteroffice/docx-fonts": "workspace:*",
+        "@betteroffice/docx-i18n": "workspace:*",
         "@betteroffice/docx-react": "workspace:*",
         "@betteroffice/xlsx": "workspace:*",
+        "@betteroffice/xlsx-i18n": "workspace:*",
         "@betteroffice/xlsx-react": "workspace:*",
         "@tailwindcss/vite": "^4.3.2",
         "@types/node": "^26.1.0",

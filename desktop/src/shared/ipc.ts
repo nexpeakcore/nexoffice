@@ -1,4 +1,6 @@
 export const IPC = {
+  locale: 'app:locale',
+  localeChanged: 'locale:changed',
   openFile: 'dialog:openFile',
   saveFile: 'dialog:saveFile',
   saveFileAs: 'dialog:saveFileAs',

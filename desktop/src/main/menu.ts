@@ -1,14 +1,23 @@
 import { basename } from 'node:path'
 import { app, Menu, shell, type MenuItemConstructorOptions } from 'electron'
+import {
+  LOCALE_NATIVE_NAMES,
+  SUPPORTED_LOCALES,
+  type LocaleCode,
+  type Translator,
+} from '../i18n/index.js'
 import type { MenuAction } from '../shared/ipc.js'
 
 type Dispatch = (action: MenuAction) => void
 
 export interface MenuContext {
+  t: Translator
+  locale: LocaleCode
   dispatch: Dispatch
   recents: readonly string[]
   onOpenRecent: (path: string) => void
   onClearRecents: () => void
+  onSelectLocale: (locale: LocaleCode) => void
   onCheckForUpdates: () => void
   onShowAbout: () => void
 }
@@ -16,22 +25,37 @@ export interface MenuContext {
 const isMac = process.platform === 'darwin'
 
 function openRecentSubmenu(context: MenuContext): MenuItemConstructorOptions[] {
+  const { t } = context
   const entries: MenuItemConstructorOptions[] = context.recents.length
     ? context.recents.map((path) => ({
         label: basename(path),
         toolTip: path,
         click: () => context.onOpenRecent(path),
       }))
-    : [{ label: 'No Recent Files', enabled: false }]
+    : [{ label: t('menu.file.noRecentFiles'), enabled: false }]
 
   return [
     ...entries,
     { type: 'separator' },
-    { label: 'Clear Recent', enabled: context.recents.length > 0, click: context.onClearRecents },
+    {
+      label: t('menu.file.clearRecent'),
+      enabled: context.recents.length > 0,
+      click: context.onClearRecents,
+    },
   ]
 }
 
+function languageSubmenu(context: MenuContext): MenuItemConstructorOptions[] {
+  return SUPPORTED_LOCALES.map((locale) => ({
+    label: LOCALE_NATIVE_NAMES[locale],
+    type: 'radio',
+    checked: locale === context.locale,
+    click: () => context.onSelectLocale(locale),
+  }))
+}
+
 export function buildMenu(context: MenuContext): Menu {
+  const { t } = context
   const send = (action: MenuAction) => () => context.dispatch(action)
 
   const appMenu: MenuItemConstructorOptions[] = isMac
@@ -39,16 +63,16 @@ export function buildMenu(context: MenuContext): Menu {
         {
           label: app.name,
           submenu: [
-            { role: 'about' },
-            { label: 'Check for Updates…', click: context.onCheckForUpdates },
+            { role: 'about', label: t('menu.help.about') },
+            { label: t('menu.app.checkForUpdates'), click: context.onCheckForUpdates },
             { type: 'separator' },
-            { role: 'services' },
+            { role: 'services', label: t('menu.app.services') },
             { type: 'separator' },
-            { role: 'hide' },
-            { role: 'hideOthers' },
-            { role: 'unhide' },
+            { role: 'hide', label: t('menu.app.hide') },
+            { role: 'hideOthers', label: t('menu.app.hideOthers') },
+            { role: 'unhide', label: t('menu.app.unhide') },
             { type: 'separator' },
-            { role: 'quit' },
+            { role: 'quit', label: t('menu.app.quit') },
           ],
         },
       ]
@@ -57,85 +81,106 @@ export function buildMenu(context: MenuContext): Menu {
   const template: MenuItemConstructorOptions[] = [
     ...appMenu,
     {
-      label: '&File',
+      label: t('menu.file.label'),
       submenu: [
-        { label: 'New', accelerator: 'CmdOrCtrl+N', click: send('file:new') },
-        { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: send('file:open') },
-        { label: 'Open Recent', submenu: openRecentSubmenu(context) },
+        { label: t('menu.file.new'), accelerator: 'CmdOrCtrl+N', click: send('file:new') },
+        { label: t('menu.file.open'), accelerator: 'CmdOrCtrl+O', click: send('file:open') },
+        { label: t('menu.file.openRecent'), submenu: openRecentSubmenu(context) },
         { type: 'separator' },
-        { label: 'Save', accelerator: 'CmdOrCtrl+S', click: send('file:save') },
-        { label: 'Save As…', accelerator: 'CmdOrCtrl+Shift+S', click: send('file:saveAs') },
+        { label: t('menu.file.save'), accelerator: 'CmdOrCtrl+S', click: send('file:save') },
+        { label: t('menu.file.saveAs'), accelerator: 'CmdOrCtrl+Shift+S', click: send('file:saveAs') },
         { type: 'separator' },
-        { label: 'Export as PDF…', accelerator: 'CmdOrCtrl+Shift+E', click: send('file:exportPdf') },
+        {
+          label: t('menu.file.exportPdf'),
+          accelerator: 'CmdOrCtrl+Shift+E',
+          click: send('file:exportPdf'),
+        },
         { type: 'separator' },
-        isMac ? { role: 'close' } : { role: 'quit' },
+        isMac
+          ? { role: 'close', label: t('menu.file.closeWindow') }
+          : { role: 'quit', label: t('menu.file.exit') },
       ],
     },
     {
-      label: '&Edit',
+      label: t('menu.edit.label'),
       submenu: [
-        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: send('edit:undo') },
+        { label: t('menu.edit.undo'), accelerator: 'CmdOrCtrl+Z', click: send('edit:undo') },
         {
-          label: 'Redo',
+          label: t('menu.edit.redo'),
           accelerator: process.platform === 'win32' ? 'Ctrl+Y' : 'Shift+CmdOrCtrl+Z',
           click: send('edit:redo'),
         },
         { type: 'separator' },
-        { label: 'Cut', accelerator: 'CmdOrCtrl+X', click: send('edit:cut') },
-        { label: 'Copy', accelerator: 'CmdOrCtrl+C', click: send('edit:copy') },
-        { label: 'Paste', accelerator: 'CmdOrCtrl+V', click: send('edit:paste') },
+        { label: t('menu.edit.cut'), accelerator: 'CmdOrCtrl+X', click: send('edit:cut') },
+        { label: t('menu.edit.copy'), accelerator: 'CmdOrCtrl+C', click: send('edit:copy') },
+        { label: t('menu.edit.paste'), accelerator: 'CmdOrCtrl+V', click: send('edit:paste') },
         ...(isMac
-          ? ([{ role: 'pasteAndMatchStyle' }, { role: 'delete' }, { role: 'selectAll' }] as MenuItemConstructorOptions[])
-          : ([{ role: 'delete' }, { type: 'separator' }, { role: 'selectAll' }] as MenuItemConstructorOptions[])),
+          ? ([
+              { role: 'pasteAndMatchStyle', label: t('menu.edit.pasteAndMatchStyle') },
+              { role: 'delete', label: t('menu.edit.delete') },
+              { role: 'selectAll', label: t('menu.edit.selectAll') },
+            ] as MenuItemConstructorOptions[])
+          : ([
+              { role: 'delete', label: t('menu.edit.delete') },
+              { type: 'separator' },
+              { role: 'selectAll', label: t('menu.edit.selectAll') },
+            ] as MenuItemConstructorOptions[])),
         { type: 'separator' },
-        { label: 'Find…', accelerator: 'CmdOrCtrl+F', click: send('edit:find') },
+        { label: t('menu.edit.find'), accelerator: 'CmdOrCtrl+F', click: send('edit:find') },
       ],
     },
     {
-      label: '&View',
+      label: t('menu.view.label'),
       submenu: [
-        { label: 'Zoom In', accelerator: 'CmdOrCtrl+Plus', click: send('view:zoomIn') },
+        { label: t('menu.view.zoomIn'), accelerator: 'CmdOrCtrl+Plus', click: send('view:zoomIn') },
         {
-          label: 'Zoom In',
+          label: t('menu.view.zoomIn'),
           accelerator: 'CmdOrCtrl+=',
           click: send('view:zoomIn'),
           visible: false,
           acceleratorWorksWhenHidden: true,
         },
-        { label: 'Zoom Out', accelerator: 'CmdOrCtrl+-', click: send('view:zoomOut') },
-        { label: 'Actual Size', accelerator: 'CmdOrCtrl+0', click: send('view:zoomReset') },
+        { label: t('menu.view.zoomOut'), accelerator: 'CmdOrCtrl+-', click: send('view:zoomOut') },
+        { label: t('menu.view.actualSize'), accelerator: 'CmdOrCtrl+0', click: send('view:zoomReset') },
         { type: 'separator' },
-        { label: 'Word Count', accelerator: 'CmdOrCtrl+Shift+G', click: send('view:wordCount') },
-        { label: 'Spell Check', accelerator: 'CmdOrCtrl+Shift+;', click: send('view:spellCheck') },
+        { label: t('menu.view.wordCount'), accelerator: 'CmdOrCtrl+Shift+G', click: send('view:wordCount') },
+        { label: t('menu.view.spellCheck'), accelerator: 'CmdOrCtrl+Shift+;', click: send('view:spellCheck') },
         { type: 'separator' },
-        { label: 'Freeze Top Row', click: send('view:freezeTopRow') },
-        { label: 'Freeze First Column', click: send('view:freezeFirstColumn') },
-        { label: 'Unfreeze Panes', click: send('view:unfreeze') },
+        { label: t('menu.view.freezeTopRow'), click: send('view:freezeTopRow') },
+        { label: t('menu.view.freezeFirstColumn'), click: send('view:freezeFirstColumn') },
+        { label: t('menu.view.unfreeze'), click: send('view:unfreeze') },
         { type: 'separator' },
-        { role: 'togglefullscreen' },
+        { label: t('menu.view.language'), submenu: languageSubmenu(context) },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: t('menu.view.fullScreen') },
         ...(app.isPackaged
           ? []
           : ([{ role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' }] as MenuItemConstructorOptions[])),
       ],
     },
     {
-      label: '&Window',
+      label: t('menu.window.label'),
       submenu: isMac
         ? [
-            { role: 'minimize' },
-            { role: 'zoom' },
+            { role: 'minimize', label: t('menu.window.minimize') },
+            { role: 'zoom', label: t('menu.window.zoom') },
             { type: 'separator' },
-            { role: 'front' },
+            { role: 'front', label: t('menu.window.front') },
             { type: 'separator' },
             { role: 'window' },
           ]
-        : [{ role: 'minimize' }, { role: 'zoom' }, { role: 'close' }],
+        : [
+            { role: 'minimize', label: t('menu.window.minimize') },
+            { role: 'zoom', label: t('menu.window.zoom') },
+            { role: 'close', label: t('menu.file.closeWindow') },
+          ],
     },
     {
       role: 'help',
+      label: t('menu.help.label'),
       submenu: [
         {
-          label: 'NexOffice Documentation',
+          label: t('menu.help.documentation'),
           click: () => {
             void shell.openExternal('https://betteroffice.dev')
           },
@@ -144,8 +189,8 @@ export function buildMenu(context: MenuContext): Menu {
           ? []
           : ([
               { type: 'separator' },
-              { label: 'Check for Updates…', click: context.onCheckForUpdates },
-              { label: 'About NexOffice', click: context.onShowAbout },
+              { label: t('menu.help.checkForUpdates'), click: context.onCheckForUpdates },
+              { label: t('menu.help.about'), click: context.onShowAbout },
             ] as MenuItemConstructorOptions[])),
       ],
     },

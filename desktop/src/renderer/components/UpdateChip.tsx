@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { UpdateEvent } from '../../shared/ipc.js'
+import { useI18n } from '../i18n.js'
 
 const TRANSIENT_STATUSES = new Set<UpdateEvent['status']>(['none', 'dev', 'error'])
 const TRANSIENT_DISMISS_MS = 6000
@@ -9,6 +10,7 @@ interface UpdateChipProps {
 }
 
 export function UpdateChip({ beforeRestart }: UpdateChipProps) {
+  const { t } = useI18n()
   const [event, setEvent] = useState<UpdateEvent | null>(null)
   const [restarting, setRestarting] = useState(false)
   const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -32,7 +34,7 @@ export function UpdateChip({ beforeRestart }: UpdateChipProps) {
   if (event.status === 'downloaded') {
     return (
       <span className="flex items-center gap-1.5 text-neutral-400">
-        <span>Update {event.version} ready</span>
+        <span>{t('update.ready', { version: event.version })}</span>
         <button
           type="button"
           disabled={restarting}
@@ -46,7 +48,7 @@ export function UpdateChip({ beforeRestart }: UpdateChipProps) {
           }}
           className="rounded bg-neutral-900 px-1.5 py-0.5 font-medium text-white hover:bg-neutral-700 disabled:opacity-50"
         >
-          Restart to update
+          {t('update.restart')}
         </button>
       </span>
     )
@@ -54,16 +56,16 @@ export function UpdateChip({ beforeRestart }: UpdateChipProps) {
 
   const label =
     event.status === 'checking'
-      ? 'Checking for updates…'
+      ? t('update.checking')
       : event.status === 'available'
-        ? `Downloading update ${event.version}…`
+        ? t('update.downloading', { version: event.version })
         : event.status === 'progress'
-          ? `Downloading update… ${event.percent}%`
+          ? t('update.downloadingPercent', { percent: event.percent })
           : event.status === 'none'
-            ? 'NexOffice is up to date'
+            ? t('update.upToDate')
             : event.status === 'dev'
-              ? 'Updates are disabled in dev builds'
-              : `Update check failed: ${event.message}`
+              ? t('update.devDisabled')
+              : t('update.failed', { message: event.message })
 
   return <span className={event.status === 'error' ? 'text-red-400' : 'text-neutral-400'}>{label}</span>
 }

@@ -12,9 +12,18 @@ import {
   type UpdateEvent,
   type WebEditAction,
 } from '../shared/ipc.js'
+import type { LocaleCode } from '../i18n/index.js'
 
 const api = {
   platform: (): Promise<NodeJS.Platform> => ipcRenderer.invoke(IPC.platform),
+
+  getLocale: (): Promise<LocaleCode> => ipcRenderer.invoke(IPC.locale),
+
+  onLocaleChanged: (handler: (locale: LocaleCode) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, locale: LocaleCode) => handler(locale)
+    ipcRenderer.on(IPC.localeChanged, listener)
+    return () => ipcRenderer.removeListener(IPC.localeChanged, listener)
+  },
 
   openFile: (): Promise<OpenedDocument | null> => ipcRenderer.invoke(IPC.openFile),
 

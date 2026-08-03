@@ -2,7 +2,24 @@ import { basename, extname, join, resolve, sep } from 'node:path'
 import { access, readFile, writeFile } from 'node:fs/promises'
 import { app, BrowserWindow, dialog, ipcMain, protocol, screen, shell, type Rectangle } from 'electron'
 import { buildMenu } from './menu.js'
-import { addRecent, clearRecents, getRecents, getWindowState, removeRecent, setWindowState } from './store.js'
+import {
+  addRecent,
+  clearRecents,
+  getRecents,
+  getStoredLocale,
+  getWindowState,
+  removeRecent,
+  setStoredLocale,
+  setWindowState,
+} from './store.js'
+import {
+  createTranslator,
+  DEFAULT_LOCALE,
+  isSupportedLocale,
+  matchLocale,
+  type LocaleCode,
+  type Translator,
+} from '../i18n/index.js'
 import { checkForUpdatesManually, installDownloadedUpdate, setupAutoUpdater } from './updater.js'
 import {
   EXTENSIONS,
@@ -59,10 +76,20 @@ protocol.registerSchemesAsPrivileged([
   { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } },
 ])
 
-const FILTERS: Record<DocumentKind, Electron.FileFilter> = {
-  docx: { name: 'Word Document', extensions: ['docx'] },
-  xlsx: { name: 'Excel Workbook', extensions: ['xlsx'] },
-  pptx: { name: 'PowerPoint Presentation', extensions: ['pptx'] },
+let activeLocale: LocaleCode = DEFAULT_LOCALE
+let t: Translator = createTranslator(activeLocale)
+
+function applyLocale(locale: LocaleCode): void {
+  activeLocale = locale
+  t = createTranslator(locale)
+}
+
+function fileFilters(): Record<DocumentKind, Electron.FileFilter> {
+  return {
+    docx: { name: t('dialog.filters.wordDocument'), extensions: ['docx'] },
+    xlsx: { name: t('dialog.filters.excelWorkbook'), extensions: ['xlsx'] },
+    pptx: { name: t('dialog.filters.powerpointPresentation'), extensions: ['pptx'] },
+  }
 }
 
 function registerAppProtocol(): void {
@@ -203,6 +230,8 @@ function sendMenuAction(action: MenuAction): void {
 
 function rebuildMenu(): void {
   buildMenu({
+    t,
+    locale: activeLocale,
     dispatch: sendMenuAction,
     recents: getRecents(),
     onOpenRecent: (filePath) => void openRecentPath(filePath),
@@ -211,9 +240,20 @@ function rebuildMenu(): void {
       app.clearRecentDocuments()
       rebuildMenu()
     },
+    onSelectLocale: selectLocale,
     onCheckForUpdates: () => checkForUpdatesManually(),
     onShowAbout: showAboutDialog,
   })
+}
+
+function selectLocale(locale: LocaleCode): void {
+  if (locale === activeLocale) return
+  applyLocale(locale)
+  setStoredLocale(locale)
+  rebuildMenu()
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(IPC.localeChanged, locale)
+  }
 }
 
 function noteRecent(filePath: string): void {
@@ -231,8 +271,8 @@ async function openRecentPath(filePath: string): Promise<void> {
     const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
     const options: Electron.MessageBoxOptions = {
       type: 'info',
-      message: 'File not found',
-      detail: `${filePath}\n\nThe file no longer exists and was removed from Open Recent.`,
+      message: t('dialog.fileNotFound.message'),
+      detail: t('dialog.fileNotFound.detail', { path: filePath }),
     }
     void (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options))
     return
@@ -243,9 +283,9 @@ async function openRecentPath(filePath: string): Promise<void> {
 function showAboutDialog(): void {
   const options: Electron.MessageBoxOptions = {
     type: 'info',
-    title: 'About NexOffice',
+    title: t('dialog.about.title'),
     message: 'NexOffice',
-    detail: `Version ${app.getVersion()}\nElectron ${process.versions.electron}\nChromium ${process.versions.chrome}\n\n${COPYRIGHT}`,
+    detail: `${t('dialog.about.version', { version: app.getVersion() })}\nElectron ${process.versions.electron}\nChromium ${process.versions.chrome}\n\n${COPYRIGHT}`,
   }
   const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
   void (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options))
@@ -255,14 +295,15 @@ async function promptOpen(): Promise<OpenedDocument | null> {
   const owner = mainWindow
   if (!owner || owner.isDestroyed()) return null
 
+  const filters = fileFilters()
   const { canceled, filePaths } = await dialog.showOpenDialog(owner, {
     properties: ['openFile'],
     filters: [
-      { name: 'Office Documents', extensions: ['docx', 'xlsx', 'pptx'] },
-      FILTERS.docx,
-      FILTERS.xlsx,
-      FILTERS.pptx,
-      { name: 'All Files', extensions: ['*'] },
+      { name: t('dialog.filters.officeDocuments'), extensions: ['docx', 'xlsx', 'pptx'] },
+      filters.docx,
+      filters.xlsx,
+      filters.pptx,
+      { name: t('dialog.filters.allFiles'), extensions: ['*'] },
     ],
   })
 
@@ -281,7 +322,7 @@ async function promptSaveAs(kind: DocumentKind, suggestedPath: string | null): P
 
   const { canceled, filePath } = await dialog.showSaveDialog(owner, {
     defaultPath: suggestedPath ?? `Untitled.${EXTENSIONS[kind]}`,
-    filters: [FILTERS[kind]],
+    filters: [fileFilters()[kind]],
   })
 
   if (canceled || !filePath) return null
@@ -366,6 +407,8 @@ function registerIpc(): void {
 
   ipcMain.handle(IPC.platform, () => process.platform)
 
+  ipcMain.handle(IPC.locale, () => activeLocale)
+
   ipcMain.handle(IPC.saveFile, async (_event, request: SaveRequest): Promise<SaveResult> => {
     if (request.path && !grantedPaths.has(request.path)) {
       throw new Error(`Access denied: ${request.path}`)
@@ -393,11 +436,11 @@ function registerIpc(): void {
 
     const { response } = await dialog.showMessageBox(owner, {
       type: 'warning',
-      buttons: ['Save', "Don't Save", 'Cancel'],
+      buttons: [t('dialog.unsaved.save'), t('dialog.unsaved.dontSave'), t('dialog.unsaved.cancel')],
       defaultId: 0,
       cancelId: 2,
-      message: `Do you want to save the changes you made to ${name}?`,
-      detail: "Your changes will be lost if you don't save them.",
+      message: t('dialog.unsaved.message', { name }),
+      detail: t('dialog.unsaved.detail'),
     })
     return response === 0 ? 'save' : response === 1 ? 'discard' : 'cancel'
   })
@@ -409,7 +452,7 @@ function registerIpc(): void {
     const base = request.name.replace(/\.(docx|xlsx|pptx)$/i, '') || 'Untitled'
     const { canceled, filePath } = await dialog.showSaveDialog(owner, {
       defaultPath: `${base}.pdf`,
-      filters: [{ name: 'PDF Document', extensions: ['pdf'] }],
+      filters: [{ name: t('dialog.filters.pdfDocument'), extensions: ['pdf'] }],
     })
     if (canceled || !filePath) return { path: null, canceled: true }
     grantedPaths.add(filePath)
@@ -429,14 +472,14 @@ function registerIpc(): void {
       if (truncated && !owner.isDestroyed()) {
         void dialog.showMessageBox(owner, {
           type: 'warning',
-          message: 'PDF export truncated',
-          detail: `The document exceeds the ${PRINT_PAGE_CAP}-page export limit; only the first ${pages} pages were exported.`,
+          message: t('dialog.pdfTruncated.message'),
+          detail: t('dialog.pdfTruncated.detail', { cap: PRINT_PAGE_CAP, pages }),
         })
       }
       return { path: filePath, canceled: false, pages, truncated }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      dialog.showErrorBox('PDF Export Failed', message)
+      dialog.showErrorBox(t('dialog.pdfFailed.title'), message)
       return { path: null, canceled: true }
     } finally {
       if (!printWindow.isDestroyed()) printWindow.destroy()
@@ -509,7 +552,7 @@ function openPathInWindow(filePath: string): void {
     })
     .catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
-      dialog.showErrorBox('Could Not Open File', `${filePath}\n\n${message}`)
+      dialog.showErrorBox(t('dialog.openFailed.title'), `${filePath}\n\n${message}`)
     })
 }
 
@@ -536,6 +579,8 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   void app.whenReady().then(() => {
+    const stored = getStoredLocale()
+    applyLocale(stored && isSupportedLocale(stored) ? stored : matchLocale(app.getLocale()))
     if (process.platform === 'darwin') {
       app.setAboutPanelOptions({
         applicationName: 'NexOffice',

@@ -1,0 +1,168 @@
+{
+  "menu": {
+    "app": {
+      "checkForUpdates": "Sprawdź aktualizacje…",
+      "services": "Usługi",
+      "hide": "Ukryj NexOffice",
+      "hideOthers": "Ukryj pozostałe",
+      "unhide": "Pokaż wszystkie",
+      "quit": "Zakończ NexOffice"
+    },
+    "file": {
+      "label": "&Plik",
+      "new": "Nowy",
+      "open": "Otwórz…",
+      "openRecent": "Otwórz ostatnie",
+      "noRecentFiles": "Brak ostatnich plików",
+      "clearRecent": "Wyczyść listę",
+      "save": "Zapisz",
+      "saveAs": "Zapisz jako…",
+      "exportPdf": "Eksportuj jako PDF…",
+      "closeWindow": "Zamknij okno",
+      "exit": "Zakończ"
+    },
+    "edit": {
+      "label": "&Edycja",
+      "undo": "Cofnij",
+      "redo": "Ponów",
+      "cut": "Wytnij",
+      "copy": "Kopiuj",
+      "paste": "Wklej",
+      "pasteAndMatchStyle": "Wklej i dopasuj styl",
+      "delete": "Usuń",
+      "selectAll": "Zaznacz wszystko",
+      "find": "Znajdź…"
+    },
+    "view": {
+      "label": "&Widok",
+      "zoomIn": "Powiększ",
+      "zoomOut": "Pomniejsz",
+      "actualSize": "Rzeczywisty rozmiar",
+      "wordCount": "Liczba słów",
+      "spellCheck": "Sprawdzanie pisowni",
+      "freezeTopRow": "Zablokuj górny wiersz",
+      "freezeFirstColumn": "Zablokuj pierwszą kolumnę",
+      "unfreeze": "Odblokuj okienka",
+      "language": "Język",
+      "fullScreen": "Przełącz pełny ekran"
+    },
+    "window": {
+      "label": "&Okno",
+      "minimize": "Minimalizuj",
+      "zoom": "Powiększenie",
+      "front": "Wszystkie na wierzch"
+    },
+    "help": {
+      "label": "Pomoc",
+      "documentation": "Dokumentacja NexOffice",
+      "checkForUpdates": "Sprawdź aktualizacje…",
+      "about": "O programie NexOffice"
+    }
+  },
+  "dialog": {
+    "filters": {
+      "officeDocuments": "Dokumenty Office",
+      "wordDocument": "Dokument Word",
+      "excelWorkbook": "Skoroszyt Excel",
+      "powerpointPresentation": "Prezentacja PowerPoint",
+      "pdfDocument": "Dokument PDF",
+      "allFiles": "Wszystkie pliki"
+    },
+    "fileNotFound": {
+      "message": "Nie znaleziono pliku",
+      "detail": "{path}\n\nPlik już nie istnieje i został usunięty z listy ostatnich plików."
+    },
+    "about": {
+      "title": "O programie NexOffice",
+      "version": "Wersja {version}"
+    },
+    "unsaved": {
+      "message": "Czy chcesz zapisać zmiany w {name}?",
+      "detail": "Zmiany zostaną utracone, jeśli ich nie zapiszesz.",
+      "save": "Zapisz",
+      "dontSave": "Nie zapisuj",
+      "cancel": "Anuluj"
+    },
+    "pdfTruncated": {
+      "message": "Eksport PDF skrócony",
+      "detail": "Dokument przekracza limit eksportu {cap} stron; wyeksportowano tylko pierwsze {pages} stron."
+    },
+    "pdfFailed": {
+      "title": "Eksport PDF nie powiódł się"
+    },
+    "openFailed": {
+      "title": "Nie można otworzyć pliku"
+    }
+  },
+  "app": {
+    "edited": " — Edytowano",
+    "kind": {
+      "docx": "Dokument",
+      "xlsx": "Skoroszyt",
+      "pptx": "Prezentacja"
+    },
+    "meta": {
+      "type": "Typ",
+      "size": "Rozmiar",
+      "path": "Ścieżka"
+    },
+    "presentationComingSoon": "Edytor prezentacji już wkrótce.",
+    "empty": {
+      "subtitle": "Otwórz plik .docx, .xlsx lub .pptx, aby rozpocząć.",
+      "openFile": "Otwórz plik"
+    }
+  },
+  "status": {
+    "ready": "Gotowe",
+    "newDocument": "Nowy dokument",
+    "opened": "Otwarto {name}",
+    "openFailed": "Otwarcie nie powiodło się: {message}",
+    "unsupported": "Nieobsługiwany typ pliku: {name}",
+    "saved": "Zapisano {path}",
+    "saveCanceled": "Zapisywanie anulowane",
+    "saveFailed": "Zapisywanie nie powiodło się: {message}",
+    "openFirst": "Najpierw otwórz dokument",
+    "openWordFirst": "Najpierw otwórz dokument Word",
+    "exportingPdf": "Eksportowanie PDF…",
+    "pdfCanceled": "Eksport PDF anulowany",
+    "pdfFailed": "Eksport PDF nie powiódł się: {message}",
+    "exported": "Wyeksportowano {path}",
+    "exportedPagesOne": "Wyeksportowano {path} (1 strona)",
+    "exportedPagesMany": "Wyeksportowano {path} (strony: {pages})",
+    "truncatedSuffix": " — skrócono na limicie stron",
+    "wordCount": "Słowa: {words} · Znaki: {characters} · Strona {page}/{pages}",
+    "frozeTopRow": "Zablokowano górny wiersz",
+    "frozeFirstColumn": "Zablokowano pierwszą kolumnę",
+    "unfroze": "Odblokowano okienka",
+    "notImplemented": "{action} nie jest jeszcze zaimplementowane"
+  },
+  "footer": {
+    "stats": "Słowa: {words} · Znaki: {characters} · Strona {page}/{pages}",
+    "misspelledOne": "1 błędnie napisane słowo",
+    "misspelledMany": "Błędnie napisane słowa: {count}",
+    "spellingOk": "Pisownia OK",
+    "loadingDictionary": "Ładowanie słownika…",
+    "dictError": "Błąd słownika"
+  },
+  "spellPanel": {
+    "title": "Sprawdzanie pisowni",
+    "close": "Zamknij",
+    "none": "Nie znaleziono błędnie napisanych słów.",
+    "countOne": "1 błędnie napisane słowo",
+    "countMany": "Błędnie napisane słowa: {count}"
+  },
+  "update": {
+    "ready": "Aktualizacja {version} gotowa",
+    "restart": "Uruchom ponownie, aby zaktualizować",
+    "checking": "Sprawdzanie aktualizacji…",
+    "downloading": "Pobieranie aktualizacji {version}…",
+    "downloadingPercent": "Pobieranie aktualizacji… {percent}%",
+    "upToDate": "NexOffice jest aktualny",
+    "devDisabled": "Aktualizacje są wyłączone w kompilacjach deweloperskich",
+    "failed": "Sprawdzanie aktualizacji nie powiodło się: {message}"
+  },
+  "editor": {
+    "loading": "Ładowanie {name}…",
+    "couldNotOpen": "Nie można otworzyć {name}"
+  }
+}

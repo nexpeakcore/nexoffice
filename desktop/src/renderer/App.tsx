@@ -5,21 +5,29 @@ import { UpdateChip } from './components/UpdateChip.js'
 import { DocxEditorView, type DocxEditorViewRef } from './editors/DocxEditorView.js'
 import { XlsxEditorView, type XlsxEditorViewRef } from './editors/XlsxEditorView.js'
 import { spellCheckService, type Misspelling } from './services/spellcheck.js'
+import { useI18n } from './i18n.js'
 
 interface DocumentState extends Omit<OpenedDocument, 'kind'> {
   kind: DocumentKind
   dirty: boolean
 }
 
-const KIND_LABEL = {
-  docx: 'Document',
-  xlsx: 'Workbook',
-  pptx: 'Presentation',
-} as const
+interface StatusMessage {
+  key: string
+  vars?: Record<string, string | number>
+  suffixKey?: string
+}
+
+const KIND_LABEL_KEY: Record<DocumentKind, string> = {
+  docx: 'app.kind.docx',
+  xlsx: 'app.kind.xlsx',
+  pptx: 'app.kind.pptx',
+}
 
 export function App() {
+  const { t } = useI18n()
   const [document, setDocument] = useState<DocumentState | null>(null)
-  const [status, setStatus] = useState('Ready')
+  const [status, setStatus] = useState<StatusMessage>({ key: 'status.ready' })
   const docxRef = useRef<DocxEditorViewRef>(null)
   const [spellPanelOpen, setSpellPanelOpen] = useState(false)
   const [spellLoading, setSpellLoading] = useState(true)
@@ -111,7 +119,7 @@ export function App() {
         const save = forceDialog ? window.nexoffice.saveFileAs : window.nexoffice.saveFile
         const result = await save(current.path, current.kind, data)
         if (result.canceled || !result.path) {
-          setStatus('Save canceled')
+          setStatus({ key: 'status.saveCanceled' })
           return false
         }
         const savedPath = result.path
@@ -119,10 +127,13 @@ export function App() {
         setDocument((prev) =>
           prev ? { ...prev, path: savedPath, name: savedName, data, dirty: false } : prev,
         )
-        setStatus(`Saved ${savedPath}`)
+        setStatus({ key: 'status.saved', vars: { path: savedPath } })
         return true
       } catch (error) {
-        setStatus(`Save failed: ${error instanceof Error ? error.message : String(error)}`)
+        setStatus({
+          key: 'status.saveFailed',
+          vars: { message: error instanceof Error ? error.message : String(error) },
+        })
         return false
       }
     },
@@ -141,11 +152,11 @@ export function App() {
   const applyOpenedDocument = useCallback((opened: OpenedDocument) => {
     const kind = opened.kind
     if (!kind) {
-      setStatus(`Unsupported file type: ${opened.name}`)
+      setStatus({ key: 'status.unsupported', vars: { name: opened.name } })
       return
     }
     setDocument({ ...opened, kind, dirty: false })
-    setStatus(`Opened ${opened.name}`)
+    setStatus({ key: 'status.opened', vars: { name: opened.name } })
   }, [])
 
   const openDocument = useCallback(async () => {
@@ -155,7 +166,10 @@ export function App() {
       if (!opened) return
       applyOpenedDocument(opened)
     } catch (error) {
-      setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`)
+      setStatus({
+        key: 'status.openFailed',
+        vars: { message: error instanceof Error ? error.message : String(error) },
+      })
     }
   }, [ensureSaved, applyOpenedDocument])
 
@@ -223,7 +237,7 @@ export function App() {
           void ensureSaved().then((proceed) => {
             if (!proceed) return
             setDocument(null)
-            setStatus('New document')
+            setStatus({ key: 'status.newDocument' })
           })
           break
         case 'file:open':
@@ -238,24 +252,34 @@ export function App() {
         case 'file:exportPdf': {
           const current = documentRef.current
           if (!current) {
-            setStatus('Open a document first')
+            setStatus({ key: 'status.openFirst' })
             break
           }
-          setStatus('Exporting PDF…')
+          setStatus({ key: 'status.exportingPdf' })
           void getCurrentBytes(current)
             .then((data) => window.nexoffice.exportPdf(current.name, current.kind, data))
             .then((result) => {
               if (!result.path) {
-                setStatus('PDF export canceled')
+                setStatus({ key: 'status.pdfCanceled' })
                 return
               }
-              const pages =
-                result.pages != null ? ` (${result.pages} page${result.pages === 1 ? '' : 's'})` : ''
-              const truncated = result.truncated ? ' — truncated at page limit' : ''
-              setStatus(`Exported ${result.path}${pages}${truncated}`)
+              const key =
+                result.pages == null
+                  ? 'status.exported'
+                  : result.pages === 1
+                    ? 'status.exportedPagesOne'
+                    : 'status.exportedPagesMany'
+              setStatus({
+                key,
+                vars: { path: result.path, pages: result.pages ?? 0 },
+                ...(result.truncated ? { suffixKey: 'status.truncatedSuffix' } : {}),
+              })
             })
             .catch((error: unknown) =>
-              setStatus(`PDF export failed: ${error instanceof Error ? error.message : String(error)}`),
+              setStatus({
+                key: 'status.pdfFailed',
+                vars: { message: error instanceof Error ? error.message : String(error) },
+              }),
             )
           break
         }
@@ -281,25 +305,33 @@ export function App() {
           const stats = docxRef.current?.getStats()
           setStatus(
             stats
-              ? `Words: ${stats.words} · Chars: ${stats.characters} · Page ${stats.page}/${stats.pages}`
-              : 'Open a Word document first',
+              ? {
+                  key: 'status.wordCount',
+                  vars: {
+                    words: stats.words,
+                    characters: stats.characters,
+                    page: stats.page,
+                    pages: stats.pages,
+                  },
+                }
+              : { key: 'status.openWordFirst' },
           )
           break
         }
         case 'view:freezeTopRow':
           xlsxRef.current?.freezeTopRow()
-          setStatus('Frozen top row')
+          setStatus({ key: 'status.frozeTopRow' })
           break
         case 'view:freezeFirstColumn':
           xlsxRef.current?.freezeFirstColumn()
-          setStatus('Frozen first column')
+          setStatus({ key: 'status.frozeFirstColumn' })
           break
         case 'view:unfreeze':
           xlsxRef.current?.unfreeze()
-          setStatus('Unfrozen panes')
+          setStatus({ key: 'status.unfroze' })
           break
         default:
-          setStatus(`${action} is not implemented yet`)
+          setStatus({ key: 'status.notImplemented', vars: { action } })
       }
     }
     return window.nexoffice.onMenuAction(handle)
@@ -315,7 +347,7 @@ export function App() {
     <div className="flex h-full flex-col bg-neutral-100">
       <header className="drag-region flex h-11 shrink-0 items-center justify-center border-b border-neutral-200 bg-white">
         <span className="text-sm font-medium text-neutral-700">
-          {document ? `${document.name}${document.dirty ? ' — Edited' : ''}` : 'NexOffice'}
+          {document ? `${document.name}${document.dirty ? t('app.edited') : ''}` : 'NexOffice'}
         </span>
       </header>
 
@@ -336,14 +368,14 @@ export function App() {
                 <div className="w-full max-w-3xl rounded-lg border border-neutral-200 bg-white p-8 shadow-sm">
                   <h1 className="text-lg font-semibold text-neutral-900">{document.name}</h1>
                   <dl className="mt-4 grid grid-cols-[8rem_1fr] gap-y-2 text-sm text-neutral-600">
-                    <dt>Type</dt>
-                    <dd>{KIND_LABEL[document.kind]}</dd>
-                    <dt>Size</dt>
+                    <dt>{t('app.meta.type')}</dt>
+                    <dd>{t(KIND_LABEL_KEY[document.kind])}</dd>
+                    <dt>{t('app.meta.size')}</dt>
                     <dd>{(document.data.byteLength / 1024).toFixed(1)} KB</dd>
-                    <dt>Path</dt>
+                    <dt>{t('app.meta.path')}</dt>
                     <dd className="truncate">{document.path}</dd>
                   </dl>
-                  <p className="mt-6 text-sm text-neutral-500">Presentation editor coming soon.</p>
+                  <p className="mt-6 text-sm text-neutral-500">{t('app.presentationComingSoon')}</p>
                 </div>
               </section>
             )
@@ -351,15 +383,13 @@ export function App() {
             <section className="flex w-full items-center justify-center">
               <div className="text-center">
                 <h1 className="text-2xl font-semibold text-neutral-900">NexOffice</h1>
-                <p className="mt-2 text-sm text-neutral-500">
-                  Open a .docx, .xlsx, or .pptx file to get started.
-                </p>
+                <p className="mt-2 text-sm text-neutral-500">{t('app.empty.subtitle')}</p>
                 <button
                   type="button"
                   onClick={() => void openDocument()}
                   className="no-drag mt-6 rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-700"
                 >
-                  Open File
+                  {t('app.empty.openFile')}
                 </button>
               </div>
             </section>
@@ -376,11 +406,16 @@ export function App() {
       </div>
 
       <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-neutral-200 bg-white px-3 text-xs text-neutral-500">
-        <span>{status}</span>
+        <span>{`${t(status.key, status.vars)}${status.suffixKey ? t(status.suffixKey) : ''}`}</span>
         {isDocx && (
           <>
             <span className="hidden text-neutral-400 sm:inline">
-              {docStats.words} words · {docStats.characters} chars · Page {docStats.page}/{docStats.pages}
+              {t('footer.stats', {
+                words: docStats.words,
+                characters: docStats.characters,
+                page: docStats.page,
+                pages: docStats.pages,
+              })}
             </span>
             {!spellLoading && !spellError && (
               <button
@@ -388,15 +423,17 @@ export function App() {
                 className={`rounded px-1.5 py-0.5 ${misspelledCount > 0 ? 'text-red-500 hover:bg-red-50' : 'text-green-600 hover:bg-green-50'}`}
               >
                 {misspelledCount > 0
-                  ? `${misspelledCount} misspelled word${misspelledCount !== 1 ? 's' : ''}`
-                  : 'Spelling OK'}
+                  ? misspelledCount === 1
+                    ? t('footer.misspelledOne')
+                    : t('footer.misspelledMany', { count: misspelledCount })
+                  : t('footer.spellingOk')}
               </button>
             )}
-            {spellLoading && <span className="text-neutral-400">Loading dictionary…</span>}
-            {spellError && <span className="text-red-400">Dict error</span>}
+            {spellLoading && <span className="text-neutral-400">{t('footer.loadingDictionary')}</span>}
+            {spellError && <span className="text-red-400">{t('footer.dictError')}</span>}
           </>
         )}
-        <span className="ml-auto">
+        <span className="ms-auto">
           <UpdateChip beforeRestart={ensureSaved} />
         </span>
       </footer>
