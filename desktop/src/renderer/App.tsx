@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DocumentKind, MenuAction, OpenedDocument, WebEditAction } from '../shared/ipc.js'
 import { SpellCheckPanel } from './components/SpellCheckPanel.js'
+import { UpdateChip } from './components/UpdateChip.js'
 import { DocxEditorView, type DocxEditorViewRef } from './editors/DocxEditorView.js'
 import { XlsxEditorView, type XlsxEditorViewRef } from './editors/XlsxEditorView.js'
 import { spellCheckService, type Misspelling } from './services/spellcheck.js'
@@ -395,6 +396,9 @@ export function App() {
             {spellError && <span className="text-red-400">Dict error</span>}
           </>
         )}
+        <span className="ml-auto">
+          <UpdateChip beforeRestart={ensureSaved} />
+        </span>
       </footer>
     </div>
   )

@@ -11,11 +11,14 @@
     "start": "electron-vite preview",
     "build": "bun run typecheck && electron-vite build",
     "typecheck": "tsc --noEmit",
-    "pack": "bun run build && electron-builder --dir",
-    "dist": "bun run build && electron-builder",
-    "dist:mac": "bun run build && electron-builder --mac",
-    "dist:win": "bun run build && electron-builder --win",
-    "dist:linux": "bun run build && electron-builder --linux"
+    "pack": "bun run build && electron-builder --dir --publish never",
+    "dist": "bun run build && electron-builder --publish never",
+    "dist:mac": "bun run build && electron-builder --mac --publish never",
+    "dist:win": "bun run build && electron-builder --win --publish never",
+    "dist:linux": "bun run build && electron-builder --linux --publish never",
+    "icons": "node scripts/gen-icon.mjs",
+    "notarize:dmg": "node scripts/notarize-dmg.mjs",
+    "deploy": "node scripts/deploy-azure.mjs"
   },
   "devDependencies": {
     "@betteroffice/docx": "workspace:*",
@@ -30,6 +33,7 @@
     "@vitejs/plugin-react": "^5.1.0",
     "electron": "^40.0.0",
     "electron-builder": "^26.0.12",
+    "electron-updater": "^6.8.9",
     "electron-vite": "^4.0.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

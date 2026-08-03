@@ -1,12 +1,38 @@
+import { basename } from 'node:path'
 import { app, Menu, shell, type MenuItemConstructorOptions } from 'electron'
 import type { MenuAction } from '../shared/ipc.js'
 
 type Dispatch = (action: MenuAction) => void
 
+export interface MenuContext {
+  dispatch: Dispatch
+  recents: readonly string[]
+  onOpenRecent: (path: string) => void
+  onClearRecents: () => void
+  onCheckForUpdates: () => void
+  onShowAbout: () => void
+}
+
 const isMac = process.platform === 'darwin'
 
-export function buildMenu(dispatch: Dispatch): Menu {
-  const send = (action: MenuAction) => () => dispatch(action)
+function openRecentSubmenu(context: MenuContext): MenuItemConstructorOptions[] {
+  const entries: MenuItemConstructorOptions[] = context.recents.length
+    ? context.recents.map((path) => ({
+        label: basename(path),
+        toolTip: path,
+        click: () => context.onOpenRecent(path),
+      }))
+    : [{ label: 'No Recent Files', enabled: false }]
+
+  return [
+    ...entries,
+    { type: 'separator' },
+    { label: 'Clear Recent', enabled: context.recents.length > 0, click: context.onClearRecents },
+  ]
+}
+
+export function buildMenu(context: MenuContext): Menu {
+  const send = (action: MenuAction) => () => context.dispatch(action)
 
   const appMenu: MenuItemConstructorOptions[] = isMac
     ? [
@@ -14,6 +40,7 @@ export function buildMenu(dispatch: Dispatch): Menu {
           label: app.name,
           submenu: [
             { role: 'about' },
+            { label: 'Check for Updates…', click: context.onCheckForUpdates },
             { type: 'separator' },
             { role: 'services' },
             { type: 'separator' },
@@ -34,11 +61,7 @@ export function buildMenu(dispatch: Dispatch): Menu {
       submenu: [
         { label: 'New', accelerator: 'CmdOrCtrl+N', click: send('file:new') },
         { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: send('file:open') },
-        ...(isMac
-          ? ([
-              { role: 'recentDocuments', submenu: [{ role: 'clearRecentDocuments' }] },
-            ] as MenuItemConstructorOptions[])
-          : []),
+        { label: 'Open Recent', submenu: openRecentSubmenu(context) },
         { type: 'separator' },
         { label: 'Save', accelerator: 'CmdOrCtrl+S', click: send('file:save') },
         { label: 'Save As…', accelerator: 'CmdOrCtrl+Shift+S', click: send('file:saveAs') },
@@ -117,6 +140,13 @@ export function buildMenu(dispatch: Dispatch): Menu {
             void shell.openExternal('https://betteroffice.dev')
           },
         },
+        ...(isMac
+          ? []
+          : ([
+              { type: 'separator' },
+              { label: 'Check for Updates…', click: context.onCheckForUpdates },
+              { label: 'About NexOffice', click: context.onShowAbout },
+            ] as MenuItemConstructorOptions[])),
       ],
     },
   ]

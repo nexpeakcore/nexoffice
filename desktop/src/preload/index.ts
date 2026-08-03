@@ -9,6 +9,7 @@ import {
   type PrintRenderResult,
   type SaveResult,
   type UnsavedChoice,
+  type UpdateEvent,
   type WebEditAction,
 } from '../shared/ipc.js'
 
@@ -63,6 +64,16 @@ const api = {
     const listener = (_event: Electron.IpcRendererEvent, document: OpenedDocument) => handler(document)
     ipcRenderer.on(IPC.readFile, listener)
     return () => ipcRenderer.removeListener(IPC.readFile, listener)
+  },
+
+  checkForUpdates: (): Promise<void> => ipcRenderer.invoke(IPC.updateCheck),
+
+  installUpdate: (): void => ipcRenderer.send(IPC.updateInstall),
+
+  onUpdateEvent: (handler: (event: UpdateEvent) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, update: UpdateEvent) => handler(update)
+    ipcRenderer.on(IPC.updateEvent, listener)
+    return () => ipcRenderer.removeListener(IPC.updateEvent, listener)
   },
 }
 

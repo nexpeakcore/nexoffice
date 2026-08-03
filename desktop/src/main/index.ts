@@ -1,7 +1,9 @@
 import { basename, extname, join, resolve, sep } from 'node:path'
-import { readFile, writeFile } from 'node:fs/promises'
-import { app, BrowserWindow, dialog, ipcMain, protocol, shell } from 'electron'
+import { access, readFile, writeFile } from 'node:fs/promises'
+import { app, BrowserWindow, dialog, ipcMain, protocol, screen, shell, type Rectangle } from 'electron'
 import { buildMenu } from './menu.js'
+import { addRecent, clearRecents, getRecents, getWindowState, removeRecent, setWindowState } from './store.js'
+import { checkForUpdatesManually, installDownloadedUpdate, setupAutoUpdater } from './updater.js'
 import {
   EXTENSIONS,
   IPC,
@@ -84,14 +86,52 @@ function registerAppProtocol(): void {
   })
 }
 
+const MIN_WIDTH = 960
+const MIN_HEIGHT = 600
+const COPYRIGHT = 'Copyright © 2026 NexOffice. Licensed under Apache-2.0.'
+
+function restoredWindowState(): { bounds: Rectangle | null; maximized: boolean } {
+  const saved = getWindowState()
+  if (!saved) return { bounds: null, maximized: false }
+  const area = screen.getDisplayMatching(saved.bounds).workArea
+  const width = Math.min(Math.max(saved.bounds.width, MIN_WIDTH), area.width)
+  const height = Math.min(Math.max(saved.bounds.height, MIN_HEIGHT), area.height)
+  const x = Math.min(Math.max(saved.bounds.x, area.x), area.x + area.width - width)
+  const y = Math.min(Math.max(saved.bounds.y, area.y), area.y + area.height - height)
+  return { bounds: { x, y, width, height }, maximized: saved.maximized }
+}
+
+function trackWindowState(window: BrowserWindow): void {
+  const persist = (): void => {
+    if (window.isDestroyed()) return
+    setWindowState({ bounds: window.getNormalBounds(), maximized: window.isMaximized() })
+  }
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const schedulePersist = (): void => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(persist, 500)
+  }
+  window.on('resize', schedulePersist)
+  window.on('move', schedulePersist)
+  window.on('maximize', persist)
+  window.on('unmaximize', persist)
+  window.on('close', () => {
+    if (timer) clearTimeout(timer)
+    persist()
+  })
+}
+
 function createWindow(): BrowserWindow {
   rendererReady = false
 
+  const { bounds, maximized } = restoredWindowState()
+
   const window = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 960,
-    minHeight: 600,
+    width: bounds?.width ?? 1440,
+    height: bounds?.height ?? 900,
+    ...(bounds ? { x: bounds.x, y: bounds.y } : {}),
+    minWidth: MIN_WIDTH,
+    minHeight: MIN_HEIGHT,
     show: false,
     backgroundColor: '#ffffff',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
@@ -103,7 +143,12 @@ function createWindow(): BrowserWindow {
     },
   })
 
-  window.once('ready-to-show', () => window.show())
+  window.once('ready-to-show', () => {
+    if (maximized) window.maximize()
+    window.show()
+  })
+
+  trackWindowState(window)
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     let scheme: string | null = null
@@ -156,6 +201,56 @@ function sendMenuAction(action: MenuAction): void {
   mainWindow.webContents.send(IPC.menuAction, action)
 }
 
+function rebuildMenu(): void {
+  buildMenu({
+    dispatch: sendMenuAction,
+    recents: getRecents(),
+    onOpenRecent: (filePath) => void openRecentPath(filePath),
+    onClearRecents: () => {
+      clearRecents()
+      app.clearRecentDocuments()
+      rebuildMenu()
+    },
+    onCheckForUpdates: () => checkForUpdatesManually(),
+    onShowAbout: showAboutDialog,
+  })
+}
+
+function noteRecent(filePath: string): void {
+  addRecent(filePath)
+  app.addRecentDocument(filePath)
+  rebuildMenu()
+}
+
+async function openRecentPath(filePath: string): Promise<void> {
+  try {
+    await access(filePath)
+  } catch {
+    removeRecent(filePath)
+    rebuildMenu()
+    const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+    const options: Electron.MessageBoxOptions = {
+      type: 'info',
+      message: 'File not found',
+      detail: `${filePath}\n\nThe file no longer exists and was removed from Open Recent.`,
+    }
+    void (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options))
+    return
+  }
+  openPathInWindow(filePath)
+}
+
+function showAboutDialog(): void {
+  const options: Electron.MessageBoxOptions = {
+    type: 'info',
+    title: 'About NexOffice',
+    message: 'NexOffice',
+    detail: `Version ${app.getVersion()}\nElectron ${process.versions.electron}\nChromium ${process.versions.chrome}\n\n${COPYRIGHT}`,
+  }
+  const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+  void (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options))
+}
+
 async function promptOpen(): Promise<OpenedDocument | null> {
   const owner = mainWindow
   if (!owner || owner.isDestroyed()) return null
@@ -176,7 +271,7 @@ async function promptOpen(): Promise<OpenedDocument | null> {
 
   grantedPaths.add(selected)
   const document = await readDocument(selected)
-  app.addRecentDocument(selected)
+  noteRecent(selected)
   return document
 }
 
@@ -279,7 +374,7 @@ function registerIpc(): void {
     if (!target) return { path: null, canceled: true }
 
     await writeFile(target, request.data)
-    app.addRecentDocument(target)
+    noteRecent(target)
     return { path: target, canceled: false }
   })
 
@@ -288,7 +383,7 @@ function registerIpc(): void {
     if (!target) return { path: null, canceled: true }
 
     await writeFile(target, request.data)
-    app.addRecentDocument(target)
+    noteRecent(target)
     return { path: target, canceled: false }
   })
 
@@ -364,6 +459,21 @@ function registerIpc(): void {
     for (const filePath of pendingOpenPaths.splice(0)) openPathInWindow(filePath)
   })
 
+  ipcMain.handle(IPC.updateCheck, (event) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) return
+    checkForUpdatesManually()
+  })
+
+  ipcMain.on(IPC.updateInstall, (event) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) return
+    quitting = true
+    rendererReady = false
+    if (!installDownloadedUpdate()) {
+      quitting = false
+      rendererReady = true
+    }
+  })
+
   ipcMain.on(IPC.closeResponse, (event, proceed: boolean) => {
     if (!mainWindow || event.sender !== mainWindow.webContents) return
     if (!proceed) {
@@ -395,7 +505,7 @@ function openPathInWindow(filePath: string): void {
     .then((document) => {
       if (!mainWindow || mainWindow.isDestroyed()) return
       mainWindow.webContents.send(IPC.readFile, document)
-      app.addRecentDocument(filePath)
+      noteRecent(filePath)
     })
     .catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
@@ -426,10 +536,19 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   void app.whenReady().then(() => {
+    if (process.platform === 'darwin') {
+      app.setAboutPanelOptions({
+        applicationName: 'NexOffice',
+        applicationVersion: app.getVersion(),
+        version: `Electron ${process.versions.electron} · Chromium ${process.versions.chrome}`,
+        copyright: COPYRIGHT,
+      })
+    }
     registerAppProtocol()
     registerIpc()
     mainWindow = createWindow()
-    buildMenu(sendMenuAction)
+    rebuildMenu()
+    setupAutoUpdater(() => mainWindow)
 
     for (const filePath of documentPathsFromArgv(process.argv, process.cwd())) {
       openPathInWindow(filePath)
