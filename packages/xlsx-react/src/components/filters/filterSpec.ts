@@ -155,15 +155,21 @@ export function withColumnCriteria(
  * `complete` is false when the list was capped (`CollectedFilterValues.truncated`)
  * — an all-checked truncated list says nothing about the values that were left
  * out, so it stays an explicit allow-list instead of widening to unconstrained.
+ * `wasUnconstrained` reopens that door for the column that was already
+ * unconstrained: leaving every box checked changed nothing, so narrowing it to
+ * the values that happened to fit the cap would hide the rest for no reason.
  */
 export function resolveCriteria(
   allValues: readonly string[],
   checked: ReadonlySet<string>,
   showBlanks: boolean,
-  complete = true
+  complete = true,
+  wasUnconstrained = false
 ): { values: string[] | null; showBlanks: boolean } {
   const allChecked = allValues.every((v) => checked.has(v));
-  if (allChecked && showBlanks && complete) return { values: null, showBlanks: true };
+  if (allChecked && showBlanks && (complete || wasUnconstrained)) {
+    return { values: null, showBlanks: true };
+  }
   return { values: allValues.filter((v) => checked.has(v)), showBlanks };
 }
 

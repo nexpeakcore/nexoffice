@@ -258,3 +258,31 @@ describe('unsupported criteria', () => {
     expect(hasCriteria(columnCriteria(spec, 2))).toBe(false);
   });
 });
+
+describe('resolveCriteria on a truncated list', () => {
+  const values = ['a', 'b', 'c'];
+
+  it('keeps an untouched unconstrained column unconstrained', () => {
+    const all = new Set(values);
+    expect(resolveCriteria(values, all, true, false, true)).toEqual({
+      values: null,
+      showBlanks: true,
+    });
+  });
+
+  it('narrows an unconstrained column once a value is unchecked', () => {
+    const some = new Set(['a', 'c']);
+    expect(resolveCriteria(values, some, true, false, true)).toEqual({
+      values: ['a', 'c'],
+      showBlanks: true,
+    });
+  });
+
+  it('still refuses to widen a constrained column it could not see in full', () => {
+    const all = new Set(values);
+    expect(resolveCriteria(values, all, true, false, false)).toEqual({
+      values: ['a', 'b', 'c'],
+      showBlanks: true,
+    });
+  });
+});

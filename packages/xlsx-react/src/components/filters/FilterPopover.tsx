@@ -196,7 +196,13 @@ export function FilterPopover({
           type="button"
           data-testid="xlsx-filter-apply"
           onClick={() => {
-            const criteria = resolveCriteria(values, checked, showBlanks, !truncated);
+            const criteria = resolveCriteria(
+              values,
+              checked,
+              showBlanks,
+              !truncated,
+              initialValues === null
+            );
             onApply(criteria.values, criteria.showBlanks);
           }}
           style={{

@@ -93,8 +93,18 @@ describe('FilterPopover', () => {
     expect(applied).toEqual([{ values: ['Alpha', 'Omega'], showBlanks: false }]);
   });
 
-  it('keeps an all-checked truncated list explicit instead of unconstrained', () => {
+  it('leaves an untouched unconstrained column unconstrained when the list is capped', () => {
     const { applied, container } = renderPopover({ truncated: true });
+    fireEvent.click(getByTestId(container, 'xlsx-filter-apply'));
+    expect(applied).toEqual([{ values: null, showBlanks: true }]);
+  });
+
+  it('keeps a constrained column explicit when everything visible is checked', () => {
+    const { applied, getByLabelText, container } = renderPopover({
+      truncated: true,
+      initialValues: ['Alpha'],
+    });
+    fireEvent.click(getByLabelText('Beta'));
     fireEvent.click(getByTestId(container, 'xlsx-filter-apply'));
     expect(applied).toEqual([{ values: ['Alpha', 'Beta'], showBlanks: true }]);
   });
