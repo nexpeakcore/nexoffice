@@ -133,15 +133,23 @@ export function hasCriteria(criteria: FilterColumnCriteria): boolean {
   return criteria.values !== null || criteria.unsupported !== undefined;
 }
 
+/**
+ * Replace one column's criteria. Preserved xml the engine cannot evaluate
+ * survives an unconstrained result, because a column that constrains nothing
+ * is what such criteria already look like in the popover — only an explicit
+ * `clearPreserved` (the Clear button) or a real allow-list drops it.
+ */
 export function withColumnCriteria(
   spec: FilterSpec,
   col: number,
   values: string[] | null,
-  showBlanks: boolean
+  showBlanks: boolean,
+  clearPreserved = false
 ): FilterSpec {
+  const preserved = clearPreserved ? undefined : columnCriteria(spec, col).unsupported;
   const next: FilterColumnCriteria =
     values === null
-      ? { col, values: null, showBlanks: true }
+      ? { col, values: null, showBlanks: true, ...(preserved ? { unsupported: preserved } : {}) }
       : { col, values: [...values], showBlanks };
   const columns = spec.columns.some((c) => c.col === col)
     ? spec.columns.map((c) => (c.col === col ? next : c))

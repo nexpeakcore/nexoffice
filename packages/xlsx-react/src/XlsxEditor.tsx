@@ -1362,11 +1362,11 @@ function XlsxEditorContent({
   );
 
   const applyColumnFilter = useCallback(
-    (col: number, values: string[] | null, showBlanks: boolean) => {
+    (col: number, values: string[] | null, showBlanks: boolean, clearPreserved = false) => {
       const handle = handleRef.current;
       const spec = filterSpecs[activeSheet];
       if (!handle || !spec) return;
-      const next = withColumnCriteria(spec, col, values, showBlanks);
+      const next = withColumnCriteria(spec, col, values, showBlanks, clearPreserved);
       try {
         applyResult(handle.setAutoFilter(activeSheet, next));
         setOpenFilter(null);
@@ -2246,7 +2246,7 @@ function XlsxEditorContent({
                 onApply={(values, showBlanks) =>
                   applyColumnFilter(openFilter.col, values, showBlanks)
                 }
-                onClear={() => applyColumnFilter(openFilter.col, null, true)}
+                onClear={() => applyColumnFilter(openFilter.col, null, true, true)}
                 onClose={() => setOpenFilter(null)}
               />
             )}

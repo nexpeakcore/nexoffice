@@ -286,3 +286,25 @@ describe('resolveCriteria on a truncated list', () => {
     });
   });
 });
+
+describe('preserved criteria across an apply', () => {
+  const spec: FilterSpec = {
+    range: { startRow: 0, startCol: 0, endRow: 9, endCol: 2 },
+    columns: [{ col: 1, values: null, showBlanks: true, unsupported: '<top10 val="5"/>' }],
+  };
+
+  it('survives an apply that leaves the column unconstrained', () => {
+    const next = withColumnCriteria(spec, 1, null, true);
+    expect(next.columns.find((c) => c.col === 1)?.unsupported).toBe('<top10 val="5"/>');
+  });
+
+  it('is dropped by an explicit clear', () => {
+    const next = withColumnCriteria(spec, 1, null, true, true);
+    expect(next.columns.find((c) => c.col === 1)?.unsupported).toBeUndefined();
+  });
+
+  it('is dropped when the column gets a real allow-list', () => {
+    const next = withColumnCriteria(spec, 1, ['a'], false);
+    expect(next.columns.find((c) => c.col === 1)?.unsupported).toBeUndefined();
+  });
+});
