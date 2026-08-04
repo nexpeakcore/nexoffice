@@ -133,8 +133,7 @@
     "wordCount": "शब्द: {words} · वर्ण: {characters} · पृष्ठ {page}/{pages}",
     "frozeTopRow": "शीर्ष पंक्ति स्थिर की गई",
     "frozeFirstColumn": "पहला स्तंभ स्थिर किया गया",
-    "unfroze": "स्थिरता हटाई गई",
-    "notImplemented": "{action} अभी लागू नहीं है"
+    "unfroze": "स्थिरता हटाई गई"
   },
   "footer": {
     "stats": "{words} शब्द · {characters} वर्ण · पृष्ठ {page}/{pages}",

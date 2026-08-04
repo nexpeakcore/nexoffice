@@ -133,8 +133,7 @@
     "wordCount": "字数：{words} · 字符：{characters} · 第 {page}/{pages} 页",
     "frozeTopRow": "已冻结首行",
     "frozeFirstColumn": "已冻结首列",
-    "unfroze": "已取消冻结",
-    "notImplemented": "{action} 尚未实现"
+    "unfroze": "已取消冻结"
   },
   "footer": {
     "stats": "{words} 字 · {characters} 字符 · 第 {page}/{pages} 页",

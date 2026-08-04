@@ -133,8 +133,7 @@
     "wordCount": "Số từ: {words} · Ký tự: {characters} · Trang {page}/{pages}",
     "frozeTopRow": "Đã cố định hàng đầu tiên",
     "frozeFirstColumn": "Đã cố định cột đầu tiên",
-    "unfroze": "Đã bỏ cố định",
-    "notImplemented": "{action} chưa được hỗ trợ"
+    "unfroze": "Đã bỏ cố định"
   },
   "footer": {
     "stats": "{words} từ · {characters} ký tự · Trang {page}/{pages}",

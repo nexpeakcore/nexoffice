@@ -6,7 +6,7 @@ import {
   type LocaleCode,
   type Translator,
 } from '../i18n/index.js'
-import type { MenuAction } from '../shared/ipc.js'
+import type { DocumentKind, MenuAction } from '../shared/ipc.js'
 
 type Dispatch = (action: MenuAction) => void
 
@@ -14,6 +14,7 @@ export interface MenuContext {
   t: Translator
   locale: LocaleCode
   dispatch: Dispatch
+  documentKind: DocumentKind | null
   recents: readonly string[]
   onOpenRecent: (path: string) => void
   onClearRecents: () => void
@@ -57,6 +58,8 @@ function languageSubmenu(context: MenuContext): MenuItemConstructorOptions[] {
 export function buildMenu(context: MenuContext): Menu {
   const { t } = context
   const send = (action: MenuAction) => () => context.dispatch(action)
+  const hasZoom = context.documentKind === 'docx' || context.documentKind === 'xlsx'
+  const hasFind = context.documentKind === 'docx'
 
   const appMenu: MenuItemConstructorOptions[] = isMac
     ? [
@@ -117,31 +120,60 @@ export function buildMenu(context: MenuContext): Menu {
         ...(isMac
           ? ([
               { role: 'pasteAndMatchStyle', label: t('menu.edit.pasteAndMatchStyle') },
-              { role: 'delete', label: t('menu.edit.delete') },
-              { role: 'selectAll', label: t('menu.edit.selectAll') },
+              { label: t('menu.edit.delete'), click: send('edit:delete') },
+              {
+                label: t('menu.edit.selectAll'),
+                accelerator: 'CmdOrCtrl+A',
+                click: send('edit:selectAll'),
+              },
             ] as MenuItemConstructorOptions[])
           : ([
-              { role: 'delete', label: t('menu.edit.delete') },
+              { label: t('menu.edit.delete'), click: send('edit:delete') },
               { type: 'separator' },
-              { role: 'selectAll', label: t('menu.edit.selectAll') },
+              {
+                label: t('menu.edit.selectAll'),
+                accelerator: 'CmdOrCtrl+A',
+                click: send('edit:selectAll'),
+              },
             ] as MenuItemConstructorOptions[])),
         { type: 'separator' },
-        { label: t('menu.edit.find'), accelerator: 'CmdOrCtrl+F', click: send('edit:find') },
+        {
+          label: t('menu.edit.find'),
+          accelerator: 'CmdOrCtrl+F',
+          enabled: hasFind,
+          click: send('edit:find'),
+        },
       ],
     },
     {
       label: t('menu.view.label'),
       submenu: [
-        { label: t('menu.view.zoomIn'), accelerator: 'CmdOrCtrl+Plus', click: send('view:zoomIn') },
+        {
+          label: t('menu.view.zoomIn'),
+          accelerator: 'CmdOrCtrl+Plus',
+          enabled: hasZoom,
+          click: send('view:zoomIn'),
+        },
         {
           label: t('menu.view.zoomIn'),
           accelerator: 'CmdOrCtrl+=',
+          enabled: hasZoom,
           click: send('view:zoomIn'),
           visible: false,
           acceleratorWorksWhenHidden: true,
         },
-        { label: t('menu.view.zoomOut'), accelerator: 'CmdOrCtrl+-', click: send('view:zoomOut') },
-        { label: t('menu.view.actualSize'), accelerator: 'CmdOrCtrl+0', click: send('view:zoomReset') },
+        {
+          label: t('menu.view.zoomOut'),
+          accelerator: 'CmdOrCtrl+-',
+          enabled: hasZoom,
+          click: send('view:zoomOut'),
+        },
+        {
+          label: t('menu.view.actualSize'),
+          accelerator: 'CmdOrCtrl+0',
+          enabled: hasZoom,
+          click: send('view:zoomReset'),
+        },
         { type: 'separator' },
         { label: t('menu.view.wordCount'), accelerator: 'CmdOrCtrl+Shift+G', click: send('view:wordCount') },
         { label: t('menu.view.spellCheck'), accelerator: 'CmdOrCtrl+Shift+;', click: send('view:spellCheck') },

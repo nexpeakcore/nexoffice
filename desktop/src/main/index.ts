@@ -43,6 +43,7 @@ const isDev = !app.isPackaged
 let mainWindow: BrowserWindow | null = null
 let rendererReady = false
 let quitting = false
+let activeDocumentKind: DocumentKind | null = null
 const pendingOpenPaths: string[] = []
 const grantedPaths = new Set<string>()
 
@@ -233,6 +234,7 @@ function rebuildMenu(): void {
     t,
     locale: activeLocale,
     dispatch: sendMenuAction,
+    documentKind: activeDocumentKind,
     recents: getRecents(),
     onOpenRecent: (filePath) => void openRecentPath(filePath),
     onClearRecents: () => {
@@ -493,7 +495,17 @@ function registerIpc(): void {
     else if (action === 'redo') contents.redo()
     else if (action === 'cut') contents.cut()
     else if (action === 'copy') contents.copy()
+    else if (action === 'delete') contents.delete()
+    else if (action === 'selectAll') contents.selectAll()
     else contents.paste()
+  })
+
+  ipcMain.on(IPC.documentKind, (event, kind: DocumentKind | null) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) return
+    if (kind !== null && kind !== 'docx' && kind !== 'xlsx' && kind !== 'pptx') return
+    if (kind === activeDocumentKind) return
+    activeDocumentKind = kind
+    rebuildMenu()
   })
 
   ipcMain.on(IPC.rendererReady, (event) => {

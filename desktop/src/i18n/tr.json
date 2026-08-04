@@ -133,8 +133,7 @@
     "wordCount": "Sözcük: {words} · Karakter: {characters} · Sayfa {page}/{pages}",
     "frozeTopRow": "Üst satır donduruldu",
     "frozeFirstColumn": "İlk sütun donduruldu",
-    "unfroze": "Bölmeler çözüldü",
-    "notImplemented": "{action} henüz uygulanmadı"
+    "unfroze": "Bölmeler çözüldü"
   },
   "footer": {
     "stats": "{words} sözcük · {characters} karakter · Sayfa {page}/{pages}",

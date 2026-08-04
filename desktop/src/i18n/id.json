@@ -133,8 +133,7 @@
     "wordCount": "Kata: {words} · Karakter: {characters} · Halaman {page}/{pages}",
     "frozeTopRow": "Baris atas dibekukan",
     "frozeFirstColumn": "Kolom pertama dibekukan",
-    "unfroze": "Pembekuan dilepas",
-    "notImplemented": "{action} belum diimplementasikan"
+    "unfroze": "Pembekuan dilepas"
   },
   "footer": {
     "stats": "{words} kata · {characters} karakter · Halaman {page}/{pages}",

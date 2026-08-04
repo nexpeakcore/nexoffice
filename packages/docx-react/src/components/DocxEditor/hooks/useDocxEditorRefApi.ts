@@ -138,6 +138,7 @@ export function useDocxEditorRefApi({
   handleDirectPrint,
   zoom,
   setZoom,
+  openFind,
   scrollPageInfo,
   loadParsedDocument,
   loadBuffer,
@@ -158,6 +159,7 @@ export function useDocxEditorRefApi({
   handleDirectPrint: () => void;
   zoom: number;
   setZoom: (zoom: number) => void;
+  openFind: (searchText?: string) => void;
   scrollPageInfo: { currentPage: number; totalPages: number; visible: boolean };
   loadParsedDocument: (doc: Document) => void;
   loadBuffer: (buffer: DocxInput) => Promise<void>;
@@ -179,6 +181,7 @@ export function useDocxEditorRefApi({
       save: handleSave,
       setZoom,
       getZoom: () => zoom,
+      openFind,
       focus: () => pagedEditorRef.current?.focus(),
       getCurrentPage: () => scrollPageInfo.currentPage,
       getTotalPages: () => scrollPageInfo.totalPages,

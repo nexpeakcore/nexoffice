@@ -133,8 +133,7 @@
     "wordCount": "Wörter: {words} · Zeichen: {characters} · Seite {page}/{pages}",
     "frozeTopRow": "Oberste Zeile fixiert",
     "frozeFirstColumn": "Erste Spalte fixiert",
-    "unfroze": "Fixierung aufgehoben",
-    "notImplemented": "{action} ist noch nicht implementiert"
+    "unfroze": "Fixierung aufgehoben"
   },
   "footer": {
     "stats": "{words} Wörter · {characters} Zeichen · Seite {page}/{pages}",

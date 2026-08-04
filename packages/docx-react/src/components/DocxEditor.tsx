@@ -321,6 +321,8 @@ export interface DocxEditorRef {
   setZoom: (zoom: number) => void;
   /** Get current zoom level */
   getZoom: () => number;
+  /** Open the find dialog, optionally seeded with search text */
+  openFind: (searchText?: string) => void;
   /** Focus the editor */
   focus: () => void;
   /** Get current page number */
@@ -1303,6 +1305,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     handleDirectPrint,
     zoom: state.zoom,
     setZoom: (zoom: number) => setState((prev) => ({ ...prev, zoom })),
+    openFind: findReplace.openFind,
     scrollPageInfo,
     loadParsedDocument,
     loadBuffer,

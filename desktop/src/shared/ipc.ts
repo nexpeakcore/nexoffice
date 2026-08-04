@@ -10,6 +10,7 @@ export const IPC = {
   platform: 'app:platform',
   menuAction: 'menu:action',
   webEditAction: 'edit:webAction',
+  documentKind: 'app:documentKind',
   rendererReady: 'renderer:ready',
   closeRequest: 'window:closeRequest',
   closeResponse: 'window:closeResponse',
@@ -67,7 +68,7 @@ export type PrintRenderResult =
   | { ok: true; pages: number; truncated: boolean }
   | { ok: false; error: string }
 
-export type WebEditAction = 'undo' | 'redo' | 'cut' | 'copy' | 'paste'
+export type WebEditAction = 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'delete' | 'selectAll'
 
 export type UpdateEvent =
   | { status: 'checking' }
@@ -89,6 +90,8 @@ export type MenuAction =
   | 'edit:cut'
   | 'edit:copy'
   | 'edit:paste'
+  | 'edit:delete'
+  | 'edit:selectAll'
   | 'edit:find'
   | 'view:wordCount'
   | 'view:spellCheck'

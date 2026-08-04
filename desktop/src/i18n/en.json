@@ -133,8 +133,7 @@
     "wordCount": "Words: {words} · Chars: {characters} · Page {page}/{pages}",
     "frozeTopRow": "Frozen top row",
     "frozeFirstColumn": "Frozen first column",
-    "unfroze": "Unfrozen panes",
-    "notImplemented": "{action} is not implemented yet"
+    "unfroze": "Unfrozen panes"
   },
   "footer": {
     "stats": "{words} words · {characters} chars · Page {page}/{pages}",

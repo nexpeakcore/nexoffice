@@ -133,8 +133,7 @@
     "wordCount": "Mots : {words} · Caractères : {characters} · Page {page}/{pages}",
     "frozeTopRow": "Première ligne figée",
     "frozeFirstColumn": "Première colonne figée",
-    "unfroze": "Volets libérés",
-    "notImplemented": "{action} n'est pas encore implémenté"
+    "unfroze": "Volets libérés"
   },
   "footer": {
     "stats": "{words} mots · {characters} caractères · Page {page}/{pages}",

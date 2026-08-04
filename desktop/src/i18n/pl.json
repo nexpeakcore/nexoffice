@@ -133,8 +133,7 @@
     "wordCount": "Słowa: {words} · Znaki: {characters} · Strona {page}/{pages}",
     "frozeTopRow": "Zablokowano górny wiersz",
     "frozeFirstColumn": "Zablokowano pierwszą kolumnę",
-    "unfroze": "Odblokowano okienka",
-    "notImplemented": "{action} nie jest jeszcze zaimplementowane"
+    "unfroze": "Odblokowano okienka"
   },
   "footer": {
     "stats": "Słowa: {words} · Znaki: {characters} · Strona {page}/{pages}",

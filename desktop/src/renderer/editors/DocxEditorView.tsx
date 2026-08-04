@@ -23,6 +23,11 @@ export interface DocxEditorViewRef {
   cut: () => Promise<void>
   copy: () => Promise<void>
   paste: () => Promise<void>
+  deleteSelection: () => void
+  selectAll: () => void
+  openFind: () => void
+  getZoom: () => number
+  setZoom: (zoom: number) => void
 }
 
 interface DocxEditorViewProps {
@@ -161,6 +166,20 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
           return
         }
         if (text) paged.insertText(text)
+      },
+      deleteSelection: () => {
+        editorRef.current?.getEditorRef()?.deleteSelection()
+      },
+      selectAll: () => {
+        editorRef.current?.getEditorRef()?.selectAll()
+      },
+      openFind: () => {
+        const selected = editorRef.current?.getEditorRef()?.getSelectedText() ?? ''
+        editorRef.current?.openFind(selected || undefined)
+      },
+      getZoom: () => editorRef.current?.getZoom() ?? 1,
+      setZoom: (zoom: number) => {
+        editorRef.current?.setZoom(zoom)
       },
     }))
 

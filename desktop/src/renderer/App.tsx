@@ -24,6 +24,10 @@ const KIND_LABEL_KEY: Record<DocumentKind, string> = {
   pptx: 'app.kind.pptx',
 }
 
+const ZOOM_MIN = 0.5
+const ZOOM_MAX = 2
+const ZOOM_STEP = 0.25
+
 export function App() {
   const { t } = useI18n()
   const [document, setDocument] = useState<DocumentState | null>(null)
@@ -45,9 +49,14 @@ export function App() {
     documentRef.current = document
   }, [document])
 
+  const documentKind = document?.kind ?? null
+
+  useEffect(() => {
+    window.nexoffice.setDocumentKind(documentKind)
+  }, [documentKind])
+
   const isDocx = document?.kind === 'docx'
 
-  // Live stats ticker — re-reads editor stats into state every 700ms
   useEffect(() => {
     if (!isDocx) return
     const timer = setInterval(() => {
@@ -65,7 +74,6 @@ export function App() {
     return () => clearInterval(timer)
   }, [isDocx])
 
-  // Init spell check on mount
   useEffect(() => {
     let canceled = false
     spellCheckService
@@ -75,7 +83,6 @@ export function App() {
     return () => { canceled = true }
   }, [])
 
-  // Periodic spell check for open docx docs
   useEffect(() => {
     if (spellLoading || spellError || !isDocx) {
       setMisspellings([])
@@ -113,11 +120,18 @@ export function App() {
     return current.data
   }, [])
 
-  const saveDocument = useCallback(
-    async (forceDialog: boolean, bytesOverride?: Uint8Array): Promise<boolean> => {
+  const performSave = useCallback(
+    async (
+      forceDialog: boolean,
+      bytesOverride: Uint8Array | undefined,
+      overrideGeneration: number,
+    ): Promise<boolean> => {
       const current = documentRef.current
       if (!current) return false
-      const generation = editGenerationRef.current
+      // Override bytes were serialized when the save was requested, so they
+      // only cover edits up to that point; freshly serialized bytes cover
+      // everything up to now.
+      const generation = bytesOverride ? overrideGeneration : editGenerationRef.current
       try {
         const data = bytesOverride ?? (await getCurrentBytes(current))
         const save = forceDialog ? window.nexoffice.saveFileAs : window.nexoffice.saveFile
@@ -129,16 +143,14 @@ export function App() {
         savedGenerationRef.current = Math.max(savedGenerationRef.current, generation)
         const savedPath = result.path
         const savedName = savedPath.split(/[\\/]/).pop() ?? current.name
+        const dirty = editGenerationRef.current !== savedGenerationRef.current
+        // Queued saves read documentRef before React commits the state update,
+        // so the new path/name must be visible synchronously.
+        if (documentRef.current) {
+          documentRef.current = { ...documentRef.current, path: savedPath, name: savedName, data, dirty }
+        }
         setDocument((prev) =>
-          prev
-            ? {
-                ...prev,
-                path: savedPath,
-                name: savedName,
-                data,
-                dirty: editGenerationRef.current !== savedGenerationRef.current,
-              }
-            : prev,
+          prev ? { ...prev, path: savedPath, name: savedName, data, dirty } : prev,
         )
         setStatus({ key: 'status.saved', vars: { path: savedPath } })
         return true
@@ -151,6 +163,23 @@ export function App() {
       }
     },
     [getCurrentBytes],
+  )
+
+  // Saves are chained so serialize→write pairs never interleave: a slow older
+  // write can otherwise land after a newer one and put stale bytes on disk.
+  const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve())
+
+  const saveDocument = useCallback(
+    (forceDialog: boolean, bytesOverride?: Uint8Array): Promise<boolean> => {
+      const generationAtRequest = editGenerationRef.current
+      const queued = saveQueueRef.current.then(
+        () => performSave(forceDialog, bytesOverride, generationAtRequest),
+        () => performSave(forceDialog, bytesOverride, generationAtRequest),
+      )
+      saveQueueRef.current = queued
+      return queued
+    },
+    [performSave],
   )
 
   const hasUnsavedEdits = useCallback(
@@ -247,10 +276,23 @@ export function App() {
       else if (verb === 'redo') editor.redo()
       else if (verb === 'cut') void editor.cut()
       else if (verb === 'copy') void editor.copy()
+      else if (verb === 'delete') editor.deleteSelection()
+      else if (verb === 'selectAll') editor.selectAll()
       else void editor.paste()
     },
     [editActionTarget],
   )
+
+  const applyZoom = useCallback((step: number | null) => {
+    const kind = documentRef.current?.kind
+    const editor = kind === 'docx' ? docxRef.current : kind === 'xlsx' ? xlsxRef.current : null
+    if (!editor) return
+    const next =
+      step === null
+        ? 1
+        : Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round((editor.getZoom() + step) * 100) / 100))
+    editor.setZoom(next)
+  }, [])
 
   useEffect(() => {
     const handle = (action: MenuAction) => {
@@ -321,6 +363,24 @@ export function App() {
         case 'edit:paste':
           runEditAction('paste')
           break
+        case 'edit:delete':
+          runEditAction('delete')
+          break
+        case 'edit:selectAll':
+          runEditAction('selectAll')
+          break
+        case 'edit:find':
+          if (documentRef.current?.kind === 'docx') docxRef.current?.openFind()
+          break
+        case 'view:zoomIn':
+          applyZoom(ZOOM_STEP)
+          break
+        case 'view:zoomOut':
+          applyZoom(-ZOOM_STEP)
+          break
+        case 'view:zoomReset':
+          applyZoom(null)
+          break
         case 'view:spellCheck':
           setSpellPanelOpen((prev) => !prev)
           break
@@ -353,12 +413,10 @@ export function App() {
           xlsxRef.current?.unfreeze()
           setStatus({ key: 'status.unfroze' })
           break
-        default:
-          setStatus({ key: 'status.notImplemented', vars: { action } })
       }
     }
     return window.nexoffice.onMenuAction(handle)
-  }, [openDocument, saveDocument, ensureSaved, getCurrentBytes, runEditAction])
+  }, [openDocument, saveDocument, ensureSaved, getCurrentBytes, runEditAction, applyZoom])
 
   useEffect(() => {
     window.nexoffice.rendererReady()

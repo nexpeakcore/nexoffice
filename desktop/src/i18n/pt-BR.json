@@ -133,8 +133,7 @@
     "wordCount": "Palavras: {words} · Caracteres: {characters} · Página {page}/{pages}",
     "frozeTopRow": "Linha superior congelada",
     "frozeFirstColumn": "Primeira coluna congelada",
-    "unfroze": "Painéis descongelados",
-    "notImplemented": "{action} ainda não foi implementado"
+    "unfroze": "Painéis descongelados"
   },
   "footer": {
     "stats": "{words} palavras · {characters} caracteres · Página {page}/{pages}",

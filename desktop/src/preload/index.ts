@@ -53,6 +53,8 @@ const api = {
 
   webEditAction: (action: WebEditAction): void => ipcRenderer.send(IPC.webEditAction, action),
 
+  setDocumentKind: (kind: DocumentKind | null): void => ipcRenderer.send(IPC.documentKind, kind),
+
   rendererReady: (): void => ipcRenderer.send(IPC.rendererReady),
 
   resolveClose: (proceed: boolean): void => ipcRenderer.send(IPC.closeResponse, proceed),

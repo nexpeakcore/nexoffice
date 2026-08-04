@@ -133,8 +133,7 @@
     "wordCount": "מילים: {words} · תווים: {characters} · עמוד {page}/{pages}",
     "frozeTopRow": "השורה העליונה הוקפאה",
     "frozeFirstColumn": "העמודה הראשונה הוקפאה",
-    "unfroze": "ההקפאה בוטלה",
-    "notImplemented": "{action} עדיין לא ממומש"
+    "unfroze": "ההקפאה בוטלה"
   },
   "footer": {
     "stats": "{words} מילים · {characters} תווים · עמוד {page}/{pages}",

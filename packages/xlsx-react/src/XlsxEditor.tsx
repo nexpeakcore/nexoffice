@@ -97,8 +97,8 @@ import { ProposalsPanel } from './proposals/ProposalsPanel';
  * The imperative surface handed to {@link XlsxEditorProps.onReady}: the open
  * workbook handle plus a `refreshProposals` to re-read the pending list after an
  * external caller (e.g. a demo agent) stages proposals on the same handle, and
- * the editor's own history/clipboard actions so a host shell (menus, command
- * palettes) can drive them against the live selection.
+ * the editor's own history, clipboard, selection, and zoom actions so a host
+ * shell (menus, command palettes) can drive them against the live selection.
  */
 export interface XlsxEditorApi {
   handle: WorkbookHandle;
@@ -113,6 +113,14 @@ export interface XlsxEditorApi {
   cutSelection: () => Promise<void>;
   /** Paste clipboard TSV into the grid at the current selection. */
   pasteSelection: () => Promise<void>;
+  /** Clear the contents of the current selection (Delete key equivalent). */
+  clearSelection: () => void;
+  /** Select the sheet's whole used range (Cmd/Ctrl+A equivalent). */
+  selectAll: () => void;
+  /** The current zoom factor (1 = 100%). */
+  getZoom: () => number;
+  /** Set the zoom factor, clamped to the toolbar's 25%–400% range. */
+  setZoom: (zoom: number) => void;
 }
 
 export interface XlsxEditorCollaborationOptions {
@@ -186,6 +194,8 @@ const MAX_FILTER_REGION_COLS = 256;
 
 const COL_W = 96;
 const ROW_H = 24;
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 4;
 const BRAND = '#217346';
 const DEFAULT_XLSX_TOOLBAR_HEIGHT = 87;
 const MAX_OVERLAY_MERGED_RANGES = 1024;
@@ -459,6 +469,10 @@ function XlsxEditorContent({
     copySelection: () => Promise<void>;
     cutSelection: () => Promise<void>;
     pasteSelection: () => Promise<void>;
+    clearSelection: () => void;
+    selectAll: () => void;
+    getZoom: () => number;
+    setZoom: (zoom: number) => void;
   } | null>(null);
 
   const [sheetInfo, setSheetInfo] = useState<SheetInfo | null>(null);
@@ -648,6 +662,10 @@ function XlsxEditorContent({
               editorActionsRef.current?.cutSelection() ?? Promise.resolve(),
             pasteSelection: () =>
               editorActionsRef.current?.pasteSelection() ?? Promise.resolve(),
+            clearSelection: () => editorActionsRef.current?.clearSelection(),
+            selectAll: () => editorActionsRef.current?.selectAll(),
+            getZoom: () => editorActionsRef.current?.getZoom() ?? 1,
+            setZoom: (zoom: number) => editorActionsRef.current?.setZoom(zoom),
           });
           if (typeof cleanup === 'function') cleanupReady = cleanup;
         } catch (e) {
@@ -987,6 +1005,15 @@ function XlsxEditorContent({
     }
   }, [selection, activeSheet, applyResult]);
 
+  const selectAllCells = useCallback(() => {
+    if (!sheetInfo) return;
+    const bounds = limits();
+    setSelection({
+      anchor: { row: 0, col: 0 },
+      focus: { row: bounds.rows - 1, col: bounds.cols - 1 },
+    });
+  }, [sheetInfo, limits]);
+
   const copySelection = useCallback(async () => {
     const handle = handleRef.current;
     if (!handle || !selection) return;
@@ -1194,7 +1221,17 @@ function XlsxEditorContent({
     }
   }, [applyResult]);
 
-  editorActionsRef.current = { undo, redo, copySelection, cutSelection, pasteSelection };
+  editorActionsRef.current = {
+    undo,
+    redo,
+    copySelection,
+    cutSelection,
+    pasteSelection,
+    clearSelection: clearCells,
+    selectAll: selectAllCells,
+    getZoom: () => zoom,
+    setZoom: (next: number) => setZoom(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next))),
+  };
 
   const print = useCallback(() => window.print(), []);
 
