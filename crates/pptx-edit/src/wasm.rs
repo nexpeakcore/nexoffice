@@ -196,6 +196,15 @@ impl PptxDocument {
         json(self.session.story(&args.story_id).map_err(js_error)?)
     }
 
+    /// Projects the deck's text edits onto the source parts and returns the
+    /// re-zipped file. Rejects when the deck holds a change the writer cannot
+    /// express, naming what it cannot write.
+    #[wasm_bindgen(js_name = saveBytes)]
+    pub fn save_bytes(&self) -> Result<Vec<u8>, JsValue> {
+        let package = self.session.project().map_err(js_error)?;
+        pptx_parse::write_pptx(&package).map_err(js_error)
+    }
+
     #[wasm_bindgen(js_name = mediaBytes)]
     pub fn media_bytes(&self, part_path: &str) -> Result<Vec<u8>, JsValue> {
         self.session

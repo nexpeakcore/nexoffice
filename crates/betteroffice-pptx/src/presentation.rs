@@ -269,10 +269,15 @@ impl Presentation {
             .layout_slide(self.session.package(), &snapshot, slide_index)?)
     }
 
-    /// Re-zips the retained parts. Part bytes survive unchanged; the container
-    /// is rebuilt, so the output is not byte-identical to the source.
+    /// Projects the deck's text edits onto the source parts and re-zips.
+    ///
+    /// Slides no edit touched, and every non-slide part, keep their source
+    /// bytes exactly; an edited slide keeps every byte outside the `<a:t>`
+    /// elements whose text changed. Returns an error naming the change when
+    /// the deck holds an edit this writer cannot express, so a caller can keep
+    /// saving disabled rather than write a file that has lost it.
     pub fn save(&self) -> Result<Vec<u8>> {
-        Ok(pptx_parse::write_pptx(self.session.package())?)
+        Ok(pptx_parse::write_pptx(&self.session.project()?)?)
     }
 
     pub fn encode_state_vector_v1(&self) -> Vec<u8> {

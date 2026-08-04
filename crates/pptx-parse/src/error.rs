@@ -18,4 +18,6 @@ pub enum PptxError {
     ResourceLimit { part: String, kind: &'static str },
     #[error("invalid relationship target {target} from {source_part}")]
     InvalidRelationship { source_part: String, target: String },
+    #[error("{part} has no {target} to write text into")]
+    MissingTextTarget { part: String, target: String },
 }
