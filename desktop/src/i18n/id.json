@@ -121,12 +121,14 @@
     "exportedPagesMany": "{path} diekspor ({pages} halaman)",
     "truncatedSuffix": " — terpotong pada batas halaman",
     "wordCount": "Kata: {words} · Karakter: {characters} · Halaman {page}/{pages}",
+    "wordCountSlides": "Kata: {words} · Karakter: {characters} · Slide {slide}/{slides}",
     "frozeTopRow": "Baris atas dibekukan",
     "frozeFirstColumn": "Kolom pertama dibekukan",
     "unfroze": "Pembekuan dilepas"
   },
   "footer": {
     "stats": "{words} kata · {characters} karakter · Halaman {page}/{pages}",
+    "statsSlides": "{words} kata · {characters} karakter · Slide {slide}/{slides}",
     "misspelledOne": "1 kata salah eja",
     "misspelledMany": "{count} kata salah eja",
     "spellingOk": "Ejaan benar",

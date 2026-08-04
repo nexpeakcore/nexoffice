@@ -6,6 +6,7 @@ import { DocxEditorView, type DocxEditorViewRef } from './editors/DocxEditorView
 import { PptxEditorView, type PptxEditorViewRef } from './editors/PptxEditorView.js'
 import { XlsxEditorView, type XlsxEditorViewRef } from './editors/XlsxEditorView.js'
 import { spellCheckService, type Misspelling } from './services/spellcheck.js'
+import type { EditorStats } from './services/textStats.js'
 import { useI18n } from './i18n.js'
 
 // `seed` replaces `OpenedDocument.data`: the bytes the editor mounted on. Its
@@ -71,11 +72,26 @@ export function App() {
 
   const isDocx = document?.kind === 'docx'
   const isPptx = document?.kind === 'pptx'
+  // Word count and spell check only read text, so a deck qualifies even though
+  // its edits can never be written back.
+  const hasProofing = isDocx || isPptx
+
+  // Read through the ref rather than a captured editor: the ticker and the
+  // spell-check pass must always see whichever editor is mounted now.
+  const proofingEditor = useCallback(
+    (): { getText: () => string; getStats: () => EditorStats } | null => {
+      const kind = documentRef.current?.kind
+      if (kind === 'docx') return docxRef.current
+      if (kind === 'pptx') return pptxRef.current
+      return null
+    },
+    [],
+  )
 
   useEffect(() => {
-    if (!isDocx) return
+    if (!hasProofing) return
     const timer = setInterval(() => {
-      const stats = docxRef.current?.getStats()
+      const stats = proofingEditor()?.getStats()
       if (!stats) return
       setDocStats((prev) =>
         prev.words === stats.words &&
@@ -87,7 +103,7 @@ export function App() {
       )
     }, 700)
     return () => clearInterval(timer)
-  }, [isDocx])
+  }, [hasProofing, proofingEditor])
 
   useEffect(() => {
     let canceled = false
@@ -99,30 +115,34 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    if (spellLoading || spellError || !isDocx) {
+    if (spellLoading || spellError || !hasProofing) {
       setMisspellings([])
       return
     }
     const timer = setTimeout(() => {
-      const text = docxRef.current?.getText() ?? ''
+      const text = proofingEditor()?.getText() ?? ''
       setMisspellings(spellCheckService.check(text))
     }, 800)
     return () => clearTimeout(timer)
-  }, [spellLoading, spellError, isDocx, document?.path, editRevision, docStats.words])
+  }, [spellLoading, spellError, hasProofing, proofingEditor, document?.path, editRevision, docStats.words])
 
-  const getEditorText = useCallback(() => docxRef.current?.getText() ?? '', [])
+  const getEditorText = useCallback(() => proofingEditor()?.getText() ?? '', [proofingEditor])
 
-  // Dirty flips state once; the revision (spell check trigger) is debounced so
-  // steady typing causes no App re-render per keystroke.
+  // The revision (spell check trigger) is debounced so steady typing causes no
+  // App re-render per keystroke; dirty, where it applies, flips state once.
   const editRevisionTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const markEdited = useCallback(() => {
-    editGenerationRef.current += 1
-    setDocument((prev) => (prev && !prev.dirty ? { ...prev, dirty: true } : prev))
+  const scheduleEditRevision = useCallback(() => {
     if (editRevisionTimer.current) clearTimeout(editRevisionTimer.current)
     editRevisionTimer.current = setTimeout(() => {
       setEditRevision((revision) => revision + 1)
     }, 700)
   }, [])
+
+  const markEdited = useCallback(() => {
+    editGenerationRef.current += 1
+    setDocument((prev) => (prev && !prev.dirty ? { ...prev, dirty: true } : prev))
+    scheduleEditRevision()
+  }, [scheduleEditRevision])
 
   const getCurrentBytes = useCallback(async (current: DocumentState): Promise<Uint8Array> => {
     if (current.kind === 'docx') {
@@ -448,10 +468,24 @@ export function App() {
           setSpellPanelOpen((prev) => !prev)
           break
         case 'view:wordCount': {
-          const stats = docxRef.current?.getStats()
+          const kind = documentRef.current?.kind
+          const stats = proofingEditor()?.getStats()
+          if (!stats) {
+            setStatus({ key: kind === 'pptx' ? 'status.openFirst' : 'status.openWordFirst' })
+            break
+          }
           setStatus(
-            stats
+            kind === 'pptx'
               ? {
+                  key: 'status.wordCountSlides',
+                  vars: {
+                    words: stats.words,
+                    characters: stats.characters,
+                    slide: stats.page,
+                    slides: stats.pages,
+                  },
+                }
+              : {
                   key: 'status.wordCount',
                   vars: {
                     words: stats.words,
@@ -459,8 +493,7 @@ export function App() {
                     page: stats.page,
                     pages: stats.pages,
                   },
-                }
-              : { key: 'status.openWordFirst' },
+                },
           )
           break
         }
@@ -479,7 +512,15 @@ export function App() {
       }
     }
     return window.nexoffice.onMenuAction(handle)
-  }, [openDocument, saveDocument, ensureSaved, getCurrentBytes, runEditAction, applyZoom])
+  }, [
+    openDocument,
+    saveDocument,
+    ensureSaved,
+    getCurrentBytes,
+    runEditAction,
+    applyZoom,
+    proofingEditor,
+  ])
 
   useEffect(() => {
     window.nexoffice.rendererReady()
@@ -508,7 +549,10 @@ export function App() {
                 onSaveRequest={(bytes) => void saveDocument(false, bytes)}
               />
             ) : (
-              <PptxEditorView ref={pptxRef} document={document} />
+              // A deck's edits refresh proofing but never mark it dirty: with
+              // no writer they could never be saved away again, and a document
+              // that stays dirty forever cannot be closed.
+              <PptxEditorView ref={pptxRef} document={document} onChange={scheduleEditRevision} />
             )
           ) : (
             <section className="flex w-full items-center justify-center">
@@ -527,7 +571,7 @@ export function App() {
           )}
         </main>
 
-        {isDocx && (
+        {hasProofing && (
           <SpellCheckPanel
             visible={spellPanelOpen}
             getText={getEditorText}
@@ -541,15 +585,22 @@ export function App() {
         {isPptx && (
           <span className="text-amber-600">{t('footer.presentationSaveUnsupported')}</span>
         )}
-        {isDocx && (
+        {hasProofing && (
           <>
             <span className="hidden text-neutral-400 sm:inline">
-              {t('footer.stats', {
-                words: docStats.words,
-                characters: docStats.characters,
-                page: docStats.page,
-                pages: docStats.pages,
-              })}
+              {isPptx
+                ? t('footer.statsSlides', {
+                    words: docStats.words,
+                    characters: docStats.characters,
+                    slide: docStats.page,
+                    slides: docStats.pages,
+                  })
+                : t('footer.stats', {
+                    words: docStats.words,
+                    characters: docStats.characters,
+                    page: docStats.page,
+                    pages: docStats.pages,
+                  })}
             </span>
             {!spellLoading && !spellError && (
               <button

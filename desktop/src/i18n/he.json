@@ -121,12 +121,14 @@
     "exportedPagesMany": "{path} יוצא ({pages} עמודים)",
     "truncatedSuffix": " — קוצץ במגבלת העמודים",
     "wordCount": "מילים: {words} · תווים: {characters} · עמוד {page}/{pages}",
+    "wordCountSlides": "מילים: {words} · תווים: {characters} · שקופית {slide}/{slides}",
     "frozeTopRow": "השורה העליונה הוקפאה",
     "frozeFirstColumn": "העמודה הראשונה הוקפאה",
     "unfroze": "ההקפאה בוטלה"
   },
   "footer": {
     "stats": "{words} מילים · {characters} תווים · עמוד {page}/{pages}",
+    "statsSlides": "{words} מילים · {characters} תווים · שקופית {slide}/{slides}",
     "misspelledOne": "מילה אחת עם שגיאת כתיב",
     "misspelledMany": "{count} מילים עם שגיאות כתיב",
     "spellingOk": "האיות תקין",

@@ -121,12 +121,14 @@
     "exportedPagesMany": "Wyeksportowano {path} (strony: {pages})",
     "truncatedSuffix": " — skrócono na limicie stron",
     "wordCount": "Słowa: {words} · Znaki: {characters} · Strona {page}/{pages}",
+    "wordCountSlides": "Słowa: {words} · Znaki: {characters} · Slajd {slide}/{slides}",
     "frozeTopRow": "Zablokowano górny wiersz",
     "frozeFirstColumn": "Zablokowano pierwszą kolumnę",
     "unfroze": "Odblokowano okienka"
   },
   "footer": {
     "stats": "Słowa: {words} · Znaki: {characters} · Strona {page}/{pages}",
+    "statsSlides": "Słowa: {words} · Znaki: {characters} · Slajd {slide}/{slides}",
     "misspelledOne": "1 błędnie napisane słowo",
     "misspelledMany": "Błędnie napisane słowa: {count}",
     "spellingOk": "Pisownia OK",

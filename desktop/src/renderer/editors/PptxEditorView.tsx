@@ -1,12 +1,13 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { PptxEditor, type PptxEditorApi } from '@betteroffice/pptx-react'
-import type { PptxFontFace } from '@betteroffice/pptx'
+import type { DeckSnapshot, PptxFontFace, ShapeSnapshot } from '@betteroffice/pptx'
 import {
   loadBundledFontBytes,
   resolveLastResortFace,
   resolveMetricCompatFace,
 } from '@betteroffice/docx-fonts'
 import { en as pptxEn, locales as pptxLocales, type PartialLocaleStrings } from '@betteroffice/pptx-i18n'
+import { countCharacters, countWords, type EditorStats } from '../services/textStats.js'
 import { useI18n } from '../i18n.js'
 
 const editorLocales = pptxLocales as Record<string, PartialLocaleStrings>
@@ -39,7 +40,36 @@ function presentationFonts(): Promise<PptxFontFace[]> {
   return bundledFonts
 }
 
+// Everything a deck's text lives in already crosses the wasm boundary inside
+// the snapshot the editor lays out from, so word count and spell check read it
+// instead of asking the engine again. Shapes are visited in the order the deck
+// stores them, groups depth-first, and every story, paragraph and shape break
+// becomes a newline so counting never fuses the last word of one with the
+// first of the next.
+function shapeText(shape: ShapeSnapshot, out: string[]): void {
+  for (const story of shape.textStories) {
+    for (const paragraph of story.paragraphs) {
+      out.push(paragraph.runs.map((run) => run.text).join(''))
+    }
+  }
+  for (const child of shape.children) shapeText(child, out)
+}
+
+function deckText(snapshot: DeckSnapshot): string {
+  return snapshot.slides
+    .map((slide) => {
+      const lines: string[] = []
+      for (const shape of slide.shapes) shapeText(shape, lines)
+      return lines.join('\n')
+    })
+    .join('\n\n')
+}
+
+const TEXT_REFRESH_DELAY_MS = 500
+
 export interface PptxEditorViewRef {
+  getText: () => string
+  getStats: () => EditorStats
   undo: () => void
   redo: () => void
   cut: () => Promise<void>
@@ -61,14 +91,38 @@ interface EditorDocument {
 
 interface PptxEditorViewProps {
   document: EditorDocument
+  onChange?: () => void
 }
 
 export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>(
-  function PptxEditorView({ document }, ref) {
+  function PptxEditorView({ document, onChange }, ref) {
     const { locale, t } = useI18n()
     const [fonts, setFonts] = useState<PptxFontFace[] | null>(null)
     const [error, setError] = useState<string | null>(null)
     const apiRef = useRef<PptxEditorApi | null>(null)
+    const textRef = useRef('')
+    const wordsRef = useRef(0)
+    const slidesRef = useRef(1)
+    const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+    const onChangeRef = useRef(onChange)
+    onChangeRef.current = onChange
+
+    // Walking every story is cheap next to laying a slide out, but an edit
+    // arrives per keystroke, so the walk waits for a pause the way docx does.
+    const applySnapshot = useCallback((snapshot: DeckSnapshot) => {
+      textRef.current = deckText(snapshot)
+      wordsRef.current = countWords(textRef.current)
+      slidesRef.current = Math.max(1, snapshot.slides.length)
+    }, [])
+
+    useEffect(() => {
+      textRef.current = ''
+      wordsRef.current = 0
+      slidesRef.current = 1
+      return () => {
+        if (refreshTimer.current) clearTimeout(refreshTimer.current)
+      }
+    }, [document.seed])
 
     useEffect(() => {
       let canceled = false
@@ -82,6 +136,13 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
     }, [])
 
     useImperativeHandle(ref, () => ({
+      getText: () => textRef.current,
+      getStats: () => ({
+        words: wordsRef.current,
+        characters: countCharacters(textRef.current),
+        page: (apiRef.current?.getSlideIndex() ?? 0) + 1,
+        pages: slidesRef.current,
+      }),
       undo: () => apiRef.current?.undo(),
       redo: () => apiRef.current?.redo(),
       cut: () => apiRef.current?.cutSelection() ?? Promise.resolve(),
@@ -123,6 +184,12 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
         i18n={editorLocales[locale] ?? pptxEn}
         onReady={(api: PptxEditorApi) => {
           apiRef.current = api
+          applySnapshot(api.handle.snapshot())
+        }}
+        onChange={(snapshot: DeckSnapshot) => {
+          onChangeRef.current?.()
+          if (refreshTimer.current) clearTimeout(refreshTimer.current)
+          refreshTimer.current = setTimeout(() => applySnapshot(snapshot), TEXT_REFRESH_DELAY_MS)
         }}
         className="h-full w-full"
       />

@@ -121,12 +121,14 @@
     "exportedPagesMany": "{path} exportiert ({pages} Seiten)",
     "truncatedSuffix": " — beim Seitenlimit gekürzt",
     "wordCount": "Wörter: {words} · Zeichen: {characters} · Seite {page}/{pages}",
+    "wordCountSlides": "Wörter: {words} · Zeichen: {characters} · Folie {slide}/{slides}",
     "frozeTopRow": "Oberste Zeile fixiert",
     "frozeFirstColumn": "Erste Spalte fixiert",
     "unfroze": "Fixierung aufgehoben"
   },
   "footer": {
     "stats": "{words} Wörter · {characters} Zeichen · Seite {page}/{pages}",
+    "statsSlides": "{words} Wörter · {characters} Zeichen · Folie {slide}/{slides}",
     "misspelledOne": "1 falsch geschriebenes Wort",
     "misspelledMany": "{count} falsch geschriebene Wörter",
     "spellingOk": "Rechtschreibung OK",

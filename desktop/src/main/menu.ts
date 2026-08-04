@@ -61,7 +61,9 @@ export function buildMenu(context: MenuContext): Menu {
   const hasZoom = context.documentKind !== null
   const hasFind = context.documentKind === 'docx'
   const hasFreeze = context.documentKind === 'xlsx'
-  const hasProofing = context.documentKind === 'docx'
+  // Word count and spell check only read text, so they serve a presentation
+  // too even though its edits can never be saved.
+  const hasProofing = context.documentKind === 'docx' || context.documentKind === 'pptx'
   // The pptx engine holds edits in its CRDT without a PresentationML writer, so
   // a presentation has no bytes to save. PDF export renders from the bytes the
   // deck opened with, so it stays available for every kind.

@@ -121,12 +121,14 @@
     "exportedPagesMany": "已导出 {path}（{pages} 页）",
     "truncatedSuffix": " — 已在页数限制处截断",
     "wordCount": "字数：{words} · 字符：{characters} · 第 {page}/{pages} 页",
+    "wordCountSlides": "字数：{words} · 字符：{characters} · 第 {slide}/{slides} 张幻灯片",
     "frozeTopRow": "已冻结首行",
     "frozeFirstColumn": "已冻结首列",
     "unfroze": "已取消冻结"
   },
   "footer": {
     "stats": "{words} 字 · {characters} 字符 · 第 {page}/{pages} 页",
+    "statsSlides": "{words} 字 · {characters} 字符 · 第 {slide}/{slides} 张幻灯片",
     "misspelledOne": "1 个拼写错误的单词",
     "misspelledMany": "{count} 个拼写错误的单词",
     "spellingOk": "拼写正确",

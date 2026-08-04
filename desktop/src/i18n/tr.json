@@ -121,12 +121,14 @@
     "exportedPagesMany": "{path} dışa aktarıldı ({pages} sayfa)",
     "truncatedSuffix": " — sayfa sınırında kısaltıldı",
     "wordCount": "Sözcük: {words} · Karakter: {characters} · Sayfa {page}/{pages}",
+    "wordCountSlides": "Sözcük: {words} · Karakter: {characters} · Slayt {slide}/{slides}",
     "frozeTopRow": "Üst satır donduruldu",
     "frozeFirstColumn": "İlk sütun donduruldu",
     "unfroze": "Bölmeler çözüldü"
   },
   "footer": {
     "stats": "{words} sözcük · {characters} karakter · Sayfa {page}/{pages}",
+    "statsSlides": "{words} sözcük · {characters} karakter · Slayt {slide}/{slides}",
     "misspelledOne": "1 yazım hatalı sözcük",
     "misspelledMany": "{count} yazım hatalı sözcük",
     "spellingOk": "Yazım doğru",

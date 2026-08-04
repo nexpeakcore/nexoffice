@@ -8,6 +8,7 @@ import {
   resolveScriptFallbackFace,
 } from '@betteroffice/docx-fonts'
 import { en as docxEn, locales as docxLocales, type PartialLocaleStrings } from '@betteroffice/docx-i18n'
+import { countCharacters, countWords, type EditorStats } from '../services/textStats.js'
 import { useI18n } from '../i18n.js'
 
 const editorLocales = docxLocales as Record<string, PartialLocaleStrings>
@@ -15,7 +16,7 @@ const editorLocales = docxLocales as Record<string, PartialLocaleStrings>
 export interface DocxEditorViewRef {
   save: () => Promise<ArrayBuffer | null>
   getText: () => string
-  getStats: () => { words: number; characters: number; page: number; pages: number }
+  getStats: () => EditorStats
   isEditorFocused: () => boolean
   undo: () => void
   redo: () => void
@@ -61,11 +62,6 @@ function extractText(blocks: unknown[]): string {
     }
   }
   return out
-}
-
-function countWords(text: string): number {
-  const matches = text.match(/[\p{L}\p{N}]+(?:[''-][\p{L}\p{N}]+)*/gu)
-  return matches?.length ?? 0
 }
 
 const TEXT_REFRESH_DELAY_MS = 500
@@ -140,7 +136,7 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
         const editor = editorRef.current
         return {
           words: statsRef.current.words,
-          characters: textRef.current.replace(/\s/g, '').length,
+          characters: countCharacters(textRef.current),
           page: editor?.getCurrentPage() ?? 1,
           pages: editor?.getTotalPages() ?? 1,
         }

@@ -102,6 +102,8 @@ export interface PptxEditorApi {
   deleteSelection: () => void;
   /** Select the active story's whole text (Cmd/Ctrl+A equivalent). */
   selectAll: () => void;
+  /** Zero-based index of the slide the editor is showing. */
+  getSlideIndex: () => number;
   /** The current zoom factor (1 = 100%), resolved when fitting to the stage. */
   getZoom: () => number;
   /** Set the zoom factor, clamped to the toolbar's 50%–200% range. */
@@ -421,6 +423,7 @@ function PptxEditorContent({
               editorActionsRef.current?.pasteSelection() ?? Promise.resolve(),
             deleteSelection: () => editorActionsRef.current?.deleteSelection(),
             selectAll: () => editorActionsRef.current?.selectAll(),
+            getSlideIndex: () => modelRef.current?.slideIndex ?? 0,
             getZoom: () => editorActionsRef.current?.getZoom() ?? 1,
             setZoom: (next: number) => editorActionsRef.current?.setZoom(next),
           });

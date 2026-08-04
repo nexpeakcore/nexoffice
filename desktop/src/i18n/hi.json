@@ -121,12 +121,14 @@
     "exportedPagesMany": "{path} निर्यात किया गया ({pages} पृष्ठ)",
     "truncatedSuffix": " — पृष्ठ सीमा पर छोटा किया गया",
     "wordCount": "शब्द: {words} · वर्ण: {characters} · पृष्ठ {page}/{pages}",
+    "wordCountSlides": "शब्द: {words} · वर्ण: {characters} · स्लाइड {slide}/{slides}",
     "frozeTopRow": "शीर्ष पंक्ति स्थिर की गई",
     "frozeFirstColumn": "पहला स्तंभ स्थिर किया गया",
     "unfroze": "स्थिरता हटाई गई"
   },
   "footer": {
     "stats": "{words} शब्द · {characters} वर्ण · पृष्ठ {page}/{pages}",
+    "statsSlides": "{words} शब्द · {characters} वर्ण · स्लाइड {slide}/{slides}",
     "misspelledOne": "1 गलत वर्तनी वाला शब्द",
     "misspelledMany": "{count} गलत वर्तनी वाले शब्द",
     "spellingOk": "वर्तनी सही है",
