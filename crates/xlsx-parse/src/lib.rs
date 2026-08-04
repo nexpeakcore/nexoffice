@@ -49,6 +49,12 @@ pub const MAX_HYPERLINKS: usize = 65_536;
 /// upper bound on comments in one worksheet.
 pub const MAX_COMMENTS: usize = 65_536;
 
+/// upper bound on authors declared by one comments part.
+pub const MAX_COMMENT_AUTHORS: usize = 65_536;
+
+/// upper bound on one comment author or text, matching excel's cell text cap.
+pub const MAX_COMMENT_TEXT_BYTES: usize = 32_767;
+
 /// upper bound on entries in any single style pool (fonts, fills, borders,
 /// cellXfs, numFmts).
 pub const MAX_STYLE_ENTRIES: usize = 65_536;

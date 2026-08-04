@@ -15,11 +15,14 @@ use xlsx_model::{Cell, CellRef, CellValue, DateSystem, Sheet, Workbook};
 use crate::ParseError;
 use crate::package::{
     ContentTypeEntry, PartReference, PreservedPackage, PreservedSheet, Relationship, XmlAttribute,
-    XmlTemplate, attributes_from_fragment, parse_relationships, relationship_part_path,
+    XmlChild, XmlTemplate, attributes_from_fragment, parse_relationships, relationship_part_path,
     remove_attribute, set_attribute,
 };
 use crate::read::SharedStringCells;
-use crate::xml::{resolve_part_path, xml_err};
+use crate::xml::{
+    attr as xml_attr, local_name as xml_local_name, next_event, reader as xml_reader,
+    resolve_part_path, xml_err,
+};
 
 const NS_MAIN: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const NS_STRICT_MAIN: &str = "http://purl.oclc.org/ooxml/spreadsheetml/main";
@@ -989,54 +992,185 @@ fn comments_xml(sheet: &Sheet, main_namespace: &str) -> Result<Vec<u8>, ParseErr
     })
 }
 
+/// The first VML shape id excel assigns in a fresh drawing; generated note
+/// shapes count up from here past any retained source shape.
+const VML_FIRST_SHAPE_ID: u64 = 1025;
+
+/// The namespace prefixes generated note shapes rely on; a retained source
+/// root gains any it does not already declare.
+const VML_NAMESPACES: [(&str, &str, &str); 3] = [
+    ("v", "xmlns:v", "urn:schemas-microsoft-com:vml"),
+    ("o", "xmlns:o", "urn:schemas-microsoft-com:office:office"),
+    ("x", "xmlns:x", "urn:schemas-microsoft-com:office:excel"),
+];
+
 /// A minimal legacy VML drawing with one hidden note shape per comment, the
 /// boilerplate Excel expects for comment indicators.
 fn vml_drawing_xml(sheet: &Sheet) -> Result<Vec<u8>, ParseError> {
     fragment(|w| {
         let mut root = BytesStart::new("xml");
-        root.push_attribute(("xmlns:v", "urn:schemas-microsoft-com:vml"));
-        root.push_attribute(("xmlns:o", "urn:schemas-microsoft-com:office:office"));
-        root.push_attribute(("xmlns:x", "urn:schemas-microsoft-com:office:excel"));
+        for (_, declaration, namespace) in VML_NAMESPACES {
+            root.push_attribute((declaration, namespace));
+        }
         w.write_event(Event::Start(root))?;
-        w.create_element("o:shapelayout")
-            .with_attribute(("v:ext", "edit"))
-            .write_inner_content(|w| {
-                w.create_element("o:idmap")
-                    .with_attribute(("v:ext", "edit"))
-                    .with_attribute(("data", "1"))
-                    .write_empty()?;
-                Ok(())
-            })?;
-        w.create_element("v:shapetype")
-            .with_attribute(("id", "_x0000_t202"))
-            .with_attribute(("coordsize", "21600,21600"))
-            .with_attribute(("o:spt", "202"))
-            .with_attribute(("path", "m,l,21600r21600,l21600,xe"))
-            .write_inner_content(|w| {
-                w.create_element("v:stroke")
-                    .with_attribute(("joinstyle", "miter"))
-                    .write_empty()?;
-                w.create_element("v:path")
-                    .with_attribute(("gradientshapeok", "t"))
-                    .with_attribute(("o:connecttype", "rect"))
-                    .write_empty()?;
-                Ok(())
-            })?;
+        write_vml_shapelayout(w)?;
+        write_vml_note_shapetype(w)?;
         for (index, (&(row, col), _)) in sheet.comments.iter().enumerate() {
-            write_comment_shape(w, index, row, col)?;
+            write_comment_shape(w, VML_FIRST_SHAPE_ID + index as u64, row, col)?;
         }
         w.write_event(Event::End(BytesEnd::new("xml")))?;
         Ok(())
     })
 }
 
+/// Regenerates a notes VML part on top of its source: non-note shapes (form
+/// controls and friends), shapetypes, and any other source elements are kept
+/// verbatim, while note shapes are rebuilt from the model's comments. Without
+/// a readable source this is a plain regeneration.
+fn vml_drawing_xml_with_source(
+    sheet: &Sheet,
+    source: Option<&[u8]>,
+) -> Result<Vec<u8>, ParseError> {
+    let Some(template) = source.and_then(|bytes| XmlTemplate::capture(bytes).ok()) else {
+        return vml_drawing_xml(sheet);
+    };
+    let mut retained: Vec<&XmlChild> = Vec::new();
+    let mut has_shapelayout = false;
+    let mut has_note_shapetype = false;
+    let mut next_shape_id = VML_FIRST_SHAPE_ID;
+    for child in &template.children {
+        match child.local_name.as_str() {
+            "shape" => {
+                if !vml_shape_is_retained(&child.bytes)? {
+                    continue;
+                }
+                if let Some(id) = vml_shape_numeric_id(&child.bytes)? {
+                    next_shape_id = next_shape_id.max(id.saturating_add(1));
+                }
+                retained.push(child);
+            }
+            "shapetype" => {
+                has_note_shapetype |=
+                    vml_element_id(&child.bytes)?.as_deref() == Some("_x0000_t202");
+                retained.push(child);
+            }
+            "shapelayout" => {
+                has_shapelayout = true;
+                retained.push(child);
+            }
+            _ => retained.push(child),
+        }
+    }
+    let missing_namespaces: Vec<(&str, String)> = VML_NAMESPACES
+        .iter()
+        .filter(|(prefix, _, namespace)| !template.declares_namespace(prefix, namespace))
+        .map(|(_, declaration, namespace)| (*declaration, (*namespace).to_owned()))
+        .collect();
+    let mut output = template.prefix_with_attributes(&missing_namespaces)?;
+    for child in retained {
+        output.extend_from_slice(&child.before);
+        output.extend_from_slice(&child.bytes);
+    }
+    let generated = fragment(|w| {
+        if sheet.comments.is_empty() {
+            return Ok(());
+        }
+        if !has_shapelayout {
+            write_vml_shapelayout(w)?;
+        }
+        if !has_note_shapetype {
+            write_vml_note_shapetype(w)?;
+        }
+        for (index, (&(row, col), _)) in sheet.comments.iter().enumerate() {
+            write_comment_shape(w, next_shape_id + index as u64, row, col)?;
+        }
+        Ok(())
+    })?;
+    output.extend_from_slice(&generated);
+    output.extend_from_slice(&template.trailing);
+    output.extend_from_slice(&template.suffix);
+    Ok(output)
+}
+
+/// A source shape survives a note rewrite when its client data types it as
+/// something other than a note; note shapes (and shapes without a typed
+/// `ClientData`) are regenerated from the model.
+fn vml_shape_is_retained(bytes: &[u8]) -> Result<bool, ParseError> {
+    let mut reader = xml_reader(bytes);
+    let mut buf = Vec::new();
+    let mut depth = 0;
+    loop {
+        match next_event(&mut reader, &mut buf, &mut depth)? {
+            Event::Start(e) if xml_local_name(&e) == b"ClientData" => {
+                if let Some(object_type) = xml_attr(&e, b"ObjectType")? {
+                    return Ok(object_type != "Note");
+                }
+            }
+            Event::Eof => return Ok(false),
+            _ => {}
+        }
+    }
+}
+
+fn vml_element_id(bytes: &[u8]) -> Result<Option<String>, ParseError> {
+    let mut reader = xml_reader(bytes);
+    let mut buf = Vec::new();
+    let mut depth = 0;
+    loop {
+        match next_event(&mut reader, &mut buf, &mut depth)? {
+            Event::Start(e) => return xml_attr(&e, b"id"),
+            Event::Eof => return Ok(None),
+            _ => {}
+        }
+    }
+}
+
+fn vml_shape_numeric_id(bytes: &[u8]) -> Result<Option<u64>, ParseError> {
+    Ok(vml_element_id(bytes)?
+        .as_deref()
+        .and_then(|id| id.strip_prefix("_x0000_s"))
+        .and_then(|digits| digits.parse().ok()))
+}
+
+fn write_vml_shapelayout(w: &mut Writer<Vec<u8>>) -> io::Result<()> {
+    w.create_element("o:shapelayout")
+        .with_attribute(("v:ext", "edit"))
+        .write_inner_content(|w| {
+            w.create_element("o:idmap")
+                .with_attribute(("v:ext", "edit"))
+                .with_attribute(("data", "1"))
+                .write_empty()?;
+            Ok(())
+        })?;
+    Ok(())
+}
+
+fn write_vml_note_shapetype(w: &mut Writer<Vec<u8>>) -> io::Result<()> {
+    w.create_element("v:shapetype")
+        .with_attribute(("id", "_x0000_t202"))
+        .with_attribute(("coordsize", "21600,21600"))
+        .with_attribute(("o:spt", "202"))
+        .with_attribute(("path", "m,l,21600r21600,l21600,xe"))
+        .write_inner_content(|w| {
+            w.create_element("v:stroke")
+                .with_attribute(("joinstyle", "miter"))
+                .write_empty()?;
+            w.create_element("v:path")
+                .with_attribute(("gradientshapeok", "t"))
+                .with_attribute(("o:connecttype", "rect"))
+                .write_empty()?;
+            Ok(())
+        })?;
+    Ok(())
+}
+
 fn write_comment_shape(
     w: &mut Writer<Vec<u8>>,
-    index: usize,
+    shape_id: u64,
     row: RowId,
     col: ColId,
 ) -> io::Result<()> {
-    let id = format!("_x0000_s{}", 1025 + index);
+    let id = format!("_x0000_s{shape_id}");
     let anchor = comment_anchor(row, col);
     let row_text = row.to_string();
     let col_text = col.to_string();
@@ -2395,14 +2529,15 @@ fn worksheet_xml_with_template(
                 used_paths,
                 &mut output_extras,
             )? {
-                Some(plan) => {
+                CommentPartsPlan::Notes(plan) => {
                     let namespace = template.root_namespace().unwrap_or(NS_MAIN);
                     output_extras
                         .comment_parts
                         .push((plan.comments_path.clone(), comments_xml(sheet, namespace)?));
-                    output_extras
-                        .comment_parts
-                        .push((plan.vml_path.clone(), vml_drawing_xml(sheet)?));
+                    output_extras.comment_parts.push((
+                        plan.vml_path.clone(),
+                        vml_drawing_xml_with_source(sheet, package.part_bytes(&plan.vml_path))?,
+                    ));
                     output_extras.wrote_vml = true;
                     replacements.push((
                         "legacyDrawing",
@@ -2413,7 +2548,21 @@ fn worksheet_xml_with_template(
                         )?),
                     ));
                 }
-                None => replacements.push(("legacyDrawing", None)),
+                CommentPartsPlan::VmlOnly {
+                    vml_path,
+                    vml_rel_id,
+                } => {
+                    output_extras.comment_parts.push((
+                        vml_path.clone(),
+                        vml_drawing_xml_with_source(sheet, package.part_bytes(&vml_path))?,
+                    ));
+                    output_extras.wrote_vml = true;
+                    replacements.push((
+                        "legacyDrawing",
+                        Some(legacy_drawing_fragment(template, package, &vml_rel_id)?),
+                    ));
+                }
+                CommentPartsPlan::Drop => replacements.push(("legacyDrawing", None)),
             }
         }
         relationships = Some(merged);
@@ -2424,9 +2573,24 @@ fn worksheet_xml_with_template(
     Ok(output_extras)
 }
 
+/// How a save handles a sheet's comments and VML parts.
+enum CommentPartsPlan {
+    /// The sheet has comments: both parts are regenerated.
+    Notes(CommentPlan),
+    /// No comments remain but the source VML carries non-note shapes, so the
+    /// part survives with its notes stripped.
+    VmlOnly {
+        vml_path: String,
+        vml_rel_id: String,
+    },
+    /// No comments and nothing worth keeping: both parts drop.
+    Drop,
+}
+
 /// Rebinds the sheet's comments and VML relationships to regenerated parts,
-/// reusing the source ids and paths when they exist and dropping both parts
-/// when the sheet no longer has comments.
+/// reusing the source ids and paths when they exist. When the sheet no longer
+/// has comments, the comments part drops; the VML part drops too unless it
+/// still holds non-note shapes.
 fn plan_sheet_comments(
     sheet: &Sheet,
     relationships: &mut Vec<Relationship>,
@@ -2434,7 +2598,7 @@ fn plan_sheet_comments(
     package: &PreservedPackage,
     used_paths: &mut HashSet<String>,
     output: &mut WorksheetOutput,
-) -> Result<Option<CommentPlan>, ParseError> {
+) -> Result<CommentPartsPlan, ParseError> {
     let source_comments = relationships
         .iter()
         .find(|relationship| relationship.has_type("comments"))
@@ -2456,8 +2620,23 @@ fn plan_sheet_comments(
         .map(|target| resolve_part_path(sheet_directory, target));
     if sheet.comments.is_empty() {
         output.removed_parts.extend(source_comments_path);
-        output.removed_parts.extend(source_vml_path);
-        return Ok(None);
+        let retained_vml = source_vml.as_ref().and_then(|relationship| {
+            let id = relationship.id()?;
+            let path = source_vml_path.as_deref()?;
+            let keeps_shapes = package
+                .part_bytes(path)
+                .is_some_and(vml_part_has_non_note_shapes);
+            keeps_shapes.then(|| (path.to_owned(), id.to_owned()))
+        });
+        let Some((vml_path, vml_rel_id)) = retained_vml else {
+            output.removed_parts.extend(source_vml_path);
+            return Ok(CommentPartsPlan::Drop);
+        };
+        relationships.extend(source_vml);
+        return Ok(CommentPartsPlan::VmlOnly {
+            vml_path,
+            vml_rel_id,
+        });
     }
 
     let mut used_ids: HashSet<String> = relationships
@@ -2497,7 +2676,16 @@ fn plan_sheet_comments(
         &relationship_type(package, "comments", REL_COMMENTS),
         &relationship_type(package, "vmlDrawing", REL_VML),
     ));
-    Ok(Some(plan))
+    Ok(CommentPartsPlan::Notes(plan))
+}
+
+/// Whether a source VML part contains shapes a comment rewrite must keep.
+fn vml_part_has_non_note_shapes(bytes: &[u8]) -> bool {
+    XmlTemplate::capture(bytes).is_ok_and(|template| {
+        template.children.iter().any(|child| {
+            child.local_name == "shape" && vml_shape_is_retained(&child.bytes).unwrap_or(false)
+        })
+    })
 }
 
 fn legacy_drawing_fragment(

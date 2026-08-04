@@ -15,7 +15,8 @@ use crate::xml::{
     attr, collect_text, find_part, local_name, next_event, reader, resolve_part_path,
 };
 use crate::{
-    MAX_CELLS, MAX_COMMENTS, MAX_DEFINED_NAMES, MAX_HYPERLINKS, MAX_SHARED_STRINGS, ParseError,
+    MAX_CELLS, MAX_COMMENT_AUTHORS, MAX_COMMENT_TEXT_BYTES, MAX_COMMENTS, MAX_DEFINED_NAMES,
+    MAX_HYPERLINKS, MAX_SHARED_STRINGS, ParseError,
 };
 
 /// parse a full workbook from opc parts, resolving sheets through the
@@ -491,20 +492,35 @@ fn comments_part<'a>(
 
 /// parse a classic `xl/comments{N}.xml` part: the shared authors list plus one
 /// entry per commented cell. `<t>` and rich `<r>` runs both flatten to text.
+/// authors, comment elements, and string lengths are all capped while
+/// streaming, so a crafted part is rejected before it accumulates.
 fn parse_comments(data: &[u8]) -> Result<BTreeMap<(RowId, ColId), Comment>, ParseError> {
     let mut reader = reader(data);
     let mut buf = Vec::new();
     let mut depth = 0;
     let mut authors: Vec<String> = Vec::new();
     let mut comments = BTreeMap::new();
+    let mut comment_count: usize = 0;
     let mut current: Option<(CellRef, Option<usize>)> = None;
 
     loop {
         match next_event(&mut reader, &mut buf, &mut depth)? {
             Event::Start(e) => match local_name(&e).as_slice() {
-                b"author" => authors.push(collect_text(&mut reader, &mut buf, &mut depth)?),
+                b"author" => {
+                    if authors.len() >= MAX_COMMENT_AUTHORS {
+                        return Err(ParseError::TooManyComments);
+                    }
+                    let author = collect_text(&mut reader, &mut buf, &mut depth)?;
+                    if author.len() > MAX_COMMENT_TEXT_BYTES {
+                        return Err(ParseError::Malformed(
+                            "comment author exceeds length cap".into(),
+                        ));
+                    }
+                    authors.push(author);
+                }
                 b"comment" => {
-                    if comments.len() >= MAX_COMMENTS {
+                    comment_count += 1;
+                    if comment_count > MAX_COMMENTS {
                         return Err(ParseError::TooManyComments);
                     }
                     let reference = attr(&e, b"ref")?.unwrap_or_default();
@@ -517,6 +533,11 @@ fn parse_comments(data: &[u8]) -> Result<BTreeMap<(RowId, ColId), Comment>, Pars
                 b"text" => {
                     let text = collect_text(&mut reader, &mut buf, &mut depth)?;
                     if let Some((at, author)) = current.take() {
+                        if text.len() > MAX_COMMENT_TEXT_BYTES {
+                            return Err(ParseError::Malformed(
+                                "comment text exceeds length cap".into(),
+                            ));
+                        }
                         let author = author
                             .and_then(|index| authors.get(index))
                             .cloned()

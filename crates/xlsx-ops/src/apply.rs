@@ -15,7 +15,7 @@ use crate::formatting::{mutate_number_format, patch_cell_format};
 use crate::op::{CellState, Op};
 use crate::remap::{
     remap_defined_names, remap_formulas, remap_hyperlink_locations, remap_hyperlink_range,
-    rename_defined_names, rename_hyperlink_location, rename_sheet_references,
+    rename_defined_names, rename_hyperlink_location, rename_sheet_references, shift_formula_rows,
 };
 
 /// the inverse of an applied op: a base-vocabulary op list that, replayed in
@@ -27,10 +27,22 @@ pub struct InvertedOp(pub Vec<Op>);
 pub enum OpError {
     SheetNotFound(SheetId),
     SheetIndexOutOfRange(usize),
-    FormulaNotRewritable { sheet: SheetId, cell: CellRef },
-    DefinedNameNotRewritable { name: String },
+    FormulaNotRewritable {
+        sheet: SheetId,
+        cell: CellRef,
+    },
+    DefinedNameNotRewritable {
+        name: String,
+    },
     InvalidStyle(String),
-    MergeConflict { sheet: SheetId, merge: CellRange },
+    MergeConflict {
+        sheet: SheetId,
+        merge: CellRange,
+    },
+    HyperlinkConflict {
+        sheet: SheetId,
+        hyperlink: CellRange,
+    },
 }
 
 impl fmt::Display for OpError {
@@ -53,6 +65,13 @@ impl fmt::Display for OpError {
                 "merged range {} on sheet {} conflicts with the sort range; merges must lie \
                  inside it, span a single row, and repeat on every sorted row",
                 merge.to_a1(),
+                sheet.0
+            ),
+            OpError::HyperlinkConflict { sheet, hyperlink } => write!(
+                f,
+                "hyperlink range {} on sheet {} conflicts with the sort range; a hyperlink only \
+                 moves with its row when it spans a single row inside the sorted columns",
+                hyperlink.to_a1(),
                 sheet.0
             ),
         }
@@ -144,16 +163,8 @@ pub fn apply(wb: &mut Workbook, op: &Op) -> Result<InvertedOp, OpError> {
                 .zip(original)
                 .filter(|(from, to)| from != to)
                 .collect();
-            let inverse = move_row_cells(s, *range, &moves);
-            Ok(InvertedOp(if inverse.is_empty() {
-                vec![]
-            } else {
-                vec![Op::MoveRows {
-                    sheet: *sheet,
-                    range: *range,
-                    moves: inverse,
-                }]
-            }))
+            let outcome = move_row_cells(s, *sheet, *range, &moves)?;
+            Ok(InvertedOp(outcome.into_inverse(*sheet, *range)))
         }
         Op::MoveRows {
             sheet,
@@ -161,37 +172,23 @@ pub fn apply(wb: &mut Workbook, op: &Op) -> Result<InvertedOp, OpError> {
             moves,
         } => {
             let s = sheet_mut(wb, *sheet)?;
-            let inverse = move_row_cells(s, *range, moves);
-            Ok(InvertedOp(if inverse.is_empty() {
-                vec![]
-            } else {
-                vec![Op::MoveRows {
-                    sheet: *sheet,
-                    range: *range,
-                    moves: inverse,
-                }]
-            }))
+            let outcome = move_row_cells(s, *sheet, *range, moves)?;
+            Ok(InvertedOp(outcome.into_inverse(*sheet, *range)))
         }
         Op::SetAutoFilter { sheet, filter } => {
             let s = sheet_mut(wb, *sheet)?;
             let old_filter = s.auto_filter.clone();
             let old_hidden: Vec<RowId> = s.hidden_rows.iter().copied().collect();
-            if let Some(previous) = &old_filter {
-                for row in previous.range.start.row..=previous.range.end.row {
-                    s.show_row(row);
-                }
-            }
+            let previously_filter_hidden = filter_failing_rows(s, old_filter.as_ref());
             s.auto_filter = filter.clone();
-            if let Some(filter) = filter {
-                for row in filter.range.start.row..=filter.range.end.row {
-                    let is_header = row == filter.range.start.row;
-                    if is_header || row_passes_filter(s, filter, row) {
-                        s.show_row(row);
-                    } else {
-                        s.hide_row(row);
-                    }
-                }
-            }
+            let mut hidden: BTreeSet<RowId> = s
+                .hidden_rows
+                .iter()
+                .copied()
+                .filter(|row| !previously_filter_hidden.contains(row))
+                .collect();
+            hidden.extend(filter_failing_rows(s, filter.as_ref()));
+            s.hidden_rows = hidden;
             Ok(InvertedOp(vec![
                 Op::SetAutoFilter {
                     sheet: *sheet,
@@ -493,25 +490,71 @@ fn find_sort_merge_conflict(s: &Sheet, range: CellRange) -> Option<CellRange> {
         })
 }
 
+/// the pieces of a row move's inverse: the reversed permutation plus `SetCell`
+/// ops restoring the exact pre-move text of every rewritten formula.
+#[derive(Default)]
+struct RowMoveOutcome {
+    inverse_moves: Vec<(RowId, RowId)>,
+    formula_restores: Vec<Op>,
+}
+
+impl RowMoveOutcome {
+    fn into_inverse(self, sheet: SheetId, range: CellRange) -> Vec<Op> {
+        if self.inverse_moves.is_empty() {
+            return Vec::new();
+        }
+        let mut inverse = vec![Op::MoveRows {
+            sheet,
+            range,
+            moves: self.inverse_moves,
+        }];
+        inverse.extend(self.formula_restores);
+        inverse
+    }
+}
+
 /// move whole rows of cells within `range`'s columns; every `(from, to)` pair
 /// is applied simultaneously, so sources are read before any destination is
-/// written. cells carry their style, formula, and comment. returns the
-/// inverse pairs.
+/// written. cells carry their style and comment; formulas move with excel's
+/// copy semantics — relative row references shift by the row's delta — and
+/// hyperlinks follow their row. conflicts are detected before any mutation.
 fn move_row_cells(
     s: &mut Sheet,
+    sheet: SheetId,
     range: CellRange,
     moves: &[(RowId, RowId)],
-) -> Vec<(RowId, RowId)> {
+) -> Result<RowMoveOutcome, OpError> {
     if moves.is_empty() {
-        return Vec::new();
+        return Ok(RowMoveOutcome::default());
+    }
+    if let Some(hyperlink) = find_row_move_hyperlink_conflict(s, range, moves) {
+        return Err(OpError::HyperlinkConflict { sheet, hyperlink });
     }
     let cols = range.start.col..range.end.col.saturating_add(1);
     let mut writes = Vec::with_capacity(moves.len());
+    let mut formula_restores = Vec::new();
     for &(from, to) in moves {
-        let cells: Vec<(ColId, Cell)> = s
+        let delta = i64::from(to) - i64::from(from);
+        let mut cells: Vec<(ColId, Cell)> = s
             .iter_cells_in_rect(from..from.saturating_add(1), cols.clone())
             .map(|(at, cell)| (at.col, cell.clone()))
             .collect();
+        for (col, cell) in &mut cells {
+            let Some(source) = &cell.formula else {
+                continue;
+            };
+            let at = CellRef::new(from, *col);
+            let rewritten = shift_formula_rows(source, delta)
+                .map_err(|_| OpError::FormulaNotRewritable { sheet, cell: at })?;
+            if let Some(rewritten) = rewritten {
+                formula_restores.push(Op::SetCell {
+                    sheet,
+                    at,
+                    cell: CellState::from(&*cell),
+                });
+                cell.formula = Some(rewritten);
+            }
+        }
         writes.push((to, cells));
     }
     let mut cleared = Vec::new();
@@ -530,7 +573,53 @@ fn move_row_cells(
         }
     }
     move_row_comments(s, range, moves);
-    moves.iter().map(|&(from, to)| (to, from)).collect()
+    move_row_hyperlinks(s, range, moves);
+    Ok(RowMoveOutcome {
+        inverse_moves: moves.iter().map(|&(from, to)| (to, from)).collect(),
+        formula_restores,
+    })
+}
+
+/// a hyperlink follows a row move only when it spans a single row, lies inside
+/// the moved columns, and its row is a move source; any other hyperlink
+/// touching a moved or overwritten row is a conflict.
+fn find_row_move_hyperlink_conflict(
+    s: &Sheet,
+    range: CellRange,
+    moves: &[(RowId, RowId)],
+) -> Option<CellRange> {
+    let mut affected = BTreeSet::new();
+    for &(from, to) in moves {
+        affected.insert(from);
+        affected.insert(to);
+    }
+    s.hyperlinks.iter().map(|h| h.range).find(|r| {
+        let rows_touch = affected.range(r.start.row..=r.end.row).next().is_some();
+        let cols_touch = r.start.col <= range.end.col && r.end.col >= range.start.col;
+        if !rows_touch || !cols_touch {
+            return false;
+        }
+        let single_row = r.start.row == r.end.row;
+        let inside_cols = r.start.col >= range.start.col && r.end.col <= range.end.col;
+        !(single_row && inside_cols && moves.iter().any(|&(from, _)| from == r.start.row))
+    })
+}
+
+/// permute single-row hyperlinks alongside their rows under the same
+/// simultaneous semantics as `move_row_cells`; conflicting hyperlinks were
+/// rejected before any mutation.
+fn move_row_hyperlinks(s: &mut Sheet, range: CellRange, moves: &[(RowId, RowId)]) {
+    let destinations: BTreeMap<RowId, RowId> = moves.iter().copied().collect();
+    for hyperlink in &mut s.hyperlinks {
+        let r = hyperlink.range;
+        if r.start.row != r.end.row || r.start.col < range.start.col || r.end.col > range.end.col {
+            continue;
+        }
+        if let Some(&to) = destinations.get(&r.start.row) {
+            hyperlink.range.start.row = to;
+            hyperlink.range.end.row = to;
+        }
+    }
 }
 
 /// permute comments alongside their rows under the same simultaneous
@@ -607,6 +696,17 @@ fn value_rank(value: &CellValue) -> u8 {
         CellValue::Error { .. } => 3,
         CellValue::Empty => 4,
     }
+}
+
+/// the non-header rows of `filter`'s range that fail its criteria against the
+/// sheet's current cells — the rows the filter itself hides.
+fn filter_failing_rows(sheet: &Sheet, filter: Option<&AutoFilter>) -> BTreeSet<RowId> {
+    let Some(filter) = filter else {
+        return BTreeSet::new();
+    };
+    (filter.range.start.row..=filter.range.end.row)
+        .filter(|&row| row != filter.range.start.row && !row_passes_filter(sheet, filter, row))
+        .collect()
 }
 
 /// a row is visible when every column with value criteria matches its cell
@@ -2482,6 +2582,236 @@ mod tests {
 
         apply_ops(&mut wb, &inv.0).unwrap();
         assert_eq!(wb, before);
+    }
+
+    fn link(range: &str) -> Hyperlink {
+        Hyperlink {
+            range: CellRange::parse_a1(range).unwrap(),
+            external_target: Some(format!("https://example.com/{range}")),
+            location: None,
+            tooltip: None,
+            display: None,
+        }
+    }
+
+    fn formula_cell(source: &str) -> Cell {
+        Cell {
+            formula: Some(source.into()),
+            ..Cell::default()
+        }
+    }
+
+    fn sort_asc(range: &str) -> Op {
+        Op::SortRange {
+            sheet: SheetId(0),
+            range: rng(range),
+            key_col: 0,
+            ascending: true,
+        }
+    }
+
+    fn descending_key_column(wb: &mut Workbook) {
+        let s = wb.sheet_mut(SheetId(0)).unwrap();
+        for (row, value) in [(0, 3.0), (1, 1.0), (2, 2.0)] {
+            s.set_cell(
+                CellRef::new(row, 0),
+                Cell {
+                    value: CellValue::Number { value },
+                    ..Cell::default()
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn sort_range_moves_single_row_hyperlinks_and_undo_restores_them() {
+        let mut wb = wb_one_sheet();
+        descending_key_column(&mut wb);
+        wb.sheets[0]
+            .hyperlinks
+            .extend([link("A1"), link("A2:B2"), link("C1"), link("A4:B4")]);
+        let before = wb.clone();
+
+        let inv = apply(&mut wb, &sort_asc("A1:B3")).unwrap();
+        let ranges: Vec<String> = wb.sheets[0]
+            .hyperlinks
+            .iter()
+            .map(|hyperlink| hyperlink.range.to_a1())
+            .collect();
+        assert_eq!(ranges, vec!["A3", "A1:B1", "C1", "A4:B4"]);
+
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+    }
+
+    #[test]
+    fn sort_range_rejects_hyperlinks_it_cannot_move_with_a_row() {
+        for hyperlink in [link("A1:A2"), link("A2:C2")] {
+            let mut wb = wb_one_sheet();
+            descending_key_column(&mut wb);
+            wb.sheets[0].hyperlinks.push(hyperlink);
+            let before = wb.clone();
+
+            let error = apply(&mut wb, &sort_asc("A1:B3")).unwrap_err();
+            assert!(
+                matches!(error, OpError::HyperlinkConflict { .. }),
+                "{error}"
+            );
+            assert_eq!(wb, before);
+        }
+    }
+
+    #[test]
+    fn sort_range_rewrites_relative_formula_rows_and_undo_restores_the_text() {
+        let mut wb = wb_one_sheet();
+        descending_key_column(&mut wb);
+        let s = wb.sheet_mut(SheetId(0)).unwrap();
+        s.set_cell(r("B1"), formula_cell("A1*2"));
+        s.set_cell(r("B2"), formula_cell("$A$2+A2"));
+        s.set_cell(r("B3"), formula_cell("SUM(A3:C3)"));
+        s.set_cell(r("D5"), formula_cell("B2+1"));
+        let before = wb.clone();
+
+        let inv = apply(&mut wb, &sort_asc("A1:B3")).unwrap();
+        assert_eq!(wb.formula(SheetId(0), r("B3")), Some("A3*2"));
+        assert_eq!(wb.formula(SheetId(0), r("B1")), Some("$A$2+A1"));
+        assert_eq!(wb.formula(SheetId(0), r("B2")), Some("SUM(A2:C2)"));
+        assert_eq!(
+            wb.formula(SheetId(0), r("D5")),
+            Some("B2+1"),
+            "formulas outside the sorted rows stay untouched"
+        );
+
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+    }
+
+    #[test]
+    fn move_rows_collapses_underflowing_relative_refs_and_undo_restores_them() {
+        let mut wb = wb_one_sheet();
+        let s = wb.sheet_mut(SheetId(0)).unwrap();
+        s.set_cell(r("A1"), text_cell("top"));
+        s.set_cell(r("A3"), formula_cell("A1+1"));
+        let before = wb.clone();
+
+        let inv = apply(
+            &mut wb,
+            &Op::MoveRows {
+                sheet: SheetId(0),
+                range: rng("A1:A3"),
+                moves: vec![(0, 2), (2, 0)],
+            },
+        )
+        .unwrap();
+        assert_eq!(wb.formula(SheetId(0), r("A1")), Some("#REF!+1"));
+
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+    }
+
+    #[test]
+    fn sort_range_refuses_unparseable_formulas_in_moved_rows() {
+        let mut wb = wb_one_sheet();
+        descending_key_column(&mut wb);
+        wb.sheet_mut(SheetId(0))
+            .unwrap()
+            .set_cell(r("B1"), formula_cell("SUM("));
+        let before = wb.clone();
+
+        let error = apply(&mut wb, &sort_asc("A1:B3")).unwrap_err();
+        assert!(
+            matches!(error, OpError::FormulaNotRewritable { .. }),
+            "{error}"
+        );
+        assert_eq!(wb, before);
+    }
+
+    #[test]
+    fn set_auto_filter_preserves_manual_hides_across_filter_changes() {
+        let mut wb = wb_one_sheet();
+        let s = wb.sheet_mut(SheetId(0)).unwrap();
+        s.set_cell(r("A1"), text_cell("Name"));
+        s.set_cell(r("A2"), text_cell("keep"));
+        s.set_cell(r("A3"), text_cell("drop"));
+        s.set_cell(r("A4"), text_cell("keep"));
+        let filter_for = |values: &[&str]| {
+            Some(AutoFilter {
+                range: rng("A1:A4"),
+                columns: vec![AutoFilterColumn {
+                    col: 0,
+                    values: Some(values.iter().map(|v| (*v).to_string()).collect()),
+                    show_blanks: false,
+                }],
+            })
+        };
+        let state_zero = wb.clone();
+
+        let inv_first = apply(
+            &mut wb,
+            &Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: filter_for(&["keep"]),
+            },
+        )
+        .unwrap();
+        assert!(wb.sheets[0].is_row_hidden(2), "drop row fails the filter");
+        let state_one = wb.clone();
+
+        let inv_manual = apply(
+            &mut wb,
+            &Op::SetHiddenRows {
+                sheet: SheetId(0),
+                hidden: vec![2, 3],
+            },
+        )
+        .unwrap();
+        assert!(
+            wb.sheets[0].is_row_hidden(3),
+            "manual hide inside the range"
+        );
+        let state_two = wb.clone();
+
+        let inv_second = apply(
+            &mut wb,
+            &Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: filter_for(&["keep", "drop"]),
+            },
+        )
+        .unwrap();
+        assert!(
+            !wb.sheets[0].is_row_hidden(2),
+            "the old filter's hidden row passes the new filter"
+        );
+        assert!(
+            wb.sheets[0].is_row_hidden(3),
+            "the manual hide survives the filter change"
+        );
+        let state_three = wb.clone();
+
+        let inv_clear = apply(
+            &mut wb,
+            &Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: None,
+            },
+        )
+        .unwrap();
+        assert!(wb.sheets[0].auto_filter.is_none());
+        assert!(
+            wb.sheets[0].is_row_hidden(3),
+            "clearing the filter keeps the manual hide"
+        );
+        assert!(!wb.sheets[0].is_row_hidden(2));
+
+        apply_ops(&mut wb, &inv_clear.0).unwrap();
+        assert_eq!(wb, state_three);
+        apply_ops(&mut wb, &inv_second.0).unwrap();
+        assert_eq!(wb, state_two);
+        apply_ops(&mut wb, &inv_manual.0).unwrap();
+        assert_eq!(wb, state_one);
+        apply_ops(&mut wb, &inv_first.0).unwrap();
+        assert_eq!(wb, state_zero);
     }
 
     #[test]

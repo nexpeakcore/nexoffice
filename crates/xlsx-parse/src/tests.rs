@@ -2104,6 +2104,169 @@ fn adding_comments_to_a_plain_sheet_wires_parts_rels_and_content_types() {
     );
 }
 
+fn replace_part(parts: &mut [(String, Vec<u8>)], name: &str, bytes: Vec<u8>) {
+    parts
+        .iter_mut()
+        .find(|(part, _)| part == name)
+        .expect("fixture part exists")
+        .1 = bytes;
+}
+
+fn form_control_vml() -> Vec<u8> {
+    concat!(
+        r#"<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">"#,
+        r#"<o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout>"#,
+        r#"<v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe"/>"#,
+        r#"<v:shapetype id="_x0000_t201" coordsize="21600,21600" o:spt="201" path="m,l,21600r21600,l21600,xe"/>"#,
+        r##"<v:shape id="_x0000_s1025" type="#_x0000_t202"><x:ClientData ObjectType="Note"><x:Row>0</x:Row><x:Column>0</x:Column></x:ClientData></v:shape>"##,
+        r##"<v:shape id="_x0000_s1030" type="#_x0000_t201"><x:ClientData ObjectType="Checkbox"><x:Anchor>1,0,1,0,3,0,3,0</x:Anchor></x:ClientData></v:shape>"##,
+        r#"</xml>"#,
+    )
+    .as_bytes()
+    .to_vec()
+}
+
+#[test]
+fn edited_comments_keep_non_note_vml_shapes_and_shapetypes() {
+    let mut parts = commented_package();
+    replace_part(
+        &mut parts,
+        "xl/drawings/vmlDrawing1.vml",
+        form_control_vml(),
+    );
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+
+    let mut workbook = parsed.workbook.clone();
+    workbook.sheets[0].set_comment(
+        CellRef::parse_a1("A1").unwrap(),
+        Some(note("Ada", "rewritten")),
+    );
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+
+    let vml = String::from_utf8(part_bytes(&saved, "xl/drawings/vmlDrawing1.vml")).unwrap();
+    assert!(vml.contains(r#"ObjectType="Checkbox""#), "{vml}");
+    assert!(vml.contains(r#"id="_x0000_s1030""#), "{vml}");
+    assert_eq!(
+        vml.matches(r#"<v:shapetype id="_x0000_t202""#).count(),
+        1,
+        "the source note shapetype is kept, not duplicated: {vml}"
+    );
+    assert_eq!(
+        vml.matches(r#"<v:shapetype id="_x0000_t201""#).count(),
+        1,
+        "{vml}"
+    );
+    assert_eq!(vml.matches("<o:shapelayout").count(), 1, "{vml}");
+    assert_eq!(vml.matches(r#"ObjectType="Note""#).count(), 2, "{vml}");
+    assert!(
+        !vml.contains(r#"id="_x0000_s1025""#),
+        "note shapes are regenerated with ids past the retained ones: {vml}"
+    );
+    assert!(vml.contains(r#"id="_x0000_s1031""#), "{vml}");
+    assert!(vml.contains(r#"id="_x0000_s1032""#), "{vml}");
+
+    assert_eq!(
+        parse_workbook(&saved).unwrap().sheets[0].comments,
+        workbook.sheets[0].comments
+    );
+}
+
+#[test]
+fn clearing_comments_keeps_a_vml_part_with_form_controls() {
+    let mut parts = commented_package();
+    replace_part(
+        &mut parts,
+        "xl/drawings/vmlDrawing1.vml",
+        form_control_vml(),
+    );
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+
+    let mut workbook = parsed.workbook.clone();
+    workbook.sheets[0].comments.clear();
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+
+    assert!(!saved.iter().any(|(name, _)| name == "xl/comments1.xml"));
+    let vml = String::from_utf8(part_bytes(&saved, "xl/drawings/vmlDrawing1.vml")).unwrap();
+    assert!(vml.contains(r#"ObjectType="Checkbox""#), "{vml}");
+    assert!(vml.contains(r#"id="_x0000_s1030""#), "{vml}");
+    assert!(!vml.contains(r#"ObjectType="Note""#), "{vml}");
+    let sheet = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(sheet.contains(r#"<legacyDrawing"#), "{sheet}");
+    assert!(sheet.contains(r#"r:id="rIdVml""#), "{sheet}");
+    let rels =
+        String::from_utf8(part_bytes(&saved, "xl/worksheets/_rels/sheet1.xml.rels")).unwrap();
+    assert!(rels.contains(r#"Id="rIdVml""#), "{rels}");
+    assert!(!rels.contains(r#"Id="rIdComments""#), "{rels}");
+    let content_types = String::from_utf8(part_bytes(&saved, "[Content_Types].xml")).unwrap();
+    assert!(
+        !content_types.contains("/xl/comments1.xml"),
+        "{content_types}"
+    );
+    assert!(
+        content_types.contains(r#"Extension="vml""#),
+        "{content_types}"
+    );
+
+    assert!(
+        parse_workbook(&saved).unwrap().sheets[0]
+            .comments
+            .is_empty()
+    );
+}
+
+#[test]
+fn comment_author_flood_is_rejected_while_parsing() {
+    let mut xml = String::from("<comments><authors>");
+    for _ in 0..=crate::MAX_COMMENT_AUTHORS {
+        xml.push_str("<author>a</author>");
+    }
+    xml.push_str("</authors><commentList/></comments>");
+    let mut parts = commented_package();
+    replace_part(&mut parts, "xl/comments1.xml", xml.into_bytes());
+    assert_eq!(parse_workbook(&parts), Err(ParseError::TooManyComments));
+}
+
+#[test]
+fn comment_element_flood_is_rejected_even_with_duplicate_refs() {
+    let mut xml = String::from(r#"<comments><authors><author>Ada</author></authors><commentList>"#);
+    for _ in 0..=crate::MAX_COMMENTS {
+        xml.push_str(r#"<comment ref="A1" authorId="0"><text><t>x</t></text></comment>"#);
+    }
+    xml.push_str("</commentList></comments>");
+    let mut parts = commented_package();
+    replace_part(&mut parts, "xl/comments1.xml", xml.into_bytes());
+    assert_eq!(parse_workbook(&parts), Err(ParseError::TooManyComments));
+}
+
+#[test]
+fn oversized_comment_strings_are_rejected_while_parsing() {
+    let long = "x".repeat(crate::MAX_COMMENT_TEXT_BYTES + 1);
+
+    let author_flood =
+        format!(r#"<comments><authors><author>{long}</author></authors><commentList/></comments>"#);
+    let mut parts = commented_package();
+    replace_part(&mut parts, "xl/comments1.xml", author_flood.into_bytes());
+    assert!(matches!(
+        parse_workbook(&parts),
+        Err(ParseError::Malformed(_))
+    ));
+
+    let text_flood = format!(
+        concat!(
+            r#"<comments><authors><author>Ada</author></authors><commentList>"#,
+            r#"<comment ref="A1" authorId="0"><text><t>{}</t></text></comment>"#,
+            r#"</commentList></comments>"#,
+        ),
+        long
+    );
+    let mut parts = commented_package();
+    replace_part(&mut parts, "xl/comments1.xml", text_flood.into_bytes());
+    assert!(matches!(
+        parse_workbook(&parts),
+        Err(ParseError::Malformed(_))
+    ));
+}
+
 #[test]
 fn clearing_every_comment_drops_the_parts_rels_and_content_types() {
     let parts = commented_package();
