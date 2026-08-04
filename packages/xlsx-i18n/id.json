@@ -37,7 +37,8 @@
     "blanks": "(Kosong)",
     "apply": "Terapkan",
     "clear": "Hapus",
-    "truncated": "Menampilkan {count} nilai pertama"
+    "truncated": "Menampilkan {count} nilai pertama",
+    "regionTooLarge": "Wilayah data lebih besar dari yang dapat dicakup filter — pilih rentang yang ingin difilter."
   },
   "comment": {
     "viewLabel": "Komentar pada {cell}",

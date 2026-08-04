@@ -37,7 +37,8 @@
     "blanks": "(Boşlar)",
     "apply": "Uygula",
     "clear": "Temizle",
-    "truncated": "İlk {count} değer gösteriliyor"
+    "truncated": "İlk {count} değer gösteriliyor",
+    "regionTooLarge": "Veri bölgesi bir filtrenin kapsayabileceğinden büyük — filtrelenecek aralığı seçin."
   },
   "comment": {
     "viewLabel": "{cell} hücresindeki yorum",

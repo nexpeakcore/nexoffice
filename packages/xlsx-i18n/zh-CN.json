@@ -37,7 +37,8 @@
     "blanks": "（空白）",
     "apply": "应用",
     "clear": "清除",
-    "truncated": "仅显示前 {count} 个值"
+    "truncated": "仅显示前 {count} 个值",
+    "regionTooLarge": "数据区域超出筛选器可覆盖的范围 — 请选择要筛选的区域。"
   },
   "comment": {
     "viewLabel": "{cell} 的批注",

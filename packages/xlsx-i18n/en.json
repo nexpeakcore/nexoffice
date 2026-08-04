@@ -128,7 +128,8 @@
     "blanks": "(Blanks)",
     "apply": "Apply",
     "clear": "Clear",
-    "truncated": "Showing the first {count} values"
+    "truncated": "Showing the first {count} values",
+    "regionTooLarge": "The data region is larger than a filter can cover — select the range to filter."
   },
   "comment": {
     "viewLabel": "Comment on {cell}",

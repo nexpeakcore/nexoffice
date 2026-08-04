@@ -37,7 +37,8 @@
     "blanks": "(ריקים)",
     "apply": "החל",
     "clear": "נקה",
-    "truncated": "מוצגים {count} הערכים הראשונים"
+    "truncated": "מוצגים {count} הערכים הראשונים",
+    "regionTooLarge": "טווח הנתונים גדול ממה שמסנן יכול לכסות — בחר את הטווח לסינון."
   },
   "comment": {
     "viewLabel": "הערה בתא {cell}",

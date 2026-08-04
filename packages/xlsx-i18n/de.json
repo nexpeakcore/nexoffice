@@ -37,7 +37,8 @@
     "blanks": "(Leere)",
     "apply": "Anwenden",
     "clear": "Löschen",
-    "truncated": "Die ersten {count} Werte werden angezeigt"
+    "truncated": "Die ersten {count} Werte werden angezeigt",
+    "regionTooLarge": "Der Datenbereich ist größer, als ein Filter abdecken kann — wählen Sie den zu filternden Bereich aus."
   },
   "comment": {
     "viewLabel": "Kommentar zu {cell}",

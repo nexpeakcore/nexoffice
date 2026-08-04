@@ -37,7 +37,8 @@
     "blanks": "(Puste)",
     "apply": "Zastosuj",
     "clear": "Wyczyść",
-    "truncated": "Wyświetlane są pierwsze {count} wartości"
+    "truncated": "Wyświetlane są pierwsze {count} wartości",
+    "regionTooLarge": "Obszar danych jest większy, niż filtr może objąć — zaznacz zakres do filtrowania."
   },
   "comment": {
     "viewLabel": "Komentarz do {cell}",

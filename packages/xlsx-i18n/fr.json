@@ -37,7 +37,8 @@
     "blanks": "(Vides)",
     "apply": "Appliquer",
     "clear": "Effacer",
-    "truncated": "Affichage des {count} premières valeurs"
+    "truncated": "Affichage des {count} premières valeurs",
+    "regionTooLarge": "La zone de données dépasse ce qu'un filtre peut couvrir — sélectionnez la plage à filtrer."
   },
   "comment": {
     "viewLabel": "Commentaire sur {cell}",

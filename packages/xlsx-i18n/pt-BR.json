@@ -37,7 +37,8 @@
     "blanks": "(Vazias)",
     "apply": "Aplicar",
     "clear": "Limpar",
-    "truncated": "Mostrando os primeiros {count} valores"
+    "truncated": "Mostrando os primeiros {count} valores",
+    "regionTooLarge": "A região de dados é maior do que um filtro pode cobrir — selecione o intervalo a filtrar."
   },
   "comment": {
     "viewLabel": "Comentário em {cell}",

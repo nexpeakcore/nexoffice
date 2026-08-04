@@ -193,6 +193,17 @@ export interface RegionBounds {
 
 const MAX_REGION_STEPS = 10_000;
 
+export interface ExpandedRegion {
+  range: CellRange;
+  /**
+   * The block kept going where `bounds` or the step guard stopped it, so the
+   * range describes only part of the data. A filter must not be installed over
+   * a partial region: rows past the edge would stay visible however the
+   * criteria judge them.
+   */
+  truncated: boolean;
+}
+
 /**
  * Grow a selection into the contiguous non-empty block around it (the data
  * region, including its header row). Each step annexes one adjacent row or
@@ -203,12 +214,13 @@ export function expandDataRegion(
   selection: CellRange,
   probes: RegionProbes,
   bounds: RegionBounds
-): CellRange {
+): ExpandedRegion {
   let bottom = Math.min(selection.bottom, bounds.maxRow);
   let right = Math.min(selection.right, bounds.maxCol);
   let top = Math.min(selection.top, bottom);
   let left = Math.min(selection.left, right);
   let steps = MAX_REGION_STEPS;
+  let truncated = false;
   while (steps-- > 0) {
     if (top > 0 && probes.rowHasContent(top - 1, left, right)) {
       top -= 1;
@@ -226,7 +238,10 @@ export function expandDataRegion(
       right += 1;
       continue;
     }
+    truncated =
+      (bottom === bounds.maxRow && probes.rowHasContent(bottom + 1, left, right)) ||
+      (right === bounds.maxCol && probes.colHasContent(right + 1, top, bottom));
     break;
   }
-  return { top, left, bottom, right };
+  return { range: { top, left, bottom, right }, truncated: truncated || steps < 0 };
 }

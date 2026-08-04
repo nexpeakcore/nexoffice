@@ -81,7 +81,7 @@ import {
   MAX_FILTER_VALUES,
   withColumnCriteria,
 } from './components/filters/filterSpec';
-import type { FilterSpec } from './components/filters/filterSpec';
+import type { ExpandedRegion, FilterSpec } from './components/filters/filterSpec';
 import {
   CommentEditorPopover,
   CommentViewPopover,
@@ -1270,12 +1270,7 @@ function XlsxEditorContent({
 
   // the contiguous non-empty block around the selection (with its header row),
   // probed one boundary row/column per step through the wasm cell reader.
-  const dataRegionForSelection = useCallback((): {
-    top: number;
-    left: number;
-    bottom: number;
-    right: number;
-  } | null => {
+  const dataRegionForSelection = useCallback((): ExpandedRegion | null => {
     const handle = handleRef.current;
     if (!handle || !selection) return null;
     const normalized = normalizeRange(selection);
@@ -1305,11 +1300,20 @@ function XlsxEditorContent({
       } else {
         const region = dataRegionForSelection();
         if (!region) return;
+        const normalized = normalizeRange(selection);
+        const explicit = normalized.top !== normalized.bottom || normalized.left !== normalized.right;
+        // A partial region would leave the rows past its edge visible whatever
+        // the criteria say, so fall back to what the user picked, or ask.
+        if (region.truncated && !explicit) {
+          setError(t('filter.regionTooLarge'));
+          return;
+        }
+        const range = region.truncated ? normalized : region.range;
         const spec = emptyFilterSpec({
-          startRow: region.top,
-          startCol: region.left,
-          endRow: region.bottom,
-          endCol: region.right,
+          startRow: range.top,
+          startCol: range.left,
+          endRow: range.bottom,
+          endCol: range.right,
         });
         applyResult(handle.setAutoFilter(activeSheet, spec));
       }
@@ -1325,6 +1329,7 @@ function XlsxEditorContent({
     dataRegionForSelection,
     applyResult,
     focusContainer,
+    t,
   ]);
 
   // open (or toggle closed) a column's popover, reading the distinct raw cell

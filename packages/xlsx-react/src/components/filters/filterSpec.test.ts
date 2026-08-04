@@ -216,21 +216,33 @@ describe('expandDataRegion', () => {
 
   it('grows a single-cell selection to the whole block', () => {
     const region = expandDataRegion({ top: 3, left: 2, bottom: 3, right: 2 }, probes, bounds);
-    expect(region).toEqual(block);
+    expect(region).toEqual({ range: block, truncated: false });
   });
 
   it('keeps a selection with no non-empty neighbors unchanged', () => {
     const region = expandDataRegion({ top: 20, left: 20, bottom: 21, right: 21 }, probes, bounds);
-    expect(region).toEqual({ top: 20, left: 20, bottom: 21, right: 21 });
+    expect(region).toEqual({
+      range: { top: 20, left: 20, bottom: 21, right: 21 },
+      truncated: false,
+    });
   });
 
-  it('stops at the given bounds', () => {
+  it('reports the block it had to cut short at the given bounds', () => {
     const region = expandDataRegion(
       { top: 3, left: 2, bottom: 3, right: 2 },
       probes,
       { maxRow: 4, maxCol: 2 }
     );
-    expect(region).toEqual({ top: 2, left: 1, bottom: 4, right: 2 });
+    expect(region).toEqual({ range: { top: 2, left: 1, bottom: 4, right: 2 }, truncated: true });
+  });
+
+  it('does not report truncation when the block ends exactly at the bounds', () => {
+    const region = expandDataRegion(
+      { top: 3, left: 2, bottom: 3, right: 2 },
+      probes,
+      { maxRow: 5, maxCol: 3 }
+    );
+    expect(region).toEqual({ range: block, truncated: false });
   });
 });
 
