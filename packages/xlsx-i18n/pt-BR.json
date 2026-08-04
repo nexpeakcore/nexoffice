@@ -10,13 +10,42 @@
     "save": null,
     "exportPng": null,
     "undo": null,
-    "redo": null
+    "redo": null,
+    "sortLabel": "Classificar",
+    "sortAsc": "Classificar de A a Z",
+    "sortDesc": "Classificar de Z a A",
+    "freezeLabel": "Congelar painéis",
+    "freezeUpToRow": "Congelar até a linha {row}",
+    "freezeUpToColumn": "Congelar até a coluna {column}",
+    "freezeFirstRow": "Congelar primeira linha",
+    "freezeFirstColumn": "Congelar primeira coluna",
+    "unfreeze": "Descongelar",
+    "filterLabel": "Filtro",
+    "filterToggle": "Filtro",
+    "commentLabel": "Comentários",
+    "commentToggle": "Comentário"
   },
   "editor": {
     "appLabel": null,
     "demoCellText": null,
     "openError": null,
     "sheetTabsLabel": null
+  },
+  "filter": {
+    "columnButton": "Filtrar coluna {column}",
+    "selectAll": "Selecionar tudo",
+    "blanks": "(Vazias)",
+    "apply": "Aplicar",
+    "clear": "Limpar",
+    "truncated": "Mostrando os primeiros {count} valores",
+    "regionTooLarge": "A região de dados é maior do que um filtro pode cobrir — selecione o intervalo a filtrar."
+  },
+  "comment": {
+    "viewLabel": "Comentário em {cell}",
+    "editLabel": "Editar comentário em {cell}",
+    "textPlaceholder": "Insira um comentário",
+    "save": "Salvar",
+    "delete": "Excluir"
   },
   "proposals": {
     "panelLabel": null,

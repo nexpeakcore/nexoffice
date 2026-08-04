@@ -418,6 +418,38 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
       if (!session || readOnly || text.length === 0) return;
       dispatchCaretInput();
       const applyText = async (inputText: string) => {
+        // Resident fast path decided from the sticky selection alone: building
+        // the display position map walks every story (tables included) through
+        // storySegments, which is the single most expensive main-thread step of
+        // a keystroke on table-heavy documents. The worker validates resident
+        // state itself and the compatibility fallback below still rebuilds the
+        // map when it actually needs display positions.
+        if (
+          !isSuggesting &&
+          applyResidentInput &&
+          /^[\x20-\x7e]+$/u.test(inputText) &&
+          !inputText.includes('\r') &&
+          !inputText.includes('\n')
+        ) {
+          const sticky = session.selection();
+          const stickyCollapsed =
+            sticky &&
+            sticky.anchor.story === sticky.head.story &&
+            sticky.anchor.paraId === sticky.head.paraId &&
+            sticky.anchor.offset === sticky.head.offset;
+          const stickyStored = sticky
+            ? storedFormattingByParagraphRef.current.get(
+                `${sticky.head.story}\u0000${sticky.head.paraId}`
+              )
+            : undefined;
+          if (stickyCollapsed && sticky.head.story === 'body' && !stickyStored) {
+            const applied = await applyResidentInput(inputText);
+            if (applied) {
+              finishResidentMutation(applied);
+              return;
+            }
+          }
+        }
         const current = ensureSelection();
         const map = current ? inputPositionMap(current.anchor.story) : null;
         if (!current || !map) return;
@@ -425,9 +457,6 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
         const hasSelection =
           selectedRange.start.paraId !== selectedRange.end.paraId ||
           selectedRange.start.offset !== selectedRange.end.offset;
-        const stored = storedFormattingByParagraphRef.current.get(
-          `${current.head.story}\u0000${current.head.paraId}`
-        );
         const commitCompatibilityInput = (): void => {
           const at = hasSelection
             ? { story: selectedRange.story, ...selectedRange.start }
@@ -469,21 +498,6 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
           session.setSelection(caret);
           finishMutation();
         };
-        if (
-          !hasSelection &&
-          current.head.story === 'body' &&
-          !isSuggesting &&
-          !stored &&
-          /^[\x20-\x7e]+$/u.test(inputText) &&
-          !inputText.includes('\r') &&
-          !inputText.includes('\n') &&
-          applyResidentInput
-        ) {
-          const applied = await applyResidentInput(inputText);
-          if (applied) finishResidentMutation(applied);
-          else commitCompatibilityInput();
-          return;
-        }
         commitCompatibilityInput();
       };
 
@@ -1212,7 +1226,6 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
     }
     const selection = displaySelection();
     if (!selection) return;
-    onStateChange(selection, false);
 
     // Same-frame worker caret geometry needs no facade query (and so cannot
     // force handle adoption on the typing path).
@@ -1224,6 +1237,10 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
       sameYrsSelection(residentCaret.selection, session?.selection() ?? null)
         ? residentCaret.caretRect
         : null;
+    // While the worker caret owns geometry (typing burst), the state sync can
+    // defer overlay/toolbar recomputation to the burst tail instead of paying
+    // it per keystroke.
+    onStateChange(selection, false, false, Boolean(authoritativeCaret));
     const caret = authoritativeCaret ?? displayListQueries.caretRect(selection.head);
     const host = canvasHostRef?.current;
     if (!caret || !host) return;

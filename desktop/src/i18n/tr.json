@@ -1,0 +1,167 @@
+{
+  "menu": {
+    "app": {
+      "checkForUpdates": "Güncellemeleri Denetle…",
+      "services": "Servisler",
+      "hide": "NexOffice'i Gizle",
+      "hideOthers": "Diğerlerini Gizle",
+      "unhide": "Tümünü Göster",
+      "quit": "NexOffice'ten Çık"
+    },
+    "file": {
+      "label": "&Dosya",
+      "new": "Yeni",
+      "open": "Aç…",
+      "openRecent": "Son Kullanılanlar",
+      "noRecentFiles": "Son Kullanılan Dosya Yok",
+      "clearRecent": "Listeyi Temizle",
+      "save": "Kaydet",
+      "saveAs": "Farklı Kaydet…",
+      "exportPdf": "PDF Olarak Dışa Aktar…",
+      "closeWindow": "Pencereyi Kapat",
+      "exit": "Çıkış"
+    },
+    "edit": {
+      "label": "Dü&zen",
+      "undo": "Geri Al",
+      "redo": "Yinele",
+      "cut": "Kes",
+      "copy": "Kopyala",
+      "paste": "Yapıştır",
+      "pasteAndMatchStyle": "Yapıştır ve Stili Eşleştir",
+      "delete": "Sil",
+      "selectAll": "Tümünü Seç",
+      "find": "Bul…"
+    },
+    "view": {
+      "label": "&Görünüm",
+      "zoomIn": "Yakınlaştır",
+      "zoomOut": "Uzaklaştır",
+      "actualSize": "Gerçek Boyut",
+      "wordCount": "Sözcük Sayısı",
+      "spellCheck": "Yazım Denetimi",
+      "freezeTopRow": "Üst Satırı Dondur",
+      "freezeFirstColumn": "İlk Sütunu Dondur",
+      "unfreeze": "Bölmeleri Çöz",
+      "language": "Dil",
+      "fullScreen": "Tam Ekranı Aç/Kapat"
+    },
+    "window": {
+      "label": "&Pencere",
+      "minimize": "Simge Durumuna Küçült",
+      "zoom": "Büyüt",
+      "front": "Tümünü Öne Getir"
+    },
+    "help": {
+      "label": "Yardım",
+      "documentation": "NexOffice Belgeleri",
+      "checkForUpdates": "Güncellemeleri Denetle…",
+      "about": "NexOffice Hakkında"
+    }
+  },
+  "dialog": {
+    "filters": {
+      "officeDocuments": "Office Belgeleri",
+      "wordDocument": "Word Belgesi",
+      "excelWorkbook": "Excel Çalışma Kitabı",
+      "powerpointPresentation": "PowerPoint Sunusu",
+      "pdfDocument": "PDF Belgesi",
+      "allFiles": "Tüm Dosyalar"
+    },
+    "fileNotFound": {
+      "message": "Dosya bulunamadı",
+      "detail": "{path}\n\nDosya artık yok ve Son Kullanılanlar listesinden kaldırıldı."
+    },
+    "about": {
+      "title": "NexOffice Hakkında",
+      "version": "Sürüm {version}"
+    },
+    "unsaved": {
+      "message": "{name} üzerinde yaptığınız değişiklikleri kaydetmek istiyor musunuz?",
+      "detail": "Kaydetmezseniz değişiklikleriniz kaybolacak.",
+      "save": "Kaydet",
+      "dontSave": "Kaydetme",
+      "cancel": "İptal"
+    },
+    "pdfTruncated": {
+      "message": "PDF dışa aktarma kısaltıldı",
+      "detail": "Belge {cap} sayfalık dışa aktarma sınırını aşıyor; yalnızca ilk {pages} sayfa dışa aktarıldı."
+    },
+    "pdfFailed": {
+      "title": "PDF Dışa Aktarma Başarısız"
+    },
+    "openFailed": {
+      "title": "Dosya Açılamadı"
+    }
+  },
+  "app": {
+    "edited": " — Düzenlendi",
+    "kind": {
+      "docx": "Belge",
+      "xlsx": "Çalışma Kitabı",
+      "pptx": "Sunu"
+    },
+    "meta": {
+      "type": "Tür",
+      "size": "Boyut",
+      "path": "Yol"
+    },
+    "presentationComingSoon": "Sunu düzenleyici yakında geliyor.",
+    "empty": {
+      "subtitle": "Başlamak için bir .docx, .xlsx veya .pptx dosyası açın.",
+      "openFile": "Dosya Aç"
+    }
+  },
+  "status": {
+    "ready": "Hazır",
+    "newDocument": "Yeni belge",
+    "opened": "{name} açıldı",
+    "openFailed": "Açma başarısız: {message}",
+    "unsupported": "Desteklenmeyen dosya türü: {name}",
+    "saved": "{path} kaydedildi",
+    "saveCanceled": "Kaydetme iptal edildi",
+    "saveFailed": "Kaydetme başarısız: {message}",
+    "openFirst": "Önce bir belge açın",
+    "openWordFirst": "Önce bir Word belgesi açın",
+    "exportingPdf": "PDF dışa aktarılıyor…",
+    "pdfCanceled": "PDF dışa aktarma iptal edildi",
+    "pdfFailed": "PDF dışa aktarma başarısız: {message}",
+    "exported": "{path} dışa aktarıldı",
+    "exportedPagesOne": "{path} dışa aktarıldı (1 sayfa)",
+    "exportedPagesMany": "{path} dışa aktarıldı ({pages} sayfa)",
+    "truncatedSuffix": " — sayfa sınırında kısaltıldı",
+    "wordCount": "Sözcük: {words} · Karakter: {characters} · Sayfa {page}/{pages}",
+    "frozeTopRow": "Üst satır donduruldu",
+    "frozeFirstColumn": "İlk sütun donduruldu",
+    "unfroze": "Bölmeler çözüldü"
+  },
+  "footer": {
+    "stats": "{words} sözcük · {characters} karakter · Sayfa {page}/{pages}",
+    "misspelledOne": "1 yazım hatalı sözcük",
+    "misspelledMany": "{count} yazım hatalı sözcük",
+    "spellingOk": "Yazım doğru",
+    "loadingDictionary": "Sözlük yükleniyor…",
+    "dictError": "Sözlük hatası"
+  },
+  "spellPanel": {
+    "title": "Yazım Denetimi",
+    "close": "Kapat",
+    "none": "Yazım hatalı sözcük bulunamadı.",
+    "countOne": "1 yazım hatalı sözcük",
+    "countMany": "{count} yazım hatalı sözcük"
+  },
+  "update": {
+    "ready": "Güncelleme {version} hazır",
+    "restart": "Güncellemek için yeniden başlat",
+    "checking": "Güncellemeler denetleniyor…",
+    "downloading": "Güncelleme {version} indiriliyor…",
+    "downloadingPercent": "Güncelleme indiriliyor… {percent}%",
+    "upToDate": "NexOffice güncel",
+    "devDisabled": "Geliştirme sürümlerinde güncellemeler devre dışıdır",
+    "failed": "Güncelleme denetimi başarısız: {message}"
+  },
+  "editor": {
+    "loading": "{name} yükleniyor…",
+    "couldNotOpen": "{name} açılamadı"
+  }
+}

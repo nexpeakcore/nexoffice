@@ -9,7 +9,7 @@ import type { YrsInputRef } from '../YrsInput';
 import type { PagedEditorRef } from '../PagedEditor';
 import type { FormattingAction } from '../../Toolbar';
 import type { YrsPositionProjection } from '../internals/yrsPositionProjection';
-import { performYrsHistoryAction, type YrsEditorCommand } from '../yrsCommands';
+import { performYrsHistoryAction, yrsSelectedText, type YrsEditorCommand } from '../yrsCommands';
 
 interface RefApiInputs {
   yrsInputRef: React.RefObject<YrsInputRef | null>;
@@ -127,6 +127,10 @@ function buildRefApi(inputs: RefApiInputs): PagedEditorRef {
             to: Math.max(selection.anchor, selection.head),
           }
         : null;
+    },
+    getSelectedText: () => {
+      const session = yrsSessionRef.current;
+      return session ? yrsSelectedText(session) : '';
     },
     displayPositionToYrsLoc: (position) => displayPositionToYrsLocRef.current(position),
     getYrsSession: () => yrsSessionRef.current,

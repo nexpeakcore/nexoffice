@@ -320,6 +320,22 @@ impl XlsxDocument {
             .map_err(|e| JsValue::from_str(&e))
     }
 
+    /// the sheet's auto filter as a camelCase spec json, or `null` when unset.
+    #[wasm_bindgen(js_name = sheetAutoFilterJson)]
+    pub fn sheet_auto_filter_json(&self, args: &str) -> Result<String, JsValue> {
+        self.session
+            .sheet_auto_filter_json(args)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// the sheet's cell comments: `{"comments":[{row,col,author,text},...]}`.
+    #[wasm_bindgen(js_name = sheetCommentsJson)]
+    pub fn sheet_comments_json(&self, args: &str) -> Result<String, JsValue> {
+        self.session
+            .sheet_comments_json(args)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
     #[wasm_bindgen(js_name = mergedRangesJson)]
     pub fn merged_ranges_json(&self, args: &str) -> Result<String, JsValue> {
         self.session

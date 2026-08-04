@@ -1,6 +1,6 @@
 //! sparse workbook containers and the calc-facing cell-access trait.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,49 @@ pub struct DefinedName {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoFilter {
+    pub range: CellRange,
+    /// per-column criteria; empty when the filter only adds dropdowns.
+    pub columns: Vec<AutoFilterColumn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoFilterColumn {
+    /// absolute sheet column; the xml `colId` is relative to `range.start`.
+    pub col: ColId,
+    /// explicit cell texts kept visible. `None` places no constraint on a row;
+    /// `Some(list)` is an allow-list, and an empty list is spreadsheetml's
+    /// blanks-only filter, which only keeps rows when `show_blanks`.
+    pub values: Option<Vec<String>>,
+    /// whether blank cells stay visible alongside `values`.
+    pub show_blanks: bool,
+    /// criteria this engine does not model — `customFilters`, `top10`,
+    /// `dynamicFilter`, `colorFilter`, `iconFilter`, date-group items — kept as
+    /// the source `filterColumn`'s inner xml so a save writes them back
+    /// unchanged. mutually exclusive with `values`: such a column constrains
+    /// nothing, so re-evaluating the filter never hides a row on its account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsupported: Option<String>,
+}
+
+impl AutoFilterColumn {
+    /// the allow-list the column narrows rows to, or `None` when it constrains
+    /// nothing: either it carries no criteria or its criteria are only
+    /// preserved (`unsupported`) rather than evaluated.
+    pub fn criteria(&self) -> Option<&[String]> {
+        self.values.as_deref()
+    }
+}
+
+/// a classic cell note: plain text plus its author. rich runs collapse to
+/// concatenated text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Comment {
+    pub author: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hyperlink {
     pub range: CellRange,
     pub external_target: Option<String>,
@@ -62,6 +105,16 @@ pub struct Sheet {
     pub merges: Vec<CellRange>,
     pub col_widths: BTreeMap<ColId, f64>,
     pub row_heights: BTreeMap<RowId, f64>,
+    /// rows explicitly hidden (by a filter or a manual hide).
+    pub hidden_rows: BTreeSet<RowId>,
+    /// the subset of `hidden_rows` the user hid by hand. SpreadsheetML records
+    /// only `hidden="1"` per row, so provenance cannot be serialized: this is
+    /// seeded at load from the hidden rows that pass the active filter and is
+    /// then maintained exactly for as long as the workbook stays open, which
+    /// is what keeps a manual hide hidden when the filter changes or clears.
+    pub manual_hidden_rows: BTreeSet<RowId>,
+    pub auto_filter: Option<AutoFilter>,
+    pub comments: BTreeMap<(RowId, ColId), Comment>,
 }
 
 impl Sheet {
@@ -105,14 +158,93 @@ impl Sheet {
         })
     }
 
+    /// hide `row` by hand: it stays hidden across filter changes until it is
+    /// shown again.
+    pub fn hide_row(&mut self, row: RowId) {
+        self.hidden_rows.insert(row);
+        self.manual_hidden_rows.insert(row);
+    }
+
+    /// show `row` by hand, dropping any manual hide on it. a row the active
+    /// filter rejects re-hides the next time the filter is evaluated.
+    pub fn show_row(&mut self, row: RowId) {
+        self.hidden_rows.remove(&row);
+        self.manual_hidden_rows.remove(&row);
+    }
+
+    pub fn is_row_hidden(&self, row: RowId) -> bool {
+        self.hidden_rows.contains(&row)
+    }
+
+    /// the non-header rows of `filter`'s range that fail its criteria against
+    /// this sheet's current cells — the rows the filter itself hides. the
+    /// filter is passed in because callers evaluate a candidate filter before
+    /// installing it.
+    pub fn rows_failing_filter(&self, filter: Option<&AutoFilter>) -> BTreeSet<RowId> {
+        let Some(filter) = filter else {
+            return BTreeSet::new();
+        };
+        (filter.range.start.row..=filter.range.end.row)
+            .filter(|&row| row != filter.range.start.row && !self.row_passes_filter(filter, row))
+            .collect()
+    }
+
+    /// a row is visible when every column with value criteria matches its cell
+    /// text, blanks counting only when the column keeps blanks. a column that
+    /// constrains nothing — no criteria at all, or criteria this engine only
+    /// preserves rather than evaluates — always passes.
+    fn row_passes_filter(&self, filter: &AutoFilter, row: RowId) -> bool {
+        filter.columns.iter().all(|column| {
+            let Some(values) = column.criteria() else {
+                return true;
+            };
+            let text = self
+                .cell(CellRef::new(row, column.col))
+                .map(|cell| filter_text(&cell.value))
+                .unwrap_or_default();
+            if text.is_empty() {
+                column.show_blanks
+            } else {
+                values.contains(&text)
+            }
+        })
+    }
+
+    /// recover manual-hide provenance for a freshly loaded sheet. the file
+    /// says only that a row is hidden, so a hidden row the active filter would
+    /// keep visible must have been hidden by hand; a hidden row the filter
+    /// rejects is indistinguishable from a filter hide and is attributed to
+    /// the filter.
+    pub fn seed_manual_hidden_rows(&mut self) {
+        let failing = self.rows_failing_filter(self.auto_filter.as_ref());
+        self.manual_hidden_rows = self.hidden_rows.difference(&failing).copied().collect();
+    }
+
+    pub fn comment_at(&self, at: CellRef) -> Option<&Comment> {
+        self.comments.get(&(at.row, at.col))
+    }
+
+    /// set, replace, or (`None`) delete the comment at `at`, returning the
+    /// previous one.
+    pub fn set_comment(&mut self, at: CellRef, comment: Option<Comment>) -> Option<Comment> {
+        match comment {
+            Some(comment) => self.comments.insert((at.row, at.col), comment),
+            None => self.comments.remove(&(at.row, at.col)),
+        }
+    }
+
     pub fn hyperlink_at(&self, at: CellRef) -> Option<&Hyperlink> {
         self.hyperlinks.iter().find(|link| link.range.contains(at))
     }
 
+    /// the rectangle covering everything anchored to a cell: values,
+    /// hyperlinks, and comments. a note on an otherwise empty cell counts, so
+    /// the grid a viewer scrolls always reaches far enough to show it.
     pub fn used_range(&self) -> Option<CellRange> {
         let mut bounds = self
             .cells
             .keys()
+            .chain(self.comments.keys())
             .map(|&(row, col)| CellRange::new(CellRef::new(row, col), CellRef::new(row, col)))
             .chain(self.hyperlinks.iter().map(|link| link.range));
         let first = bounds.next()?;
@@ -134,6 +266,17 @@ impl Sheet {
             CellRef::new(min_r, min_c),
             CellRef::new(max_r, max_c),
         ))
+    }
+}
+
+/// the text an auto filter matches against: the bare value, no number formats.
+pub fn filter_text(value: &CellValue) -> String {
+    match value {
+        CellValue::Empty => String::new(),
+        CellValue::Number { value } => value.to_string(),
+        CellValue::Text { value } => value.clone(),
+        CellValue::Bool { value } => if *value { "TRUE" } else { "FALSE" }.to_string(),
+        CellValue::Error { value } => value.as_str().to_string(),
     }
 }
 
@@ -333,6 +476,44 @@ mod tests {
     }
 
     #[test]
+    fn hides_and_shows_rows() {
+        let mut sheet = Sheet::new("Data");
+        assert!(!sheet.is_row_hidden(3));
+
+        sheet.hide_row(3);
+        sheet.hide_row(5);
+        assert!(sheet.is_row_hidden(3));
+        assert!(sheet.is_row_hidden(5));
+        assert!(!sheet.is_row_hidden(4));
+
+        sheet.show_row(3);
+        assert!(!sheet.is_row_hidden(3));
+        assert!(sheet.is_row_hidden(5));
+    }
+
+    #[test]
+    fn comments_set_replace_and_delete() {
+        let mut sheet = Sheet::new("Data");
+        let b2 = CellRef::parse_a1("B2").unwrap();
+        assert!(sheet.comment_at(b2).is_none());
+
+        let first = Comment {
+            author: "Ada".into(),
+            text: "check this".into(),
+        };
+        assert_eq!(sheet.set_comment(b2, Some(first.clone())), None);
+        assert_eq!(sheet.comment_at(b2), Some(&first));
+
+        let second = Comment {
+            author: "Grace".into(),
+            text: "done".into(),
+        };
+        assert_eq!(sheet.set_comment(b2, Some(second.clone())), Some(first));
+        assert_eq!(sheet.set_comment(b2, None), Some(second));
+        assert!(sheet.comments.is_empty());
+    }
+
+    #[test]
     fn hyperlinks_are_addressable_and_extend_the_used_range() {
         let mut sheet = Sheet::new("Data");
         sheet.hyperlinks.push(Hyperlink {
@@ -355,5 +536,123 @@ mod tests {
                 .hyperlink_at(CellRef::parse_a1("A1").unwrap())
                 .is_none()
         );
+    }
+
+    /// A note on an otherwise empty cell has to sit inside the used range, or
+    /// the editor never lays out a rect for its indicator and the note becomes
+    /// invisible and uneditable.
+    #[test]
+    fn comments_extend_the_used_range() {
+        let mut sheet = Sheet::new("Data");
+        sheet.set_cell(
+            CellRef::parse_a1("B2").unwrap(),
+            Cell {
+                value: CellValue::Text {
+                    value: "only".into(),
+                },
+                ..Cell::default()
+            },
+        );
+        sheet.set_comment(
+            CellRef::parse_a1("E9").unwrap(),
+            Some(Comment {
+                author: "Ada".into(),
+                text: "look here".into(),
+            }),
+        );
+
+        assert_eq!(sheet.used_range().unwrap().to_a1(), "B2:E9");
+    }
+
+    #[test]
+    fn a_comment_alone_gives_an_otherwise_empty_sheet_an_extent() {
+        let mut sheet = Sheet::new("Data");
+        sheet.set_comment(
+            CellRef::parse_a1("C3").unwrap(),
+            Some(Comment {
+                author: "Ada".into(),
+                text: "note".into(),
+            }),
+        );
+
+        assert_eq!(sheet.used_range().unwrap().to_a1(), "C3");
+    }
+
+    /// Criteria the engine only preserves must not narrow anything: an empty
+    /// allow-list would hide every non-blank row in the filter's range.
+    #[test]
+    fn unsupported_filter_criteria_hide_no_rows() {
+        let mut sheet = Sheet::new("Data");
+        for row in 0..4 {
+            sheet.set_cell(
+                CellRef::new(row, 0),
+                Cell {
+                    value: CellValue::Number {
+                        value: f64::from(row),
+                    },
+                    ..Cell::default()
+                },
+            );
+        }
+        let column = AutoFilterColumn {
+            col: 0,
+            values: None,
+            show_blanks: true,
+            unsupported: Some(r#"<top10 top="1" val="2"/>"#.into()),
+        };
+        assert!(column.criteria().is_none());
+        sheet.auto_filter = Some(AutoFilter {
+            range: CellRange::parse_a1("A1:A4").unwrap(),
+            columns: vec![column],
+        });
+
+        assert!(
+            sheet
+                .rows_failing_filter(sheet.auto_filter.as_ref())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn manual_hide_provenance_is_seeded_from_the_filter_and_tracked_by_hand() {
+        let mut sheet = Sheet::new("Data");
+        for (row, name) in [(0, "Name"), (1, "keep"), (2, "drop"), (3, "keep")] {
+            sheet.set_cell(
+                CellRef::new(row, 0),
+                Cell {
+                    value: CellValue::Text { value: name.into() },
+                    ..Cell::default()
+                },
+            );
+        }
+        sheet.auto_filter = Some(AutoFilter {
+            range: CellRange::parse_a1("A1:A4").unwrap(),
+            columns: vec![AutoFilterColumn {
+                col: 0,
+                values: Some(vec!["keep".into()]),
+                show_blanks: false,
+                unsupported: None,
+            }],
+        });
+        assert_eq!(
+            sheet.rows_failing_filter(sheet.auto_filter.as_ref()),
+            [2].into_iter().collect::<BTreeSet<_>>(),
+            "the header never fails and only the `drop` row does"
+        );
+
+        sheet.hidden_rows = [2, 3].into_iter().collect();
+        sheet.seed_manual_hidden_rows();
+        assert_eq!(
+            sheet.manual_hidden_rows,
+            [3].into_iter().collect::<BTreeSet<_>>(),
+            "a hidden row the filter would keep must have been hidden by hand"
+        );
+
+        sheet.hide_row(1);
+        assert!(sheet.is_row_hidden(1));
+        assert!(sheet.manual_hidden_rows.contains(&1));
+        sheet.show_row(1);
+        assert!(!sheet.is_row_hidden(1));
+        assert!(!sheet.manual_hidden_rows.contains(&1));
     }
 }

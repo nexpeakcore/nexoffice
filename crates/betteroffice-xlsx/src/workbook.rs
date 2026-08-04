@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex, Weak};
 use xlsx_calc::graph::DepGraph;
 use xlsx_calc::{RecalcResult, rebuild_and_recalc_all, recalc_after};
 use xlsx_model::{
-    Border, BorderEdge, BorderStyle, CellFormat, CellRange, CellRef, CellValue, Fill, HAlign,
-    Hyperlink, MAX_COLS, MAX_ROWS, NumberFormat, Sheet, SheetId, VAlign, Workbook as WorkbookModel,
+    Border, BorderEdge, BorderStyle, CellFormat, CellRange, CellRef, CellValue, ColId, Comment,
+    Fill, HAlign, Hyperlink, MAX_COLS, MAX_ROWS, NumberFormat, RowId, Sheet, SheetId, VAlign,
+    Workbook as WorkbookModel,
 };
 use xlsx_ops::{
     BorderLineStyle, BorderPreset, CapturedFormat, CellState, HorizontalAlignment,
@@ -33,10 +34,13 @@ use crate::{
 use crate::{RenderOptions, RenderedPng};
 
 const MAX_RANGE_CELLS: u64 = 100_000;
+const MAX_SORT_ROWS: u64 = 100_000;
 const MAX_COL_WIDTH: f64 = 255.0;
 const MAX_ROW_HEIGHT: f64 = 409.5;
 const MAX_HYPERLINKS_PER_SHEET: usize = 65_536;
 const MAX_HYPERLINK_FIELD_BYTES: usize = 32_767;
+const MAX_COMMENTS_PER_SHEET: usize = 65_536;
+const MAX_COMMENT_FIELD_BYTES: usize = 32_767;
 /// Maximum accepted encoded update or state-vector size: 64 MiB.
 pub const MAX_COLLABORATION_BYTES: usize = 64 * 1024 * 1024;
 /// Largest browser-safe collaboration client identifier.
@@ -1940,6 +1944,7 @@ fn validate_model(model: &WorkbookModel) -> Result<()> {
             )));
         }
         validate_hyperlinks(&sheet.hyperlinks)?;
+        validate_sheet_comments(&sheet.comments)?;
         validate_sheet_name(&sheet.name)?;
         if !names.insert(sheet.name.to_lowercase()) {
             return Err(Error::InvalidOperation(format!(
@@ -2017,7 +2022,12 @@ fn worksheet_edit_target(op: &Op) -> Option<SheetId> {
         | Op::SetColWidth { sheet, .. }
         | Op::SetRowHeight { sheet, .. }
         | Op::SetFreezePane { sheet, .. }
+        | Op::SortRange { sheet, .. }
+        | Op::MoveRows { sheet, .. }
+        | Op::SetAutoFilter { sheet, .. }
+        | Op::SetHiddenRows { sheet, .. }
         | Op::SetHyperlinks { sheet, .. }
+        | Op::SetComment { sheet, .. }
         | Op::MergeCells { sheet, .. }
         | Op::UnmergeCells { sheet, .. }
         | Op::PatchRangeStyle { sheet, .. }
@@ -2100,9 +2110,66 @@ fn validate_op(model: &WorkbookModel, op: &Op) -> Result<()> {
                 ));
             }
         }
+        Op::SortRange {
+            sheet,
+            range,
+            key_col,
+            ..
+        } => {
+            require_sheet(model, *sheet)?;
+            validate_range(*range)?;
+            // sort moves whole sparse rows, so cost scales with the row count
+            // rather than the nominal cell area of the (full-width) range.
+            let rows = u64::from(range.end.row - range.start.row + 1);
+            if rows > MAX_SORT_ROWS {
+                return Err(Error::InvalidOperation(format!(
+                    "sort range of {rows} rows exceeds the {MAX_SORT_ROWS}-row cap"
+                )));
+            }
+            if *key_col < range.start.col || *key_col > range.end.col {
+                return Err(Error::InvalidOperation(format!(
+                    "sort key column {} is outside the sorted range",
+                    u64::from(*key_col) + 1
+                )));
+            }
+        }
+        Op::SetAutoFilter { sheet, filter } => {
+            require_sheet(model, *sheet)?;
+            if let Some(filter) = filter {
+                validate_range(filter.range)?;
+                if filter.columns.iter().any(|column| {
+                    column.col < filter.range.start.col || column.col > filter.range.end.col
+                }) {
+                    return Err(Error::InvalidOperation(
+                        "filter criteria column is outside the filter range".to_string(),
+                    ));
+                }
+                if filter
+                    .columns
+                    .iter()
+                    .any(|column| column.unsupported.is_some() && column.values.is_some())
+                {
+                    return Err(Error::InvalidOperation(
+                        "a filter column keeping its source criteria cannot also carry values"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
         Op::SetHyperlinks { sheet, hyperlinks } => {
             require_sheet(model, *sheet)?;
             validate_hyperlinks(hyperlinks)?;
+        }
+        Op::SetComment {
+            sheet,
+            cell,
+            comment,
+        } => {
+            require_sheet(model, *sheet)?;
+            validate_cell_ref(*cell)?;
+            if let Some(comment) = comment {
+                validate_comment(comment)?;
+            }
         }
         Op::MergeCells { sheet, range } | Op::UnmergeCells { sheet, range } => {
             require_sheet(model, *sheet)?;
@@ -2135,6 +2202,11 @@ fn validate_op(model: &WorkbookModel, op: &Op) -> Result<()> {
         Op::RestoreSheet { .. } | Op::SetDefinedNames { .. } => {
             return Err(Error::InvalidOperation(
                 "restore sheet operations are internal".to_string(),
+            ));
+        }
+        Op::MoveRows { .. } | Op::SetHiddenRows { .. } => {
+            return Err(Error::InvalidOperation(
+                "row move and hidden row operations are internal undo primitives".to_string(),
             ));
         }
     }
@@ -2274,6 +2346,30 @@ fn validate_hyperlinks(hyperlinks: &[Hyperlink]) -> Result<()> {
                 ));
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_sheet_comments(comments: &BTreeMap<(RowId, ColId), Comment>) -> Result<()> {
+    if comments.len() > MAX_COMMENTS_PER_SHEET {
+        return Err(Error::InvalidOperation(
+            "sheet contains too many comments".to_string(),
+        ));
+    }
+    for (&(row, col), comment) in comments {
+        validate_cell_ref(CellRef::new(row, col))?;
+        validate_comment(comment)?;
+    }
+    Ok(())
+}
+
+fn validate_comment(comment: &Comment) -> Result<()> {
+    if comment.author.len() > MAX_COMMENT_FIELD_BYTES
+        || comment.text.len() > MAX_COMMENT_FIELD_BYTES
+    {
+        return Err(Error::InvalidOperation(
+            "comment field exceeds its length limit".to_string(),
+        ));
     }
     Ok(())
 }
@@ -2590,6 +2686,8 @@ fn invalidates_proposals(op: &Op) -> bool {
             | Op::DeleteRows { .. }
             | Op::InsertCols { .. }
             | Op::DeleteCols { .. }
+            | Op::SortRange { .. }
+            | Op::MoveRows { .. }
             | Op::SetHyperlinks { .. }
             | Op::AddSheet { .. }
             | Op::RemoveSheet { .. }

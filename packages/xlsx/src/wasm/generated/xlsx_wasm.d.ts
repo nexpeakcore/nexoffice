@@ -99,6 +99,14 @@ export class XlsxDocument {
     setActiveSheet(index: number): void;
     setRangeNumberFormatJson(args: string): string;
     /**
+     * the sheet's auto filter as a camelCase spec json, or `null` when unset.
+     */
+    sheetAutoFilterJson(args: string): string;
+    /**
+     * the sheet's cell comments: `{"comments":[{row,col,author,text},...]}`.
+     */
+    sheetCommentsJson(args: string): string;
+    /**
      * serialized `SheetInfo`: stable IDs, names, active index, content extent.
      */
     sheetInfoJson(): string;
@@ -167,6 +175,8 @@ export interface InitOutput {
     readonly xlsxdocument_selectionFormattingJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly xlsxdocument_setActiveSheet: (a: number, b: number) => [number, number];
     readonly xlsxdocument_setRangeNumberFormatJson: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly xlsxdocument_sheetAutoFilterJson: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly xlsxdocument_sheetCommentsJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly xlsxdocument_sheetInfoJson: (a: number) => [number, number, number, number];
     readonly xlsxdocument_startUpdateObservation: (a: number) => [number, number];
     readonly xlsxdocument_undoJson: (a: number) => [number, number, number, number];

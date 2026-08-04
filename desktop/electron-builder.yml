@@ -1,0 +1,93 @@
+appId: net.nexpeak.nexoffice
+productName: NexOffice
+copyright: Copyright © 2026 Nexpeak
+
+# bun hoists electron to the workspace root, so electron-builder cannot resolve
+# the ^ range in package.json on its own. Keep in sync with the installed
+# version (bun pm ls electron).
+electronVersion: 40.10.6
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - out/**/*
+  - package.json
+
+asarUnpack:
+  - "**/*.wasm"
+
+fileAssociations:
+  - ext: docx
+    name: Word Document
+    description: Microsoft Word Document
+    role: Editor
+    mimeType: application/vnd.openxmlformats-officedocument.wordprocessingml.document
+  - ext: xlsx
+    name: Excel Workbook
+    description: Microsoft Excel Workbook
+    role: Editor
+    mimeType: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+  - ext: pptx
+    name: PowerPoint Presentation
+    description: Microsoft PowerPoint Presentation
+    role: Editor
+    mimeType: application/vnd.openxmlformats-officedocument.presentationml.presentation
+
+mac:
+  category: public.app-category.productivity
+  icon: build/icon.icns
+  # Feed manifests reference artifacts with spaces replaced by "-", so keep the
+  # on-disk names free of spaces — otherwise the updater 404s on download.
+  artifactName: NexOffice-${version}-${arch}-mac.${ext}
+  # The zip target is required for mac auto-update: electron-updater downloads
+  # the zip, not the dmg.
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+
+dmg:
+  title: NexOffice
+  artifactName: NexOffice-${version}-${arch}.${ext}
+  iconSize: 100
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+win:
+  icon: build/icon.ico
+  artifactName: NexOffice-Setup-${version}-${arch}.${ext}
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+
+linux:
+  icon: build/icon.png
+  category: Office
+  artifactName: NexOffice-${version}-${arch}.${ext}
+  target:
+    - AppImage
+
+# Update feed = Azure Blob Storage, container `nexoffice` (public read).
+# electron-builder only embeds this into app-update.yml; the actual upload is
+# done by `scripts/deploy-azure.mjs`.
+publish:
+  provider: generic
+  url: https://nexpeakpublic.blob.core.windows.net/nexoffice
+  channel: latest

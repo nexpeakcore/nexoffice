@@ -14,24 +14,42 @@ import { useEffect, useRef } from 'react';
 import { buildMirrorPage, type DisplayPage } from '@betteroffice/docx/layout/render';
 import { useTranslation } from '../../i18n';
 
+/**
+ * Trailing delay before the mirror DOM is rebuilt after a page update. During
+ * a typing burst a per-keystroke rebuild churns thousands of text nodes and
+ * turns every later getBoundingClientRect into a full forced reflow; screen
+ * readers are indifferent to a fraction-of-a-second refresh.
+ */
+const MIRROR_REBUILD_DELAY_MS = 200;
+
 export function CanvasPageMirror({ page, zoom = 1 }: { page: DisplayPage; zoom?: number }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
+  const builtOnceRef = useRef(false);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    const mirror = buildMirrorPage(page, {
-      labels: {
-        page: t('a11y.pageLabel', { number: page.pageIndex + 1 }),
-        header: t('a11y.headerLabel'),
-        footer: t('a11y.footerLabel'),
-      },
-    });
-    // Keep the previous mirror connected until this replacement is ready.
-    // Clearing in effect cleanup creates a detached-DOM window on every page
-    // update; unmounting already removes the host and its complete subtree.
-    host.replaceChildren(mirror);
+    const build = (): void => {
+      const mirror = buildMirrorPage(page, {
+        labels: {
+          page: t('a11y.pageLabel', { number: page.pageIndex + 1 }),
+          header: t('a11y.headerLabel'),
+          footer: t('a11y.footerLabel'),
+        },
+      });
+      // Keep the previous mirror connected until this replacement is ready.
+      // Clearing in effect cleanup creates a detached-DOM window on every page
+      // update; unmounting already removes the host and its complete subtree.
+      host.replaceChildren(mirror);
+    };
+    if (!builtOnceRef.current) {
+      builtOnceRef.current = true;
+      build();
+      return;
+    }
+    const timer = setTimeout(build, MIRROR_REBUILD_DELAY_MS);
+    return () => clearTimeout(timer);
   }, [page, t]);
 
   return (

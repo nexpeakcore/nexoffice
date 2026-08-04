@@ -8,18 +8,21 @@ use std::io;
 
 use quick_xml::Writer;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
-use xlsx_model::addr::RowId;
+use xlsx_model::addr::{ColId, MAX_COLS, MAX_ROWS, RowId};
 use xlsx_model::styles::{Alignment, Border, BorderEdge, Color, Fill, Font, Stylesheet, Xf};
 use xlsx_model::{Cell, CellRef, CellValue, DateSystem, Sheet, Workbook};
 
 use crate::ParseError;
 use crate::package::{
     ContentTypeEntry, PartReference, PreservedPackage, PreservedSheet, Relationship, XmlAttribute,
-    XmlTemplate, attributes_from_fragment, parse_relationships, relationship_part_path,
+    XmlChild, XmlTemplate, attributes_from_fragment, parse_relationships, relationship_part_path,
     remove_attribute, set_attribute,
 };
-use crate::read::SharedStringCells;
-use crate::xml::xml_err;
+use crate::read::{SharedStringCells, parse_comments};
+use crate::xml::{
+    attr as xml_attr, collect_text, local_name as xml_local_name, next_event, reader as xml_reader,
+    resolve_part_path, xml_err,
+};
 
 const NS_MAIN: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const NS_STRICT_MAIN: &str = "http://purl.oclc.org/ooxml/spreadsheetml/main";
@@ -48,6 +51,13 @@ const REL_OFFICE_DOCUMENT: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
 const REL_HYPERLINK: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
+const CT_COMMENTS: &str =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml";
+const CT_VML: &str = "application/vnd.openxmlformats-officedocument.vmlDrawing";
+const REL_COMMENTS: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
+const REL_VML: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing";
 const NS_DML: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const NS_STRICT_DML: &str = "http://purl.oclc.org/ooxml/drawingml/main";
 
@@ -100,15 +110,45 @@ pub fn serialize_workbook(wb: &Workbook) -> Result<Vec<(String, Vec<u8>)>, Parse
     }
     for (i, sheet) in wb.sheets.iter().enumerate() {
         let links = HyperlinkPlan::new(sheet, &[], REL_HYPERLINK);
+        let comments = (!sheet.comments.is_empty()).then(|| {
+            let mut used_ids = links
+                .relationships
+                .iter()
+                .filter_map(Relationship::id)
+                .map(str::to_owned)
+                .collect::<HashSet<_>>();
+            CommentPlan {
+                comments_path: format!("xl/comments{}.xml", i + 1),
+                vml_path: format!("xl/drawings/vmlDrawing{}.vml", i + 1),
+                comments_rel_id: next_relationship_id(&mut used_ids),
+                vml_rel_id: next_relationship_id(&mut used_ids),
+            }
+        });
         parts.push((
             format!("xl/worksheets/sheet{}.xml", i + 1),
-            worksheet_xml_with_namespace(sheet, wb, NS_MAIN, NS_R, &links, None)?,
+            worksheet_xml_with_namespace(
+                sheet,
+                wb,
+                NS_MAIN,
+                NS_R,
+                &links,
+                comments.as_ref(),
+                None,
+            )?,
         ));
-        if !links.relationships.is_empty() {
+        let mut relationships = links.relationships;
+        if let Some(plan) = &comments {
+            relationships.extend(plan.relationships("xl/worksheets", REL_COMMENTS, REL_VML));
+        }
+        if !relationships.is_empty() {
             parts.push((
                 format!("xl/worksheets/_rels/sheet{}.xml.rels", i + 1),
-                relationships_xml(&links.relationships)?,
+                relationships_xml(&relationships)?,
             ));
+        }
+        if let Some(plan) = &comments {
+            parts.push((plan.comments_path.clone(), comments_xml(sheet, NS_MAIN)?));
+            parts.push((plan.vml_path.clone(), vml_drawing_xml(sheet)?));
         }
     }
     Ok(parts)
@@ -280,6 +320,9 @@ pub fn serialize_workbook_with_package_and_origins_after_edits(
 
     let shared_strings_stable = wb.shared_strings == package.original_workbook.shared_strings;
     let empty_provenance = SharedStringCells::new();
+    let mut comment_overrides = Vec::new();
+    let mut removed_part_names = HashSet::new();
+    let mut wrote_vml = false;
     for (index, (sheet, plan)) in wb.sheets.iter().zip(&sheets).enumerate() {
         let source = plan.origin.and_then(|origin| package.sheets.get(origin));
         let original = plan
@@ -299,8 +342,11 @@ pub fn serialize_workbook_with_package_and_origins_after_edits(
                     original,
                     source,
                     package,
-                    provenance,
-                    shared_string_plan.as_ref(),
+                    SheetSharedStrings {
+                        provenance,
+                        plan: shared_string_plan.as_ref(),
+                    },
+                    &mut used_paths,
                 )?
             }
             Some(_) => continue,
@@ -314,20 +360,69 @@ pub fn serialize_workbook_with_package_and_origins_after_edits(
                         REL_HYPERLINK,
                     ),
                 );
-                WorksheetOutput {
-                    bytes: worksheet_xml_with_namespace(
+                let comments = (!sheet.comments.is_empty()).then(|| {
+                    let mut used_ids = links
+                        .relationships
+                        .iter()
+                        .filter_map(Relationship::id)
+                        .map(str::to_owned)
+                        .collect::<HashSet<_>>();
+                    CommentPlan {
+                        comments_path: next_part_path(&mut used_paths, |index| {
+                            format!("xl/comments{index}.xml")
+                        }),
+                        vml_path: next_part_path(&mut used_paths, |index| {
+                            format!("xl/drawings/vmlDrawing{index}.vml")
+                        }),
+                        comments_rel_id: next_relationship_id(&mut used_ids),
+                        vml_rel_id: next_relationship_id(&mut used_ids),
+                    }
+                });
+                let mut output = WorksheetOutput::new(
+                    worksheet_xml_with_namespace(
                         sheet,
                         wb,
                         main_namespace,
                         &relationship_namespace,
                         &links,
+                        comments.as_ref(),
                         shared_string_plan.as_ref(),
                     )?,
-                    relationships: Some(links.relationships),
+                    None,
+                );
+                let mut relationships = links.relationships;
+                if let Some(comment_plan) = &comments {
+                    relationships.extend(comment_plan.relationships(
+                        &part_directory(&plan.path),
+                        &relationship_type(package, "comments", REL_COMMENTS),
+                        &relationship_type(package, "vmlDrawing", REL_VML),
+                    ));
+                    output.comment_parts.push((
+                        comment_plan.comments_path.clone(),
+                        comments_xml(sheet, main_namespace)?,
+                    ));
+                    output
+                        .comment_parts
+                        .push((comment_plan.vml_path.clone(), vml_drawing_xml(sheet)?));
+                    output
+                        .new_comment_overrides
+                        .push(comment_plan.comments_path.clone());
+                    output.wrote_vml = true;
                 }
+                output.relationships = Some(relationships);
+                output
             }
         };
         parts.set(plan.path.clone(), output.bytes)?;
+        for path in &output.removed_parts {
+            parts.remove(path);
+            removed_part_names.insert(normalized_part_name(path));
+        }
+        for (path, bytes) in output.comment_parts {
+            parts.set(path, bytes)?;
+        }
+        comment_overrides.extend(output.new_comment_overrides);
+        wrote_vml |= output.wrote_vml;
         if let Some(relationships) = output.relationships {
             let path = relationship_part_path(&plan.path);
             if relationships.is_empty() {
@@ -364,6 +459,11 @@ pub fn serialize_workbook_with_package_and_origins_after_edits(
             styles.as_ref(),
             theme.as_ref(),
             edited,
+            CommentContentTypes {
+                overrides: &comment_overrides,
+                removed_part_names: &removed_part_names,
+                wrote_vml,
+            },
         )?,
     )?;
 
@@ -498,6 +598,9 @@ fn sheet_body_matches(sheet: &Sheet, original: &Sheet) -> bool {
         && sheet.merges == original.merges
         && sheet.col_widths == original.col_widths
         && sheet.row_heights == original.row_heights
+        && sheet.hidden_rows == original.hidden_rows
+        && sheet.auto_filter == original.auto_filter
+        && sheet.comments == original.comments
         && sheet.iter_cells().eq(original.iter_cells())
 }
 
@@ -776,14 +879,736 @@ fn next_relationship_id(used: &mut HashSet<String>) -> String {
 }
 
 fn next_sheet_path(used: &mut HashSet<String>) -> String {
+    next_part_path(used, |index| format!("xl/worksheets/sheet{index}.xml"))
+}
+
+fn next_part_path(used: &mut HashSet<String>, name: impl Fn(u64) -> String) -> String {
     let mut index = 1_u64;
     loop {
-        let path = format!("xl/worksheets/sheet{index}.xml");
+        let path = name(index);
         if used.insert(normalized_part_name(&path)) {
             return path;
         }
         index += 1;
     }
+}
+
+/// The comments part, its legacy VML twin, and the worksheet relationship ids
+/// pointing at them. Excel shows comment indicators only when the sheet also
+/// carries the `<legacyDrawing>` reference to the VML part.
+struct CommentPlan {
+    comments_path: String,
+    vml_path: String,
+    comments_rel_id: String,
+    vml_rel_id: String,
+}
+
+impl CommentPlan {
+    fn relationships(
+        &self,
+        sheet_directory: &str,
+        comments_type: &str,
+        vml_type: &str,
+    ) -> [Relationship; 2] {
+        [
+            new_relationship(
+                self.comments_rel_id.clone(),
+                comments_type,
+                relative_target(sheet_directory, &self.comments_path),
+            ),
+            new_relationship(
+                self.vml_rel_id.clone(),
+                vml_type,
+                relative_target(sheet_directory, &self.vml_path),
+            ),
+        ]
+    }
+}
+
+fn part_directory(path: &str) -> String {
+    path.rsplit_once('/')
+        .map(|(directory, _)| directory.to_owned())
+        .unwrap_or_default()
+}
+
+/// A relationship `Target` for `path`, relative to the part living in
+/// `base_dir`.
+fn relative_target(base_dir: &str, path: &str) -> String {
+    let base: Vec<&str> = base_dir.split('/').filter(|s| !s.is_empty()).collect();
+    let target: Vec<&str> = path
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut common = 0;
+    while common < base.len() && common + 1 < target.len() && base[common] == target[common] {
+        common += 1;
+    }
+    let mut segments: Vec<&str> = vec![".."; base.len() - common];
+    segments.extend(&target[common..]);
+    segments.join("/")
+}
+
+fn comments_xml(sheet: &Sheet, main_namespace: &str) -> Result<Vec<u8>, ParseError> {
+    let mut authors: Vec<&str> = Vec::new();
+    let mut author_ids: HashMap<&str, usize> = HashMap::new();
+    for comment in sheet.comments.values() {
+        if !author_ids.contains_key(comment.author.as_str()) {
+            author_ids.insert(comment.author.as_str(), authors.len());
+            authors.push(comment.author.as_str());
+        }
+    }
+    doc(|w| {
+        w.create_element("comments")
+            .with_attribute(("xmlns", main_namespace))
+            .write_inner_content(|w| {
+                write_comment_authors(w, authors.iter().copied())?;
+                w.create_element("commentList").write_inner_content(|w| {
+                    for (&(row, col), comment) in &sheet.comments {
+                        write_comment_element(
+                            w,
+                            row,
+                            col,
+                            author_ids[comment.author.as_str()],
+                            &comment.text,
+                        )?;
+                    }
+                    Ok(())
+                })?;
+                Ok(())
+            })?;
+        Ok(())
+    })
+}
+
+fn write_comment_authors<'a>(
+    w: &mut Writer<Vec<u8>>,
+    authors: impl Iterator<Item = &'a str>,
+) -> io::Result<()> {
+    w.create_element("authors").write_inner_content(|w| {
+        for author in authors {
+            w.create_element("author")
+                .write_text_content(BytesText::new(author))?;
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn write_comment_element(
+    w: &mut Writer<Vec<u8>>,
+    row: RowId,
+    col: ColId,
+    author_id: usize,
+    text: &str,
+) -> io::Result<()> {
+    let reference = CellRef::new(row, col).to_a1();
+    let author_id = author_id.to_string();
+    w.create_element("comment")
+        .with_attribute(("ref", reference.as_str()))
+        .with_attribute(("authorId", author_id.as_str()))
+        .write_inner_content(|w| {
+            w.create_element("text").write_inner_content(|w| {
+                write_text_el(w, text)?;
+                Ok(())
+            })?;
+            Ok(())
+        })?;
+    Ok(())
+}
+
+/// A saved comments part, plus the source `<comment>` element every modeled
+/// note claimed. The VML pass reuses those claims so a relocated note's shape
+/// travels with its element instead of being regenerated.
+struct CommentsPart {
+    bytes: Vec<u8>,
+    claims: HashMap<(RowId, ColId), (RowId, ColId)>,
+}
+
+impl CommentsPart {
+    fn regenerated(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            claims: HashMap::new(),
+        }
+    }
+}
+
+/// Regenerates a comments part on top of its source: a comment the model still
+/// reads back identically keeps its source element verbatim, so rich runs,
+/// `rPr` formatting and phonetic properties survive an edit to a neighbouring
+/// note. A note a sort or a row insert relocated is matched on its author and
+/// text instead and re-emitted at its new `ref`, keeping the rest of the source
+/// element. Added comments, and comments whose author or text changed, are
+/// written as plain text — the model carries no runs. Without a readable source
+/// the whole part is regenerated.
+fn comments_xml_with_source(
+    sheet: &Sheet,
+    main_namespace: &str,
+    source: Option<&[u8]>,
+) -> Result<CommentsPart, ParseError> {
+    let Some((template, source_comments)) = source.and_then(|bytes| {
+        let template = XmlTemplate::capture(bytes).ok()?;
+        let comments = parse_comments(bytes).ok()?;
+        Some((template, comments))
+    }) else {
+        return Ok(CommentsPart::regenerated(comments_xml(
+            sheet,
+            main_namespace,
+        )?));
+    };
+    let Some(list_child) = template.child("commentList") else {
+        return Ok(CommentsPart::regenerated(comments_xml(
+            sheet,
+            main_namespace,
+        )?));
+    };
+    let list = XmlTemplate::capture(&list_child.bytes)?;
+    let mut source_elements: HashMap<(RowId, ColId), &XmlChild> = HashMap::new();
+    for child in list.children_named("comment") {
+        if let Some(at) = comment_element_ref(&child.bytes)? {
+            source_elements.insert(at, child);
+        }
+    }
+
+    let source_authors = match template.child("authors") {
+        Some(child) => comment_authors(&child.bytes)?,
+        None => Vec::new(),
+    };
+    let mut authors = source_authors;
+    let mut author_ids: HashMap<&str, usize> = HashMap::new();
+    for (index, author) in authors.iter().enumerate() {
+        author_ids.entry(author.as_str()).or_insert(index);
+    }
+    let mut appended: Vec<&str> = Vec::new();
+    for comment in sheet.comments.values() {
+        let author = comment.author.as_str();
+        if !author_ids.contains_key(author) && !appended.contains(&author) {
+            author_ids.insert(author, authors.len() + appended.len());
+            appended.push(author);
+        }
+    }
+
+    let mut claimed: HashSet<(RowId, ColId)> = HashSet::new();
+    let mut claims: Vec<Option<(RowId, ColId)>> = Vec::with_capacity(sheet.comments.len());
+    for (&at, comment) in &sheet.comments {
+        let unchanged =
+            source_elements.contains_key(&at) && source_comments.get(&at) == Some(comment);
+        if unchanged {
+            claimed.insert(at);
+        }
+        claims.push(unchanged.then_some(at));
+    }
+    for (claim, comment) in claims.iter_mut().zip(sheet.comments.values()) {
+        if claim.is_some() {
+            continue;
+        }
+        *claim = source_comments
+            .iter()
+            .find(|(at, source)| {
+                *source == comment && !claimed.contains(*at) && source_elements.contains_key(*at)
+            })
+            .map(|(&at, _)| at);
+        if let Some(at) = *claim {
+            claimed.insert(at);
+        }
+    }
+
+    let mut elements = Vec::with_capacity(sheet.comments.len());
+    for ((&at, comment), claim) in sheet.comments.iter().zip(claims.iter().copied()) {
+        let element = match claim {
+            Some(from) if from == at => source_elements[&from].bytes.clone(),
+            Some(from) => comment_element_at(&source_elements[&from].bytes, at)?,
+            None => {
+                let element = fragment(|w| {
+                    write_comment_element(
+                        w,
+                        at.0,
+                        at.1,
+                        author_ids[comment.author.as_str()],
+                        &comment.text,
+                    )
+                })?;
+                list.qualify_fragment(&element)?
+            }
+        };
+        elements.push(element);
+    }
+    let comment_list = list.render_repeated("comment", &elements, &[])?;
+
+    let mut replacements: Vec<(&'static str, Option<Vec<u8>>)> =
+        vec![("commentList", Some(comment_list))];
+    if !appended.is_empty() || template.child("authors").is_none() {
+        authors.extend(appended.into_iter().map(str::to_owned));
+        let rendered = fragment(|w| write_comment_authors(w, authors.iter().map(String::as_str)))?;
+        replacements.push(("authors", Some(rendered)));
+    }
+    Ok(CommentsPart {
+        bytes: template.render(replacements, comments_child_rank)?,
+        claims: sheet
+            .comments
+            .keys()
+            .zip(claims)
+            .filter_map(|(&at, claim)| claim.map(|from| (at, from)))
+            .collect(),
+    })
+}
+
+/// `<comments>` holds `<authors>` then `<commentList>`; anything else keeps its
+/// source position.
+fn comments_child_rank(name: &str) -> usize {
+    match name {
+        "authors" => 0,
+        "commentList" => 1,
+        _ => usize::MAX,
+    }
+}
+
+fn comment_element_ref(bytes: &[u8]) -> Result<Option<(RowId, ColId)>, ParseError> {
+    let mut reader = xml_reader(bytes);
+    let mut buf = Vec::new();
+    let mut depth = 0;
+    loop {
+        match next_event(&mut reader, &mut buf, &mut depth)? {
+            Event::Start(e) | Event::Empty(e) => {
+                let Some(reference) = xml_attr(&e, b"ref")? else {
+                    return Ok(None);
+                };
+                return Ok(CellRef::parse_a1(&reference)
+                    .ok()
+                    .map(|at| (at.row, at.col)));
+            }
+            Event::Eof => return Ok(None),
+            _ => {}
+        }
+    }
+}
+
+/// Re-emits a source `<comment>` element at `at`: only the start tag is
+/// rewritten, with the new `ref`; the runs, `rPr`, phonetic properties and every
+/// other attribute are copied through byte for byte.
+fn comment_element_at(bytes: &[u8], at: (RowId, ColId)) -> Result<Vec<u8>, ParseError> {
+    let mut attributes = attributes_from_fragment(bytes)?;
+    set_attribute(
+        &mut attributes,
+        "ref",
+        "ref",
+        CellRef::new(at.0, at.1).to_a1(),
+    );
+    let mut reader = quick_xml::Reader::from_reader(bytes);
+    loop {
+        let (mut start, self_closing) = match reader.read_event().map_err(xml_err)? {
+            Event::Start(element) => (element, false),
+            Event::Empty(element) => (element, true),
+            Event::Eof => {
+                return Err(ParseError::Malformed(
+                    "comment element has no start tag".into(),
+                ));
+            }
+            _ => continue,
+        };
+        start.clear_attributes();
+        for attribute in &attributes {
+            start.push_attribute((attribute.name.as_str(), attribute.value.as_str()));
+        }
+        let mut rewritten = fragment(|w| {
+            w.write_event(if self_closing {
+                Event::Empty(start)
+            } else {
+                Event::Start(start)
+            })
+        })?;
+        rewritten.extend_from_slice(&bytes[reader.buffer_position() as usize..]);
+        return Ok(rewritten);
+    }
+}
+
+fn comment_authors(bytes: &[u8]) -> Result<Vec<String>, ParseError> {
+    let template = XmlTemplate::capture(bytes)?;
+    let mut authors = Vec::new();
+    for child in template.children_named("author") {
+        let mut reader = xml_reader(&child.bytes);
+        let mut buf = Vec::new();
+        let mut depth = 0;
+        let author = loop {
+            match next_event(&mut reader, &mut buf, &mut depth)? {
+                Event::Start(_) => break collect_text(&mut reader, &mut buf, &mut depth)?,
+                Event::Empty(_) | Event::Eof => break String::new(),
+                _ => {}
+            }
+        };
+        authors.push(author);
+    }
+    Ok(authors)
+}
+
+/// The first VML shape id excel assigns in a fresh drawing; generated note
+/// shapes count up from here past any retained source shape.
+const VML_FIRST_SHAPE_ID: u64 = 1025;
+
+/// The namespace prefixes generated note shapes rely on; a retained source
+/// root gains any it does not already declare.
+const VML_NAMESPACES: [(&str, &str, &str); 3] = [
+    ("v", "xmlns:v", "urn:schemas-microsoft-com:vml"),
+    ("o", "xmlns:o", "urn:schemas-microsoft-com:office:office"),
+    ("x", "xmlns:x", "urn:schemas-microsoft-com:office:excel"),
+];
+
+/// A minimal legacy VML drawing with one hidden note shape per comment, the
+/// boilerplate Excel expects for comment indicators.
+fn vml_drawing_xml(sheet: &Sheet) -> Result<Vec<u8>, ParseError> {
+    fragment(|w| {
+        let mut root = BytesStart::new("xml");
+        for (_, declaration, namespace) in VML_NAMESPACES {
+            root.push_attribute((declaration, namespace));
+        }
+        w.write_event(Event::Start(root))?;
+        write_vml_shapelayout(w)?;
+        write_vml_note_shapetype(w)?;
+        for (index, (&(row, col), _)) in sheet.comments.iter().enumerate() {
+            write_comment_shape(w, VML_FIRST_SHAPE_ID + index as u64, row, col)?;
+        }
+        w.write_event(Event::End(BytesEnd::new("xml")))?;
+        Ok(())
+    })
+}
+
+/// Regenerates a notes VML part on top of its source: non-note shapes (form
+/// controls and friends), shapetypes, and any other source elements are kept
+/// verbatim, and so is the note shape of every comment the model still carries
+/// — box size and position, fill and stroke, visibility and the rest of its
+/// `x:ClientData` survive an edit to a neighbouring note. A note the comments
+/// pass matched at a new `ref` keeps its own shape too, with only the
+/// `x:ClientData` `Row` and `Column` rewritten; `claims` carries that mapping so
+/// both parts move the same note. Comments with no source shape are generated,
+/// with ids past every source shape's. Without a readable source this is a
+/// plain regeneration.
+fn vml_drawing_xml_with_source(
+    sheet: &Sheet,
+    source: Option<&[u8]>,
+    claims: &HashMap<(RowId, ColId), (RowId, ColId)>,
+) -> Result<Vec<u8>, ParseError> {
+    let Some(template) = source.and_then(|bytes| XmlTemplate::capture(bytes).ok()) else {
+        return vml_drawing_xml(sheet);
+    };
+    let mut note_shapes: HashSet<usize> = HashSet::new();
+    let mut source_notes: HashMap<(RowId, ColId), usize> = HashMap::new();
+    let mut has_shapelayout = false;
+    let mut has_note_shapetype = false;
+    let mut next_shape_id = VML_FIRST_SHAPE_ID;
+    for (index, child) in template.children.iter().enumerate() {
+        match child.local_name.as_str() {
+            "shape" => {
+                if let Some(id) = vml_shape_numeric_id(&child.bytes)? {
+                    next_shape_id = next_shape_id.max(id.saturating_add(1));
+                }
+                if vml_shape_is_retained(&child.bytes)? {
+                    continue;
+                }
+                note_shapes.insert(index);
+                if let Some(at) = vml_note_anchor(&child.bytes)? {
+                    source_notes.entry(at).or_insert(index);
+                }
+            }
+            "shapetype" => {
+                has_note_shapetype |=
+                    vml_element_id(&child.bytes)?.as_deref() == Some("_x0000_t202");
+            }
+            "shapelayout" => has_shapelayout = true,
+            _ => {}
+        }
+    }
+
+    let mut taken: HashSet<(RowId, ColId)> = HashSet::new();
+    let mut kept: BTreeMap<(RowId, ColId), (RowId, ColId)> = BTreeMap::new();
+    for at in sheet.comments.keys() {
+        if let Some(&from) = claims.get(at)
+            && source_notes.contains_key(&from)
+            && taken.insert(from)
+        {
+            kept.insert(*at, from);
+        }
+    }
+    for at in sheet.comments.keys() {
+        if !kept.contains_key(at) && source_notes.contains_key(at) && taken.insert(*at) {
+            kept.insert(*at, *at);
+        }
+    }
+    let mut retained_notes: HashMap<usize, Option<Vec<u8>>> = HashMap::new();
+    for (&at, &from) in &kept {
+        let index = source_notes[&from];
+        let reanchored = (from != at)
+            .then(|| vml_shape_at(&template.children[index].bytes, at))
+            .transpose()?;
+        retained_notes.insert(index, reanchored);
+    }
+
+    let missing_namespaces: Vec<(&str, String)> = VML_NAMESPACES
+        .iter()
+        .filter(|(prefix, _, namespace)| !template.declares_namespace(prefix, namespace))
+        .map(|(_, declaration, namespace)| (*declaration, (*namespace).to_owned()))
+        .collect();
+    let mut output = template.prefix_with_attributes(&missing_namespaces)?;
+    for (index, child) in template.children.iter().enumerate() {
+        let bytes = if note_shapes.contains(&index) {
+            match retained_notes.get(&index) {
+                Some(Some(reanchored)) => reanchored.as_slice(),
+                Some(None) => child.bytes.as_slice(),
+                None => continue,
+            }
+        } else {
+            child.bytes.as_slice()
+        };
+        output.extend_from_slice(&child.before);
+        output.extend_from_slice(bytes);
+    }
+    let generated = fragment(|w| {
+        if sheet.comments.is_empty() {
+            return Ok(());
+        }
+        if !has_shapelayout {
+            write_vml_shapelayout(w)?;
+        }
+        if !has_note_shapetype {
+            write_vml_note_shapetype(w)?;
+        }
+        let mut shape_id = next_shape_id;
+        for &(row, col) in sheet.comments.keys() {
+            if kept.contains_key(&(row, col)) {
+                continue;
+            }
+            write_comment_shape(w, shape_id, row, col)?;
+            shape_id += 1;
+        }
+        Ok(())
+    })?;
+    output.extend_from_slice(&generated);
+    output.extend_from_slice(&template.trailing);
+    output.extend_from_slice(&template.suffix);
+    Ok(output)
+}
+
+/// The cell a source note shape is anchored to, as the 0-based `Row` and
+/// `Column` its `x:ClientData` carries.
+fn vml_note_anchor(bytes: &[u8]) -> Result<Option<(RowId, ColId)>, ParseError> {
+    let mut reader = xml_reader(bytes);
+    let mut buf = Vec::new();
+    let mut depth = 0;
+    let mut in_note = false;
+    let mut row: Option<RowId> = None;
+    let mut col: Option<ColId> = None;
+    loop {
+        match next_event(&mut reader, &mut buf, &mut depth)? {
+            Event::Start(e) => match xml_local_name(&e).as_slice() {
+                b"ClientData" => {
+                    in_note = xml_attr(&e, b"ObjectType")?.as_deref() == Some("Note");
+                }
+                b"Row" if in_note => {
+                    row = collect_text(&mut reader, &mut buf, &mut depth)?
+                        .trim()
+                        .parse()
+                        .ok();
+                }
+                b"Column" if in_note => {
+                    col = collect_text(&mut reader, &mut buf, &mut depth)?
+                        .trim()
+                        .parse()
+                        .ok();
+                }
+                _ => {}
+            },
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(row.zip(col))
+}
+
+/// Re-emits a source note shape at `at`: only the `Row` and `Column` text of
+/// its `x:ClientData` is rewritten, so the style, size, fill, textbox and every
+/// other client-data child are copied through byte for byte.
+fn vml_shape_at(bytes: &[u8], at: (RowId, ColId)) -> Result<Vec<u8>, ParseError> {
+    let mut reader = quick_xml::Reader::from_reader(bytes);
+    let mut open: Vec<Vec<u8>> = Vec::new();
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    loop {
+        let start = reader.buffer_position() as usize;
+        match reader.read_event().map_err(xml_err)? {
+            Event::Start(e) => {
+                if open.len() >= crate::MAX_DEPTH {
+                    return Err(ParseError::DepthExceeded);
+                }
+                open.push(xml_local_name(&e));
+            }
+            Event::End(_) => {
+                open.pop();
+            }
+            Event::Text(_) => {
+                let in_note = open.iter().any(|name| name == b"ClientData");
+                let value = match open.last().map(Vec::as_slice) {
+                    Some(b"Row") if in_note => Some(at.0.to_string()),
+                    Some(b"Column") if in_note => Some(at.1.to_string()),
+                    _ => None,
+                };
+                if let Some(value) = value {
+                    edits.push((start, reader.buffer_position() as usize, value));
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut cursor = 0;
+    for (start, end, value) in edits {
+        output.extend_from_slice(&bytes[cursor..start]);
+        output.extend_from_slice(value.as_bytes());
+        cursor = end;
+    }
+    output.extend_from_slice(&bytes[cursor..]);
+    Ok(output)
+}
+
+/// A source shape survives a note rewrite when its client data types it as
+/// something other than a note; note shapes (and shapes without a typed
+/// `ClientData`) are matched against the model's comments instead.
+fn vml_shape_is_retained(bytes: &[u8]) -> Result<bool, ParseError> {
+    let mut reader = xml_reader(bytes);
+    let mut buf = Vec::new();
+    let mut depth = 0;
+    loop {
+        match next_event(&mut reader, &mut buf, &mut depth)? {
+            Event::Start(e) if xml_local_name(&e) == b"ClientData" => {
+                if let Some(object_type) = xml_attr(&e, b"ObjectType")? {
+                    return Ok(object_type != "Note");
+                }
+            }
+            Event::Eof => return Ok(false),
+            _ => {}
+        }
+    }
+}
+
+fn vml_element_id(bytes: &[u8]) -> Result<Option<String>, ParseError> {
+    let mut reader = xml_reader(bytes);
+    let mut buf = Vec::new();
+    let mut depth = 0;
+    loop {
+        match next_event(&mut reader, &mut buf, &mut depth)? {
+            Event::Start(e) => return xml_attr(&e, b"id"),
+            Event::Eof => return Ok(None),
+            _ => {}
+        }
+    }
+}
+
+fn vml_shape_numeric_id(bytes: &[u8]) -> Result<Option<u64>, ParseError> {
+    Ok(vml_element_id(bytes)?
+        .as_deref()
+        .and_then(|id| id.strip_prefix("_x0000_s"))
+        .and_then(|digits| digits.parse().ok()))
+}
+
+fn write_vml_shapelayout(w: &mut Writer<Vec<u8>>) -> io::Result<()> {
+    w.create_element("o:shapelayout")
+        .with_attribute(("v:ext", "edit"))
+        .write_inner_content(|w| {
+            w.create_element("o:idmap")
+                .with_attribute(("v:ext", "edit"))
+                .with_attribute(("data", "1"))
+                .write_empty()?;
+            Ok(())
+        })?;
+    Ok(())
+}
+
+fn write_vml_note_shapetype(w: &mut Writer<Vec<u8>>) -> io::Result<()> {
+    w.create_element("v:shapetype")
+        .with_attribute(("id", "_x0000_t202"))
+        .with_attribute(("coordsize", "21600,21600"))
+        .with_attribute(("o:spt", "202"))
+        .with_attribute(("path", "m,l,21600r21600,l21600,xe"))
+        .write_inner_content(|w| {
+            w.create_element("v:stroke")
+                .with_attribute(("joinstyle", "miter"))
+                .write_empty()?;
+            w.create_element("v:path")
+                .with_attribute(("gradientshapeok", "t"))
+                .with_attribute(("o:connecttype", "rect"))
+                .write_empty()?;
+            Ok(())
+        })?;
+    Ok(())
+}
+
+fn write_comment_shape(
+    w: &mut Writer<Vec<u8>>,
+    shape_id: u64,
+    row: RowId,
+    col: ColId,
+) -> io::Result<()> {
+    let id = format!("_x0000_s{shape_id}");
+    let anchor = comment_anchor(row, col);
+    let row_text = row.to_string();
+    let col_text = col.to_string();
+    w.create_element("v:shape")
+        .with_attribute(("id", id.as_str()))
+        .with_attribute(("type", "#_x0000_t202"))
+        .with_attribute((
+            "style",
+            "position:absolute;margin-left:59.25pt;margin-top:1.5pt;width:96pt;height:55.5pt;\
+             z-index:1;visibility:hidden",
+        ))
+        .with_attribute(("fillcolor", "#ffffe1"))
+        .with_attribute(("o:insetmode", "auto"))
+        .write_inner_content(|w| {
+            w.create_element("v:fill")
+                .with_attribute(("color2", "#ffffe1"))
+                .write_empty()?;
+            w.create_element("v:shadow")
+                .with_attribute(("on", "t"))
+                .with_attribute(("color", "black"))
+                .with_attribute(("obscured", "t"))
+                .write_empty()?;
+            w.create_element("v:path")
+                .with_attribute(("o:connecttype", "none"))
+                .write_empty()?;
+            w.create_element("v:textbox")
+                .with_attribute(("style", "mso-direction-alt:auto"))
+                .write_inner_content(|w| {
+                    w.create_element("div")
+                        .with_attribute(("style", "text-align:left"))
+                        .write_empty()?;
+                    Ok(())
+                })?;
+            w.create_element("x:ClientData")
+                .with_attribute(("ObjectType", "Note"))
+                .write_inner_content(|w| {
+                    w.create_element("x:MoveWithCells").write_empty()?;
+                    w.create_element("x:SizeWithCells").write_empty()?;
+                    w.create_element("x:Anchor")
+                        .write_text_content(BytesText::new(&anchor))?;
+                    w.create_element("x:AutoFill")
+                        .write_text_content(BytesText::new("False"))?;
+                    w.create_element("x:Row")
+                        .write_text_content(BytesText::new(&row_text))?;
+                    w.create_element("x:Column")
+                        .write_text_content(BytesText::new(&col_text))?;
+                    Ok(())
+                })?;
+            Ok(())
+        })?;
+    Ok(())
+}
+
+/// The standard note anchor: one column right of the cell, roughly three rows
+/// tall, clamped to the sheet edge.
+fn comment_anchor(row: RowId, col: ColId) -> String {
+    let left = col.saturating_add(1).min(MAX_COLS - 1);
+    let right = col.saturating_add(3).min(MAX_COLS - 1);
+    let top = row.min(MAX_ROWS - 1);
+    let bottom = row.saturating_add(3).min(MAX_ROWS - 1);
+    format!("{left}, 15, {top}, 2, {right}, 15, {bottom}, 16")
 }
 
 fn relative_to_xl(path: &str) -> String {
@@ -1065,6 +1890,13 @@ fn relationships_xml(relationships: &[Relationship]) -> Result<Vec<u8>, ParseErr
     })
 }
 
+/// Content-type consequences of the comment parts a save wrote or dropped.
+struct CommentContentTypes<'a> {
+    overrides: &'a [String],
+    removed_part_names: &'a HashSet<String>,
+    wrote_vml: bool,
+}
+
 fn merged_content_types(
     package: &PreservedPackage,
     sheets: &[PlannedSheet],
@@ -1072,7 +1904,11 @@ fn merged_content_types(
     styles: Option<&PlannedPart>,
     theme: Option<&PlannedPart>,
     edited: bool,
+    comments: CommentContentTypes<'_>,
 ) -> Result<Vec<u8>, ParseError> {
+    let comment_overrides = comments.overrides;
+    let removed_part_names = comments.removed_part_names;
+    let wrote_vml = comments.wrote_vml;
     let mut desired = BTreeMap::new();
     let strict = package.workbook_template.root_namespace() == Some(NS_STRICT_MAIN);
     desired.insert(
@@ -1127,6 +1963,9 @@ fn merged_content_types(
                 .unwrap_or(CT_THEME),
         );
     }
+    for path in comment_overrides {
+        desired.insert(normalized_part_name(path), CT_COMMENTS);
+    }
 
     let mut source_owned = HashSet::from([normalized_part_name("xl/workbook.xml")]);
     source_owned.extend(
@@ -1176,6 +2015,9 @@ fn merged_content_types(
         if edited && calc_chain_paths.contains(&normalized) {
             continue;
         }
+        if removed_part_names.contains(&normalized) {
+            continue;
+        }
         if source_owned.contains(&normalized) {
             if desired.contains_key(&normalized) && emitted_parts.insert(normalized) {
                 entries.push(entry.clone());
@@ -1183,6 +2025,23 @@ fn merged_content_types(
         } else {
             entries.push(entry.clone());
         }
+    }
+
+    if wrote_vml && !default_extensions.contains_key("vml") {
+        default_extensions.insert("vml".to_owned(), CT_VML.to_owned());
+        entries.push(ContentTypeEntry {
+            element: "Default".to_owned(),
+            attributes: vec![
+                XmlAttribute {
+                    name: "Extension".to_owned(),
+                    value: "vml".to_owned(),
+                },
+                XmlAttribute {
+                    name: "ContentType".to_owned(),
+                    value: CT_VML.to_owned(),
+                },
+            ],
+        });
     }
 
     for (path, content_type) in desired {
@@ -1354,11 +2213,27 @@ fn content_types(wb: &Workbook, have_sst: bool, have_styles: bool) -> Result<Vec
                         .with_attribute(("ContentType", CT_THEME))
                         .write_empty()?;
                 }
+                if wb.sheets.iter().any(|sheet| !sheet.comments.is_empty()) {
+                    w.create_element("Default")
+                        .with_attribute(("Extension", "vml"))
+                        .with_attribute(("ContentType", CT_VML))
+                        .write_empty()?;
+                }
                 for i in 0..wb.sheets.len() {
                     let part = format!("/xl/worksheets/sheet{}.xml", i + 1);
                     w.create_element("Override")
                         .with_attribute(("PartName", part.as_str()))
                         .with_attribute(("ContentType", CT_WORKSHEET))
+                        .write_empty()?;
+                }
+                for (i, sheet) in wb.sheets.iter().enumerate() {
+                    if sheet.comments.is_empty() {
+                        continue;
+                    }
+                    let part = format!("/xl/comments{}.xml", i + 1);
+                    w.create_element("Override")
+                        .with_attribute(("PartName", part.as_str()))
+                        .with_attribute(("ContentType", CT_COMMENTS))
                         .write_empty()?;
                 }
                 Ok(())
@@ -1882,12 +2757,13 @@ fn worksheet_xml_with_namespace(
     main_namespace: &str,
     relationship_namespace: &str,
     links: &HyperlinkPlan,
+    comments: Option<&CommentPlan>,
     shared_string_plan: Option<&SharedStringPlan>,
 ) -> Result<Vec<u8>, ParseError> {
     doc(|writer| {
         let mut root = BytesStart::new("worksheet");
         root.push_attribute(("xmlns", main_namespace));
-        if links.relationships.iter().any(Relationship::is_hyperlink) {
+        if links.relationships.iter().any(Relationship::is_hyperlink) || comments.is_some() {
             root.push_attribute((REL_PREFIX_DECLARATION, relationship_namespace));
         }
         writer.write_event(Event::Start(root))?;
@@ -1900,18 +2776,49 @@ fn worksheet_xml_with_namespace(
             &SharedStringCells::new(),
             shared_string_plan,
         )?;
+        write_auto_filter(writer, sheet)?;
         write_merges(writer, sheet)?;
         write_hyperlinks(writer, sheet, &links.ids, REL_ID_ATTRIBUTE, &[])?;
+        if let Some(plan) = comments {
+            let mut element = BytesStart::new("legacyDrawing");
+            element.push_attribute((REL_ID_ATTRIBUTE, plan.vml_rel_id.as_str()));
+            writer.write_event(Event::Empty(element))?;
+        }
         writer.write_event(Event::End(BytesEnd::new("worksheet")))?;
         Ok(())
     })
 }
 
 /// A retained worksheet and the relationship part backing it, when the model's
-/// hyperlinks moved and the part has to be rewritten.
+/// hyperlinks or comments moved and the part has to be rewritten, plus the
+/// comment parts a save writes or drops next to it.
 struct WorksheetOutput {
     bytes: Vec<u8>,
     relationships: Option<Vec<Relationship>>,
+    comment_parts: Vec<(String, Vec<u8>)>,
+    removed_parts: Vec<String>,
+    new_comment_overrides: Vec<String>,
+    wrote_vml: bool,
+}
+
+impl WorksheetOutput {
+    fn new(bytes: Vec<u8>, relationships: Option<Vec<Relationship>>) -> Self {
+        Self {
+            bytes,
+            relationships,
+            comment_parts: Vec::new(),
+            removed_parts: Vec::new(),
+            new_comment_overrides: Vec::new(),
+            wrote_vml: false,
+        }
+    }
+}
+
+/// Per-sheet shared-string identity: each cell's authored entry plus the
+/// table-wide retention plan.
+struct SheetSharedStrings<'a> {
+    provenance: &'a SharedStringCells,
+    plan: Option<&'a SharedStringPlan>,
 }
 
 /// Preserved fragments (filters, validations, anchors) keep their source
@@ -1922,15 +2829,21 @@ fn worksheet_xml_with_template(
     original: Option<&Sheet>,
     source: &PreservedSheet,
     package: &PreservedPackage,
-    shared_string_cells: &SharedStringCells,
-    shared_string_plan: Option<&SharedStringPlan>,
+    shared_strings: SheetSharedStrings<'_>,
+    used_paths: &mut HashSet<String>,
 ) -> Result<WorksheetOutput, ParseError> {
     let template = &source.template;
     let columns = (!sheet.col_widths.is_empty())
         .then(|| fragment(|writer| write_cols(writer, sheet)))
         .transpose()?;
     let sheet_data = Some(fragment(|writer| {
-        write_sheet_data(writer, sheet, wb, shared_string_cells, shared_string_plan)
+        write_sheet_data(
+            writer,
+            sheet,
+            wb,
+            shared_strings.provenance,
+            shared_strings.plan,
+        )
     })?);
     let merges = (!sheet.merges.is_empty())
         .then(|| fragment(|writer| write_merges(writer, sheet)))
@@ -1945,28 +2858,278 @@ fn worksheet_xml_with_template(
         replacements.push(("sheetViews", patched_sheet_views(template, sheet)?));
     }
 
+    if original.is_none_or(|original| original.auto_filter != sheet.auto_filter) {
+        let auto_filter = sheet
+            .auto_filter
+            .as_ref()
+            .map(|_| fragment(|writer| write_auto_filter(writer, sheet)))
+            .transpose()?;
+        replacements.push(("autoFilter", auto_filter));
+    }
+
+    let hyperlinks_changed =
+        original.is_none_or(|original| original.hyperlinks != sheet.hyperlinks);
+    let comments_changed = original.is_none_or(|original| original.comments != sheet.comments);
     let mut relationships = None;
-    if original.is_none_or(|original| original.hyperlinks != sheet.hyperlinks) {
+    let mut output_extras = WorksheetOutput::new(Vec::new(), None);
+    if hyperlinks_changed || comments_changed {
         let source_relationships = package
             .part_bytes(&relationship_part_path(&source.path))
             .map(parse_relationships)
             .transpose()?
             .unwrap_or_default();
-        let links = HyperlinkPlan::new(
-            sheet,
-            &source_relationships,
-            &relationship_type_from(&package.workbook_relationships, "hyperlink", REL_HYPERLINK),
-        );
-        replacements.push((
-            "hyperlinks",
-            patched_hyperlinks(template, package, sheet, &links)?,
-        ));
-        relationships = Some(links.relationships);
+        let mut merged = if hyperlinks_changed {
+            let links = HyperlinkPlan::new(
+                sheet,
+                &source_relationships,
+                &relationship_type_from(
+                    &package.workbook_relationships,
+                    "hyperlink",
+                    REL_HYPERLINK,
+                ),
+            );
+            replacements.push((
+                "hyperlinks",
+                patched_hyperlinks(template, package, sheet, &links)?,
+            ));
+            links.relationships
+        } else {
+            source_relationships
+        };
+        if comments_changed {
+            let sheet_directory = part_directory(&source.path);
+            match plan_sheet_comments(
+                sheet,
+                &mut merged,
+                &sheet_directory,
+                package,
+                template,
+                used_paths,
+                &mut output_extras,
+            )? {
+                CommentPartsPlan::Notes(plan) => {
+                    let namespace = template.root_namespace().unwrap_or(NS_MAIN);
+                    let comments = comments_xml_with_source(
+                        sheet,
+                        namespace,
+                        package.part_bytes(&plan.comments_path),
+                    )?;
+                    output_extras
+                        .comment_parts
+                        .push((plan.comments_path.clone(), comments.bytes));
+                    output_extras.comment_parts.push((
+                        plan.vml_path.clone(),
+                        vml_drawing_xml_with_source(
+                            sheet,
+                            package.part_bytes(&plan.vml_path),
+                            &comments.claims,
+                        )?,
+                    ));
+                    output_extras.wrote_vml = true;
+                    replacements.push((
+                        "legacyDrawing",
+                        Some(legacy_drawing_fragment(
+                            template,
+                            package,
+                            &plan.vml_rel_id,
+                        )?),
+                    ));
+                }
+                CommentPartsPlan::VmlOnly {
+                    vml_path,
+                    vml_rel_id,
+                } => {
+                    output_extras.comment_parts.push((
+                        vml_path.clone(),
+                        vml_drawing_xml_with_source(
+                            sheet,
+                            package.part_bytes(&vml_path),
+                            &HashMap::new(),
+                        )?,
+                    ));
+                    output_extras.wrote_vml = true;
+                    replacements.push((
+                        "legacyDrawing",
+                        Some(legacy_drawing_fragment(template, package, &vml_rel_id)?),
+                    ));
+                }
+                CommentPartsPlan::Drop => replacements.push(("legacyDrawing", None)),
+            }
+        }
+        relationships = Some(merged);
     }
 
-    Ok(WorksheetOutput {
-        bytes: template.render(replacements, worksheet_child_rank)?,
-        relationships,
+    output_extras.bytes = template.render(replacements, worksheet_child_rank)?;
+    output_extras.relationships = relationships;
+    Ok(output_extras)
+}
+
+/// How a save handles a sheet's comments and VML parts.
+enum CommentPartsPlan {
+    /// The sheet has comments: both parts are regenerated.
+    Notes(CommentPlan),
+    /// No comments remain but the source VML carries non-note shapes, so the
+    /// part survives with its notes stripped.
+    VmlOnly {
+        vml_path: String,
+        vml_rel_id: String,
+    },
+    /// No comments and nothing worth keeping: both parts drop.
+    Drop,
+}
+
+/// Rebinds the sheet's comments and VML relationships to regenerated parts,
+/// reusing the source ids and paths when they exist. When the sheet no longer
+/// has comments, the comments part drops; the VML part drops too unless it
+/// still holds non-note shapes. Only the VML the `<legacyDrawing>` names is
+/// touched: a sheet's `<legacyDrawingHF>` owns a second `vmlDrawing`
+/// relationship whose part carries the header and footer artwork.
+fn plan_sheet_comments(
+    sheet: &Sheet,
+    relationships: &mut Vec<Relationship>,
+    sheet_directory: &str,
+    package: &PreservedPackage,
+    template: &XmlTemplate,
+    used_paths: &mut HashSet<String>,
+    output: &mut WorksheetOutput,
+) -> Result<CommentPartsPlan, ParseError> {
+    let source_comments = relationships
+        .iter()
+        .find(|relationship| relationship.has_type("comments"))
+        .cloned();
+    let notes_vml_id = legacy_drawing_relationship_id(template)?;
+    let source_vml = notes_vml_id.as_deref().and_then(|id| {
+        relationships
+            .iter()
+            .find(|relationship| {
+                relationship.has_type("vmlDrawing") && relationship.id() == Some(id)
+            })
+            .cloned()
+    });
+    let dropped_vml_id = source_vml
+        .as_ref()
+        .and_then(Relationship::id)
+        .map(str::to_owned);
+    relationships.retain(|relationship| {
+        if relationship.has_type("comments") {
+            return false;
+        }
+        match dropped_vml_id.as_deref() {
+            Some(id) => !(relationship.has_type("vmlDrawing") && relationship.id() == Some(id)),
+            None => true,
+        }
+    });
+    let source_comments_path = source_comments
+        .as_ref()
+        .and_then(Relationship::target)
+        .map(|target| resolve_part_path(sheet_directory, target));
+    let source_vml_path = source_vml
+        .as_ref()
+        .and_then(Relationship::target)
+        .map(|target| resolve_part_path(sheet_directory, target));
+    if sheet.comments.is_empty() {
+        output.removed_parts.extend(source_comments_path);
+        let retained_vml = source_vml.as_ref().and_then(|relationship| {
+            let id = relationship.id()?;
+            let path = source_vml_path.as_deref()?;
+            let keeps_shapes = package
+                .part_bytes(path)
+                .is_some_and(vml_part_has_non_note_shapes);
+            keeps_shapes.then(|| (path.to_owned(), id.to_owned()))
+        });
+        let Some((vml_path, vml_rel_id)) = retained_vml else {
+            output.removed_parts.extend(source_vml_path);
+            return Ok(CommentPartsPlan::Drop);
+        };
+        relationships.extend(source_vml);
+        return Ok(CommentPartsPlan::VmlOnly {
+            vml_path,
+            vml_rel_id,
+        });
+    }
+
+    let mut used_ids: HashSet<String> = relationships
+        .iter()
+        .filter_map(Relationship::id)
+        .map(str::to_owned)
+        .collect();
+    let comments_rel_id = match source_comments.as_ref().and_then(Relationship::id) {
+        Some(id) if used_ids.insert(id.to_owned()) => id.to_owned(),
+        _ => next_relationship_id(&mut used_ids),
+    };
+    let vml_rel_id = match source_vml.as_ref().and_then(Relationship::id) {
+        Some(id) if used_ids.insert(id.to_owned()) => id.to_owned(),
+        _ => next_relationship_id(&mut used_ids),
+    };
+    let comments_path = match source_comments_path {
+        Some(path) => path,
+        None => {
+            let path = next_part_path(used_paths, |index| format!("xl/comments{index}.xml"));
+            output.new_comment_overrides.push(path.clone());
+            path
+        }
+    };
+    let vml_path = source_vml_path.unwrap_or_else(|| {
+        next_part_path(used_paths, |index| {
+            format!("xl/drawings/vmlDrawing{index}.vml")
+        })
+    });
+    let plan = CommentPlan {
+        comments_path,
+        vml_path,
+        comments_rel_id,
+        vml_rel_id,
+    };
+    relationships.extend(plan.relationships(
+        sheet_directory,
+        &relationship_type(package, "comments", REL_COMMENTS),
+        &relationship_type(package, "vmlDrawing", REL_VML),
+    ));
+    Ok(CommentPartsPlan::Notes(plan))
+}
+
+/// The relationship id the worksheet's `<legacyDrawing>` points at, which is
+/// the only VML a comment rewrite may claim.
+fn legacy_drawing_relationship_id(template: &XmlTemplate) -> Result<Option<String>, ParseError> {
+    let Some(child) = template.child("legacyDrawing") else {
+        return Ok(None);
+    };
+    let mut reader = xml_reader(&child.bytes);
+    let mut buf = Vec::new();
+    let mut depth = 0;
+    loop {
+        match next_event(&mut reader, &mut buf, &mut depth)? {
+            Event::Start(e) => return xml_attr(&e, b"id"),
+            Event::Eof => return Ok(None),
+            _ => {}
+        }
+    }
+}
+
+/// Whether a source VML part contains shapes a comment rewrite must keep.
+fn vml_part_has_non_note_shapes(bytes: &[u8]) -> bool {
+    XmlTemplate::capture(bytes).is_ok_and(|template| {
+        template.children.iter().any(|child| {
+            child.local_name == "shape" && vml_shape_is_retained(&child.bytes).unwrap_or(false)
+        })
+    })
+}
+
+fn legacy_drawing_fragment(
+    template: &XmlTemplate,
+    package: &PreservedPackage,
+    vml_rel_id: &str,
+) -> Result<Vec<u8>, ParseError> {
+    let namespace = fragment_relationship_namespace(template, package)?;
+    let declared = template.declares_namespace(GENERATED_REL_PREFIX, &namespace);
+    fragment(|writer| {
+        let mut element = BytesStart::new("legacyDrawing");
+        if !declared {
+            element.push_attribute((REL_PREFIX_DECLARATION, namespace.as_str()));
+        }
+        element.push_attribute((REL_ID_ATTRIBUTE, vml_rel_id));
+        writer.write_event(Event::Empty(element))?;
+        Ok(())
     })
 }
 
@@ -2101,6 +3264,7 @@ fn write_sheet_data(
 
     let mut rows: Vec<RowId> = sheet.iter_cells().map(|(r, _)| r.row).collect();
     rows.extend(sheet.row_heights.keys().copied());
+    rows.extend(sheet.hidden_rows.iter().copied());
     rows.sort_unstable();
     rows.dedup();
 
@@ -2236,6 +3400,9 @@ fn write_row(
         start.push_attribute(("ht", h.as_str()));
         start.push_attribute(("customHeight", "1"));
     }
+    if sheet.hidden_rows.contains(&row) {
+        start.push_attribute(("hidden", "1"));
+    }
     w.write_event(Event::Start(start))?;
     for (addr, cell) in sheet.iter_cells().filter(|(a, _)| a.row == row) {
         let source = retained.get(&(addr.row, addr.col)).copied();
@@ -2318,6 +3485,53 @@ fn write_cell(
         })?;
     }
     w.write_event(Event::End(BytesEnd::new("c")))?;
+    Ok(())
+}
+
+fn write_auto_filter(w: &mut Writer<Vec<u8>>, sheet: &Sheet) -> io::Result<()> {
+    let Some(filter) = &sheet.auto_filter else {
+        return Ok(());
+    };
+    let mut root = BytesStart::new("autoFilter");
+    let reference = filter.range.to_a1();
+    root.push_attribute(("ref", reference.as_str()));
+    if filter.columns.is_empty() {
+        w.write_event(Event::Empty(root))?;
+        return Ok(());
+    }
+    w.write_event(Event::Start(root))?;
+    for column in &filter.columns {
+        let mut element = BytesStart::new("filterColumn");
+        let col_id = column
+            .col
+            .saturating_sub(filter.range.start.col)
+            .to_string();
+        element.push_attribute(("colId", col_id.as_str()));
+        if let Some(criteria) = &column.unsupported {
+            w.write_event(Event::Start(element))?;
+            w.write_event(Event::Text(BytesText::from_escaped(criteria.as_str())))?;
+            w.write_event(Event::End(BytesEnd::new("filterColumn")))?;
+            continue;
+        }
+        let Some(values) = &column.values else {
+            w.write_event(Event::Empty(element))?;
+            continue;
+        };
+        w.write_event(Event::Start(element))?;
+        let mut filters = BytesStart::new("filters");
+        if column.show_blanks {
+            filters.push_attribute(("blank", "1"));
+        }
+        w.write_event(Event::Start(filters))?;
+        for value in values {
+            w.create_element("filter")
+                .with_attribute(("val", value.as_str()))
+                .write_empty()?;
+        }
+        w.write_event(Event::End(BytesEnd::new("filters")))?;
+        w.write_event(Event::End(BytesEnd::new("filterColumn")))?;
+    }
+    w.write_event(Event::End(BytesEnd::new("autoFilter")))?;
     Ok(())
 }
 

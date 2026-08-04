@@ -10,13 +10,42 @@
     "save": null,
     "exportPng": null,
     "undo": null,
-    "redo": null
+    "redo": null,
+    "sortLabel": "Sortieren",
+    "sortAsc": "Von A bis Z sortieren",
+    "sortDesc": "Von Z bis A sortieren",
+    "freezeLabel": "Fenster fixieren",
+    "freezeUpToRow": "Bis Zeile {row} fixieren",
+    "freezeUpToColumn": "Bis Spalte {column} fixieren",
+    "freezeFirstRow": "Erste Zeile fixieren",
+    "freezeFirstColumn": "Erste Spalte fixieren",
+    "unfreeze": "Fixierung aufheben",
+    "filterLabel": "Filter",
+    "filterToggle": "Filter",
+    "commentLabel": "Kommentare",
+    "commentToggle": "Kommentar"
   },
   "editor": {
     "appLabel": null,
     "demoCellText": null,
     "openError": null,
     "sheetTabsLabel": null
+  },
+  "filter": {
+    "columnButton": "Spalte {column} filtern",
+    "selectAll": "Alle auswählen",
+    "blanks": "(Leere)",
+    "apply": "Anwenden",
+    "clear": "Löschen",
+    "truncated": "Die ersten {count} Werte werden angezeigt",
+    "regionTooLarge": "Der Datenbereich ist größer, als ein Filter abdecken kann — wählen Sie den zu filternden Bereich aus."
+  },
+  "comment": {
+    "viewLabel": "Kommentar zu {cell}",
+    "editLabel": "Kommentar zu {cell} bearbeiten",
+    "textPlaceholder": "Kommentar eingeben",
+    "save": "Speichern",
+    "delete": "Löschen"
   },
   "proposals": {
     "panelLabel": null,

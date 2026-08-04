@@ -104,6 +104,7 @@ impl AxisLayout {
         extent: f32,
         edge: impl Fn(u32) -> f32,
         at: impl Fn(f32) -> u32,
+        hidden: impl Fn(u32) -> bool,
     ) -> Self {
         let frozen = frozen.min(limit);
         let scroll = if frozen > 0 { scroll.max(0.0) } else { scroll };
@@ -114,6 +115,9 @@ impl AxisLayout {
                 let start = edge(index);
                 if start >= extent {
                     break;
+                }
+                if hidden(index) {
+                    continue;
                 }
                 tracks.push(AxisTrack {
                     index,
@@ -130,13 +134,17 @@ impl AxisLayout {
             let origin = frozen_extent + scroll;
             let first = at(origin).max(frozen).min(limit - 1);
             let last = at(origin + body_extent).max(first).min(limit - 1);
+            let mut clamp_to_divider = frozen > 0;
             for index in first..=last {
+                if hidden(index) {
+                    continue;
+                }
                 let raw_start = edge(index) - scroll;
                 let raw_end = edge(index + 1) - scroll;
                 tracks.push(AxisTrack {
                     index,
                     raw_start,
-                    start: if frozen > 0 && index == first {
+                    start: if clamp_to_divider {
                         raw_start.max(frozen_extent)
                     } else {
                         raw_start
@@ -144,6 +152,7 @@ impl AxisLayout {
                     end: raw_end,
                     pinned: false,
                 });
+                clamp_to_divider = false;
             }
         }
 
@@ -274,6 +283,7 @@ pub fn build_display_list_with_ghosts(
         viewport.height,
         |row| geom.row_y(row),
         |y| geom.row_at_y(y),
+        |row| sheet_ref.is_row_hidden(row),
     );
     let cols = AxisLayout::new(
         MAX_COLS,
@@ -282,6 +292,7 @@ pub fn build_display_list_with_ghosts(
         viewport.width,
         |col| geom.col_x(col),
         |x| geom.col_at_x(x),
+        |_| false,
     );
 
     let grid = GridMeta {

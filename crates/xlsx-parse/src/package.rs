@@ -286,8 +286,8 @@ impl XmlAttribute {
 pub(crate) struct XmlTemplate {
     prefix: Vec<u8>,
     pub(crate) children: Vec<XmlChild>,
-    trailing: Vec<u8>,
-    suffix: Vec<u8>,
+    pub(crate) trailing: Vec<u8>,
+    pub(crate) suffix: Vec<u8>,
     root_name: String,
     root_prefix: Option<String>,
     root_namespace: Option<String>,
@@ -296,7 +296,7 @@ pub(crate) struct XmlTemplate {
 
 #[derive(Clone, Debug)]
 pub(crate) struct XmlChild {
-    before: Vec<u8>,
+    pub(crate) before: Vec<u8>,
     pub(crate) local_name: String,
     pub(crate) bytes: Vec<u8>,
     namespace: Option<String>,
@@ -715,7 +715,10 @@ impl XmlTemplate {
             .filter(move |child| self.is_root_child_named(child, local_name))
     }
 
-    fn prefix_with_attributes(&self, changes: &[(&str, String)]) -> Result<Vec<u8>, ParseError> {
+    pub(crate) fn prefix_with_attributes(
+        &self,
+        changes: &[(&str, String)],
+    ) -> Result<Vec<u8>, ParseError> {
         if changes.is_empty() {
             return Ok(self.prefix.clone());
         }

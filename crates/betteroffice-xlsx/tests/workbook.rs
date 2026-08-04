@@ -574,6 +574,66 @@ fn frozen_panes_survive_the_facade_and_drive_the_initial_view() {
 }
 
 #[test]
+fn set_freeze_pane_op_applies_undoes_and_persists() {
+    let mut model = WorkbookModel::default();
+    model.sheets.push(Sheet::new("Data"));
+    let mut workbook = Workbook::from_model(model).unwrap();
+
+    let pane = FreezePane::new(2, 1, cell("B3"));
+    workbook
+        .apply_ops(
+            vec![Op::SetFreezePane {
+                sheet: SheetId(0),
+                pane: Some(pane),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(workbook.sheet(SheetId(0)).unwrap().freeze_pane, Some(pane));
+    let info = workbook.sheet_info().unwrap();
+    assert_eq!((info.frozen_rows, info.frozen_cols), (2, 1));
+
+    let reopened = Workbook::open(&workbook.save().unwrap()).unwrap();
+    assert_eq!(reopened.sheet(SheetId(0)).unwrap().freeze_pane, Some(pane));
+
+    workbook.undo(CalculationOptions::default()).unwrap();
+    assert_eq!(workbook.sheet(SheetId(0)).unwrap().freeze_pane, None);
+    workbook.redo(CalculationOptions::default()).unwrap();
+    assert_eq!(workbook.sheet(SheetId(0)).unwrap().freeze_pane, Some(pane));
+
+    workbook
+        .apply_ops(
+            vec![Op::SetFreezePane {
+                sheet: SheetId(0),
+                pane: None,
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(workbook.sheet(SheetId(0)).unwrap().freeze_pane, None);
+}
+
+#[test]
+fn set_freeze_pane_op_rejects_out_of_range_panes() {
+    let mut model = WorkbookModel::default();
+    model.sheets.push(Sheet::new("Data"));
+    let mut workbook = Workbook::from_model(model).unwrap();
+    let before = workbook.model().clone();
+
+    let error = workbook
+        .apply_ops(
+            vec![Op::SetFreezePane {
+                sheet: SheetId(0),
+                pane: Some(FreezePane::new(u32::MAX, 0, cell("A1"))),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("freeze pane is out of range"));
+    assert_eq!(workbook.model(), &before);
+}
+
+#[test]
 fn hyperlinks_survive_the_facade_and_reach_the_display_list() {
     let mut sheet = Sheet::new("Data");
     sheet.set_cell(
@@ -3514,8 +3574,9 @@ fn undo_restores_defined_names_dropped_by_a_sheet_removal() {
     assert_eq!(workbook.model().defined_names, before);
 }
 
-/// v1 leaves preserved sheet fragments at their original geometry after an
+/// v1 leaves unmodeled sheet fragments at their original geometry after an
 /// axis edit; the file must still open, even though the ranges have drifted.
+/// The modeled auto filter follows the edit.
 #[test]
 fn row_insertion_preserves_unmodeled_ranges_and_anchors_without_corruption() {
     let original = preservation_fixture();
@@ -3534,7 +3595,7 @@ fn row_insertion_preserves_unmodeled_ranges_and_anchors_without_corruption() {
     let saved = workbook.save().unwrap();
     let after = package_map(&saved);
     let worksheet = String::from_utf8(after["xl/worksheets/sheet1.xml"].clone()).unwrap();
-    assert!(worksheet.contains(r#"<autoFilter ref="A1:B2""#));
+    assert!(worksheet.contains(r#"<autoFilter ref="A2:B3""#));
     assert!(worksheet.contains(r#"<dataValidation type="whole" sqref="B2""#));
     assert!(worksheet.contains(r#"<conditionalFormatting sqref="B2""#));
     assert_eq!(
@@ -3606,6 +3667,314 @@ fn remove_then_add_is_fresh_while_undo_restores_exact_sheet_identity() {
         String::from_utf8(restored_parts["xl/worksheets/sheet1.xml"].clone())
             .unwrap()
             .contains("<autoFilter")
+    );
+}
+
+#[test]
+fn auto_filter_and_hidden_rows_survive_save_and_reopen() {
+    let mut model = WorkbookModel::default();
+    let mut sheet = Sheet::new("Data");
+    for (address, value) in [("A1", "Name"), ("A2", "keep"), ("A3", "drop")] {
+        sheet.set_cell(
+            cell(address),
+            Cell {
+                value: CellValue::Text {
+                    value: value.to_owned(),
+                },
+                ..Cell::default()
+            },
+        );
+    }
+    sheet.auto_filter = Some(betteroffice_xlsx::AutoFilter {
+        range: CellRange::parse_a1("A1:A3").unwrap(),
+        columns: vec![betteroffice_xlsx::AutoFilterColumn {
+            col: 0,
+            values: Some(vec!["keep".to_owned()]),
+            show_blanks: false,
+            unsupported: None,
+        }],
+    });
+    sheet.hidden_rows.insert(2);
+    model.sheets.push(sheet.clone());
+    let original = ooxml_opc::rezip_parts(&xlsx_parse::serialize_workbook(&model).unwrap());
+
+    let workbook = Workbook::open(&original.unwrap()).unwrap();
+    let opened = workbook.model().sheet(SheetId(0)).unwrap();
+    assert_eq!(opened.auto_filter, sheet.auto_filter);
+    assert_eq!(opened.hidden_rows, sheet.hidden_rows);
+
+    let reopened = Workbook::open(&workbook.save().unwrap()).unwrap();
+    let survived = reopened.model().sheet(SheetId(0)).unwrap();
+    assert_eq!(survived.auto_filter, sheet.auto_filter);
+    assert_eq!(survived.hidden_rows, sheet.hidden_rows);
+}
+
+/// Criteria the engine cannot evaluate must survive a save unchanged, stay out
+/// of row visibility, and give way only when that column is itself rewritten.
+#[test]
+fn unevaluatable_filter_criteria_survive_editing_a_neighbouring_column() {
+    let mut model = WorkbookModel::default();
+    let mut sheet = Sheet::new("Data");
+    for (address, value) in [("A1", "Name"), ("A2", "keep"), ("A3", "drop")] {
+        sheet.set_cell(
+            cell(address),
+            Cell {
+                value: CellValue::Text {
+                    value: value.to_owned(),
+                },
+                ..Cell::default()
+            },
+        );
+    }
+    for address in ["B2", "B3"] {
+        sheet.set_cell(
+            cell(address),
+            Cell {
+                value: CellValue::Number { value: 7.0 },
+                ..Cell::default()
+            },
+        );
+    }
+    let preserved = betteroffice_xlsx::AutoFilterColumn {
+        col: 1,
+        values: None,
+        show_blanks: true,
+        unsupported: Some(
+            r#"<filters><dateGroupItem year="2024" dateTimeGrouping="year"/></filters>"#.to_owned(),
+        ),
+    };
+    sheet.auto_filter = Some(betteroffice_xlsx::AutoFilter {
+        range: CellRange::parse_a1("A1:B3").unwrap(),
+        columns: vec![
+            betteroffice_xlsx::AutoFilterColumn {
+                col: 0,
+                values: Some(vec!["keep".to_owned()]),
+                show_blanks: false,
+                unsupported: None,
+            },
+            preserved.clone(),
+        ],
+    });
+    model.sheets.push(sheet.clone());
+    let source = ooxml_opc::rezip_parts(&xlsx_parse::serialize_workbook(&model).unwrap())
+        .unwrap_or_default();
+
+    let mut workbook = Workbook::open(&source).unwrap();
+    assert_eq!(
+        workbook.model().sheet(SheetId(0)).unwrap().auto_filter,
+        sheet.auto_filter
+    );
+
+    let mut edited = sheet.auto_filter.clone().unwrap();
+    edited.columns[0].values = Some(vec!["drop".to_owned()]);
+    workbook
+        .apply_ops(
+            vec![Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: Some(edited),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    let after = workbook.model().sheet(SheetId(0)).unwrap();
+    assert_eq!(
+        after.hidden_rows,
+        [1].into_iter().collect(),
+        "only the rewritten literal column may hide a row"
+    );
+    assert_eq!(after.auto_filter.as_ref().unwrap().columns[1], preserved);
+
+    let reopened = Workbook::open(&workbook.save().unwrap()).unwrap();
+    assert_eq!(
+        reopened
+            .model()
+            .sheet(SheetId(0))
+            .unwrap()
+            .auto_filter
+            .as_ref()
+            .unwrap()
+            .columns[1],
+        preserved
+    );
+}
+
+#[test]
+fn a_filter_column_cannot_hold_both_values_and_preserved_criteria() {
+    let mut model = WorkbookModel::default();
+    model.sheets.push(Sheet::new("Data"));
+    let mut workbook = Workbook::from_model(model).unwrap();
+
+    let error = workbook
+        .apply_ops(
+            vec![Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: Some(betteroffice_xlsx::AutoFilter {
+                    range: CellRange::parse_a1("A1:A3").unwrap(),
+                    columns: vec![betteroffice_xlsx::AutoFilterColumn {
+                        col: 0,
+                        values: Some(vec!["keep".to_owned()]),
+                        show_blanks: false,
+                        unsupported: Some(r#"<top10 val="3"/>"#.to_owned()),
+                    }],
+                }),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(error, Error::InvalidOperation(_)), "{error}");
+}
+
+/// A note beyond the populated cells has to sit inside the reported extent or
+/// the editor never lays out a rect for its indicator.
+#[test]
+fn a_comment_past_the_populated_cells_extends_the_reported_extent() {
+    let mut model = WorkbookModel::default();
+    let mut sheet = Sheet::new("Data");
+    sheet.set_cell(
+        cell("A1"),
+        Cell {
+            value: CellValue::Number { value: 1.0 },
+            ..Cell::default()
+        },
+    );
+    let geometry = GridGeometry::new(&sheet);
+    let without_comment = geometry.col_x(2);
+    sheet.set_comment(cell("H12"), Some(comment("Ada", "look here")));
+    model.sheets.push(sheet);
+
+    let workbook = Workbook::from_model(model).unwrap();
+    let info = workbook.sheet_info().unwrap();
+    assert!(
+        info.content_width > without_comment,
+        "the grid must reach past column H: {} vs {without_comment}",
+        info.content_width
+    );
+    assert!(info.content_height > geometry.row_y(12));
+}
+
+/// A workbook whose row 4 is hidden despite passing the `keep` filter, and
+/// whose rows 3 and 5 are hidden because they fail it.
+fn manually_hidden_row_fixture() -> Vec<u8> {
+    let mut model = WorkbookModel::default();
+    let mut sheet = Sheet::new("Data");
+    for (address, value) in [
+        ("A1", "Name"),
+        ("A2", "keep"),
+        ("A3", "drop"),
+        ("A4", "keep"),
+        ("A5", "drop"),
+    ] {
+        sheet.set_cell(
+            cell(address),
+            Cell {
+                value: CellValue::Text {
+                    value: value.to_owned(),
+                },
+                ..Cell::default()
+            },
+        );
+    }
+    sheet.auto_filter = Some(betteroffice_xlsx::AutoFilter {
+        range: CellRange::parse_a1("A1:A5").unwrap(),
+        columns: vec![betteroffice_xlsx::AutoFilterColumn {
+            col: 0,
+            values: Some(vec!["keep".to_owned()]),
+            show_blanks: false,
+            unsupported: None,
+        }],
+    });
+    sheet.hidden_rows = [2, 3, 4].into_iter().collect();
+    model.sheets.push(sheet);
+    ooxml_opc::rezip_parts(&xlsx_parse::serialize_workbook(&model).unwrap()).unwrap()
+}
+
+/// SpreadsheetML records only `hidden="1"`, so a load has to reconstruct why
+/// each row is hidden; from there the distinction is tracked exactly, and a
+/// manual hide that also fails the filter outlives the filter.
+#[test]
+fn manual_hides_are_seeded_at_load_and_outlive_the_filter() {
+    let mut workbook = Workbook::open(&manually_hidden_row_fixture()).unwrap();
+    let opened = workbook.model().sheet(SheetId(0)).unwrap();
+    assert_eq!(opened.hidden_rows, [2, 3, 4].into_iter().collect());
+    assert_eq!(
+        opened.manual_hidden_rows,
+        [3].into_iter().collect(),
+        "only the hidden row that passes the filter can have been hidden by hand"
+    );
+
+    let internal = workbook
+        .apply_ops(
+            vec![Op::SetHiddenRows {
+                sheet: SheetId(0),
+                hidden: vec![2, 3, 4],
+                manual: vec![3, 4],
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(internal, Error::InvalidOperation(_)),
+        "hidden-row provenance is not directly settable: {internal}"
+    );
+
+    let before_clear = workbook.model().clone();
+    workbook
+        .apply_ops(
+            vec![Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: None,
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    let cleared = workbook.model().sheet(SheetId(0)).unwrap();
+    assert_eq!(
+        cleared.hidden_rows,
+        [3].into_iter().collect(),
+        "the filter hides lift and the manual hide stays"
+    );
+
+    workbook.undo(CalculationOptions::default()).unwrap();
+    assert_eq!(workbook.model(), &before_clear);
+
+    let reopened = Workbook::open(&workbook.save().unwrap()).unwrap();
+    let survived = reopened.model().sheet(SheetId(0)).unwrap();
+    assert_eq!(survived.hidden_rows, [2, 3, 4].into_iter().collect());
+    assert_eq!(survived.manual_hidden_rows, [3].into_iter().collect());
+}
+
+/// The v8 collaborative schema carries manual-hide provenance, so a replica
+/// that never saw the file agrees about which hides outlive the filter.
+#[test]
+fn manual_hides_reach_collaborative_replicas() {
+    let original = manually_hidden_row_fixture();
+    let mut left = Workbook::open_collaborative(&original, 1401).unwrap();
+    let mut right = Workbook::open_collaborative(&original, 1402).unwrap();
+    assert_eq!(
+        right.model().sheets[0].manual_hidden_rows,
+        [3].into_iter().collect()
+    );
+
+    left.edit_cell(
+        SheetId(0),
+        cell("C1"),
+        "sync",
+        CalculationOptions::default(),
+    )
+    .unwrap();
+    let update = left
+        .encode_diff_v1(&right.encode_state_vector_v1())
+        .unwrap();
+    right
+        .apply_update_v1(&update, CalculationOptions::default())
+        .unwrap();
+    assert_eq!(
+        left.model().sheets[0].manual_hidden_rows,
+        right.model().sheets[0].manual_hidden_rows
+    );
+    assert_eq!(
+        right.model().sheets[0].manual_hidden_rows,
+        [3].into_iter().collect()
     );
 }
 
@@ -3790,4 +4159,290 @@ fn collaborative_sessions_refuse_every_op_that_rewrites_defined_names() {
         .apply_update_v1(&update, CalculationOptions::default())
         .unwrap();
     assert_eq!(left.model().defined_names, right.model().defined_names);
+}
+
+fn comment(author: &str, text: &str) -> betteroffice_xlsx::Comment {
+    betteroffice_xlsx::Comment {
+        author: author.to_owned(),
+        text: text.to_owned(),
+    }
+}
+
+#[test]
+fn comments_survive_save_and_reopen_via_the_json_op_path() {
+    let mut model = WorkbookModel::default();
+    let mut sheet = Sheet::new("Data");
+    sheet.set_cell(
+        cell("A1"),
+        Cell {
+            value: CellValue::Number { value: 1.0 },
+            ..Cell::default()
+        },
+    );
+    model.sheets.push(sheet);
+    let original =
+        ooxml_opc::rezip_parts(&xlsx_parse::serialize_workbook(&model).unwrap()).unwrap();
+
+    let mut workbook = Workbook::open(&original).unwrap();
+    let op: Op = serde_json::from_value(serde_json::json!({
+        "type": "setComment",
+        "sheet": 0,
+        "cell": {"row": 0, "col": 0},
+        "comment": {"author": "Ada", "text": "checked by hand"}
+    }))
+    .unwrap();
+    let result = workbook
+        .apply_ops(vec![op], CalculationOptions::default())
+        .unwrap();
+    assert!(result.applied);
+    assert_eq!(
+        workbook.model().sheets[0].comment_at(cell("A1")),
+        Some(&comment("Ada", "checked by hand"))
+    );
+
+    let reopened = Workbook::open(&workbook.save().unwrap()).unwrap();
+    assert_eq!(
+        reopened.model().sheets[0].comment_at(cell("A1")),
+        Some(&comment("Ada", "checked by hand"))
+    );
+    let parts = package_map(&workbook.save().unwrap());
+    assert!(parts.contains_key("xl/comments1.xml"));
+    assert!(parts.contains_key("xl/drawings/vmlDrawing1.vml"));
+    assert!(
+        String::from_utf8(parts["xl/worksheets/sheet1.xml"].clone())
+            .unwrap()
+            .contains("<legacyDrawing")
+    );
+}
+
+#[test]
+fn set_comment_is_one_undo_step_and_redo_replays_it() {
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    workbook
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(0),
+                cell: cell("A1"),
+                comment: Some(comment("Ada", "first")),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    workbook
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(0),
+                cell: cell("A1"),
+                comment: Some(comment("Grace", "second")),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+
+    workbook.undo(CalculationOptions::default()).unwrap();
+    assert_eq!(
+        workbook.model().sheets[0].comment_at(cell("A1")),
+        Some(&comment("Ada", "first"))
+    );
+    workbook.undo(CalculationOptions::default()).unwrap();
+    assert!(workbook.model().sheets[0].comments.is_empty());
+    workbook.redo(CalculationOptions::default()).unwrap();
+    workbook.redo(CalculationOptions::default()).unwrap();
+    assert_eq!(
+        workbook.model().sheets[0].comment_at(cell("A1")),
+        Some(&comment("Grace", "second"))
+    );
+}
+
+#[test]
+fn structural_edits_move_comments_and_undo_restores_them() {
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    workbook
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(0),
+                cell: cell("A2"),
+                comment: Some(comment("Ada", "movable")),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    let before = workbook.model().sheets[0].comments.clone();
+
+    workbook
+        .apply_ops(
+            vec![Op::InsertRows {
+                sheet: SheetId(0),
+                at: 0,
+                count: 3,
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        workbook.model().sheets[0].comment_at(cell("A5")),
+        Some(&comment("Ada", "movable"))
+    );
+    workbook.undo(CalculationOptions::default()).unwrap();
+    assert_eq!(workbook.model().sheets[0].comments, before);
+
+    workbook
+        .apply_ops(
+            vec![Op::DeleteRows {
+                sheet: SheetId(0),
+                at: 1,
+                count: 1,
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    assert!(workbook.model().sheets[0].comments.is_empty());
+    workbook.undo(CalculationOptions::default()).unwrap();
+    assert_eq!(workbook.model().sheets[0].comments, before);
+}
+
+#[test]
+fn untouched_comments_keep_source_parts_byte_identical_through_edits() {
+    let original = preservation_fixture();
+    let before = package_map(&original);
+    let mut workbook = Workbook::open(&original).unwrap();
+    assert_eq!(
+        workbook.model().sheets[0].comment_at(cell("B2")),
+        Some(&comment("BetterOffice", "keep me"))
+    );
+    workbook
+        .edit_cell(
+            SheetId(0),
+            cell("A1"),
+            "edited",
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    let after = package_map(&workbook.save().unwrap());
+    assert_eq!(after["xl/comments1.xml"], before["xl/comments1.xml"]);
+    assert_eq!(
+        after["xl/drawings/vmlDrawing1.vml"],
+        before["xl/drawings/vmlDrawing1.vml"]
+    );
+    assert_eq!(
+        after["xl/worksheets/_rels/sheet1.xml.rels"],
+        before["xl/worksheets/_rels/sheet1.xml.rels"]
+    );
+}
+
+#[test]
+fn editing_a_comment_regenerates_the_parts_and_survives_reopen() {
+    let mut workbook = Workbook::open(&preservation_fixture()).unwrap();
+    workbook
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(0),
+                cell: cell("B2"),
+                comment: Some(comment("BetterOffice", "rewritten note")),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    let saved = workbook.save().unwrap();
+    let parts = package_map(&saved);
+    let comments = String::from_utf8(parts["xl/comments1.xml"].clone()).unwrap();
+    assert!(comments.contains("rewritten note"), "{comments}");
+    assert!(!comments.contains("keep me"), "{comments}");
+    let rels = String::from_utf8(parts["xl/worksheets/_rels/sheet1.xml.rels"].clone()).unwrap();
+    assert!(rels.contains(r#"Id="rIdComments""#), "{rels}");
+    assert!(rels.contains(r#"Id="rIdVml""#), "{rels}");
+    let worksheet = String::from_utf8(parts["xl/worksheets/sheet1.xml"].clone()).unwrap();
+    assert!(worksheet.contains(r#"r:id="rIdVml""#), "{worksheet}");
+
+    let reopened = Workbook::open(&saved).unwrap();
+    assert_eq!(
+        reopened.model().sheets[0].comment_at(cell("B2")),
+        Some(&comment("BetterOffice", "rewritten note"))
+    );
+}
+
+#[test]
+fn comments_reach_collaborative_replicas_and_local_comment_ops_are_refused() {
+    let original = preservation_fixture();
+    let mut left = Workbook::open_collaborative(&original, 1301).unwrap();
+    let mut right = Workbook::open_collaborative(&original, 1302).unwrap();
+    assert_eq!(
+        left.model().sheets[0].comment_at(cell("B2")),
+        Some(&comment("BetterOffice", "keep me"))
+    );
+
+    let error = left
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(0),
+                cell: cell("B2"),
+                comment: None,
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(error, Error::CollaborativeStructureOperation));
+
+    left.edit_cell(
+        SheetId(0),
+        cell("A1"),
+        "sync",
+        CalculationOptions::default(),
+    )
+    .unwrap();
+    let update = left
+        .encode_diff_v1(&right.encode_state_vector_v1())
+        .unwrap();
+    right
+        .apply_update_v1(&update, CalculationOptions::default())
+        .unwrap();
+    assert_eq!(
+        right.model().sheets[0].comment_at(cell("B2")),
+        Some(&comment("BetterOffice", "keep me"))
+    );
+    assert_eq!(
+        left.model().sheets[0].comments,
+        right.model().sheets[0].comments
+    );
+}
+
+#[test]
+fn set_comment_validates_sheet_cell_and_field_lengths() {
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    let missing_sheet = workbook
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(9),
+                cell: cell("A1"),
+                comment: Some(comment("Ada", "nope")),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(missing_sheet, Error::SheetOutOfRange(_)));
+
+    let out_of_range = workbook
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(0),
+                cell: CellRef::new(2_000_000, 0),
+                comment: Some(comment("Ada", "nope")),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(out_of_range, Error::CellOutOfRange(_)));
+
+    let oversized = workbook
+        .apply_ops(
+            vec![Op::SetComment {
+                sheet: SheetId(0),
+                cell: cell("A1"),
+                comment: Some(comment("Ada", &"x".repeat(40_000))),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(oversized, Error::InvalidOperation(_)));
+    assert!(workbook.model().sheets[0].comments.is_empty());
 }

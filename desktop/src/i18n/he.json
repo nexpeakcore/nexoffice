@@ -1,0 +1,167 @@
+{
+  "menu": {
+    "app": {
+      "checkForUpdates": "בדוק עדכונים…",
+      "services": "שירותים",
+      "hide": "הסתר את NexOffice",
+      "hideOthers": "הסתר אחרים",
+      "unhide": "הצג הכול",
+      "quit": "צא מ-NexOffice"
+    },
+    "file": {
+      "label": "&קובץ",
+      "new": "חדש",
+      "open": "פתח…",
+      "openRecent": "פתח אחרונים",
+      "noRecentFiles": "אין קבצים אחרונים",
+      "clearRecent": "נקה רשימה",
+      "save": "שמור",
+      "saveAs": "שמור בשם…",
+      "exportPdf": "ייצא כ-PDF…",
+      "closeWindow": "סגור חלון",
+      "exit": "יציאה"
+    },
+    "edit": {
+      "label": "&עריכה",
+      "undo": "בטל",
+      "redo": "בצע שוב",
+      "cut": "גזור",
+      "copy": "העתק",
+      "paste": "הדבק",
+      "pasteAndMatchStyle": "הדבק והתאם סגנון",
+      "delete": "מחק",
+      "selectAll": "בחר הכול",
+      "find": "חפש…"
+    },
+    "view": {
+      "label": "&תצוגה",
+      "zoomIn": "התקרב",
+      "zoomOut": "התרחק",
+      "actualSize": "גודל אמיתי",
+      "wordCount": "ספירת מילים",
+      "spellCheck": "בדיקת איות",
+      "freezeTopRow": "הקפא שורה עליונה",
+      "freezeFirstColumn": "הקפא עמודה ראשונה",
+      "unfreeze": "בטל הקפאה",
+      "language": "שפה",
+      "fullScreen": "מסך מלא"
+    },
+    "window": {
+      "label": "&חלון",
+      "minimize": "מזער",
+      "zoom": "הגדל",
+      "front": "הבא הכול לחזית"
+    },
+    "help": {
+      "label": "עזרה",
+      "documentation": "תיעוד NexOffice",
+      "checkForUpdates": "בדוק עדכונים…",
+      "about": "אודות NexOffice"
+    }
+  },
+  "dialog": {
+    "filters": {
+      "officeDocuments": "מסמכי Office",
+      "wordDocument": "מסמך Word",
+      "excelWorkbook": "חוברת עבודה של Excel",
+      "powerpointPresentation": "מצגת PowerPoint",
+      "pdfDocument": "מסמך PDF",
+      "allFiles": "כל הקבצים"
+    },
+    "fileNotFound": {
+      "message": "הקובץ לא נמצא",
+      "detail": "{path}\n\nהקובץ אינו קיים עוד והוסר מרשימת הקבצים האחרונים."
+    },
+    "about": {
+      "title": "אודות NexOffice",
+      "version": "גרסה {version}"
+    },
+    "unsaved": {
+      "message": "האם לשמור את השינויים שביצעת ב-{name}?",
+      "detail": "השינויים יאבדו אם לא תשמור אותם.",
+      "save": "שמור",
+      "dontSave": "אל תשמור",
+      "cancel": "ביטול"
+    },
+    "pdfTruncated": {
+      "message": "ייצוא ה-PDF קוצץ",
+      "detail": "המסמך חורג ממגבלת הייצוא של {cap} עמודים; רק {pages} העמודים הראשונים יוצאו."
+    },
+    "pdfFailed": {
+      "title": "ייצוא ה-PDF נכשל"
+    },
+    "openFailed": {
+      "title": "לא ניתן לפתוח את הקובץ"
+    }
+  },
+  "app": {
+    "edited": " — נערך",
+    "kind": {
+      "docx": "מסמך",
+      "xlsx": "חוברת עבודה",
+      "pptx": "מצגת"
+    },
+    "meta": {
+      "type": "סוג",
+      "size": "גודל",
+      "path": "נתיב"
+    },
+    "presentationComingSoon": "עורך המצגות יגיע בקרוב.",
+    "empty": {
+      "subtitle": "פתח קובץ ‎.docx‏, ‎.xlsx או ‎.pptx כדי להתחיל.",
+      "openFile": "פתח קובץ"
+    }
+  },
+  "status": {
+    "ready": "מוכן",
+    "newDocument": "מסמך חדש",
+    "opened": "{name} נפתח",
+    "openFailed": "הפתיחה נכשלה: {message}",
+    "unsupported": "סוג קובץ לא נתמך: {name}",
+    "saved": "{path} נשמר",
+    "saveCanceled": "השמירה בוטלה",
+    "saveFailed": "השמירה נכשלה: {message}",
+    "openFirst": "פתח מסמך תחילה",
+    "openWordFirst": "פתח מסמך Word תחילה",
+    "exportingPdf": "מייצא PDF…",
+    "pdfCanceled": "ייצוא ה-PDF בוטל",
+    "pdfFailed": "ייצוא ה-PDF נכשל: {message}",
+    "exported": "{path} יוצא",
+    "exportedPagesOne": "{path} יוצא (עמוד אחד)",
+    "exportedPagesMany": "{path} יוצא ({pages} עמודים)",
+    "truncatedSuffix": " — קוצץ במגבלת העמודים",
+    "wordCount": "מילים: {words} · תווים: {characters} · עמוד {page}/{pages}",
+    "frozeTopRow": "השורה העליונה הוקפאה",
+    "frozeFirstColumn": "העמודה הראשונה הוקפאה",
+    "unfroze": "ההקפאה בוטלה"
+  },
+  "footer": {
+    "stats": "{words} מילים · {characters} תווים · עמוד {page}/{pages}",
+    "misspelledOne": "מילה אחת עם שגיאת כתיב",
+    "misspelledMany": "{count} מילים עם שגיאות כתיב",
+    "spellingOk": "האיות תקין",
+    "loadingDictionary": "טוען מילון…",
+    "dictError": "שגיאת מילון"
+  },
+  "spellPanel": {
+    "title": "בדיקת איות",
+    "close": "סגור",
+    "none": "לא נמצאו מילים עם שגיאות כתיב.",
+    "countOne": "מילה אחת עם שגיאת כתיב",
+    "countMany": "{count} מילים עם שגיאות כתיב"
+  },
+  "update": {
+    "ready": "עדכון {version} מוכן",
+    "restart": "הפעל מחדש כדי לעדכן",
+    "checking": "בודק עדכונים…",
+    "downloading": "מוריד עדכון {version}…",
+    "downloadingPercent": "מוריד עדכון… {percent}%",
+    "upToDate": "NexOffice מעודכן",
+    "devDisabled": "עדכונים מושבתים בגרסאות פיתוח",
+    "failed": "בדיקת העדכונים נכשלה: {message}"
+  },
+  "editor": {
+    "loading": "טוען את {name}…",
+    "couldNotOpen": "לא ניתן לפתוח את {name}"
+  }
+}

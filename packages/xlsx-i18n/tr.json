@@ -10,13 +10,42 @@
     "save": null,
     "exportPng": null,
     "undo": null,
-    "redo": null
+    "redo": null,
+    "sortLabel": "Sırala",
+    "sortAsc": "A'dan Z'ye Sırala",
+    "sortDesc": "Z'den A'ya Sırala",
+    "freezeLabel": "Bölmeleri dondur",
+    "freezeUpToRow": "{row}. satıra kadar dondur",
+    "freezeUpToColumn": "{column} sütununa kadar dondur",
+    "freezeFirstRow": "İlk satırı dondur",
+    "freezeFirstColumn": "İlk sütunu dondur",
+    "unfreeze": "Dondurmayı kaldır",
+    "filterLabel": "Filtre",
+    "filterToggle": "Filtre",
+    "commentLabel": "Yorumlar",
+    "commentToggle": "Yorum"
   },
   "editor": {
     "appLabel": null,
     "demoCellText": null,
     "openError": null,
     "sheetTabsLabel": null
+  },
+  "filter": {
+    "columnButton": "{column} sütununu filtrele",
+    "selectAll": "Tümünü seç",
+    "blanks": "(Boşlar)",
+    "apply": "Uygula",
+    "clear": "Temizle",
+    "truncated": "İlk {count} değer gösteriliyor",
+    "regionTooLarge": "Veri bölgesi bir filtrenin kapsayabileceğinden büyük — filtrelenecek aralığı seçin."
+  },
+  "comment": {
+    "viewLabel": "{cell} hücresindeki yorum",
+    "editLabel": "{cell} hücresindeki yorumu düzenle",
+    "textPlaceholder": "Yorum girin",
+    "save": "Kaydet",
+    "delete": "Sil"
   },
   "proposals": {
     "panelLabel": null,

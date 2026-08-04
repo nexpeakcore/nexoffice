@@ -32,6 +32,7 @@ import {
 } from '@betteroffice/xlsx';
 import type {
   CellAddr,
+  CellComment,
   CellEdit,
   CellInputEdit,
   CapturedFormat,
@@ -43,6 +44,7 @@ import type {
   Proposal,
   Selection,
   SelectionLimits,
+  SheetComment,
   SheetInfo,
   WorkbookHandle,
 } from '@betteroffice/xlsx';
@@ -59,8 +61,32 @@ import type {
   MergeAction,
   SelectionFormatting,
 } from './components/Toolbar';
-import { ToolbarButton, ToolbarGroup } from './components/ui/ToolbarPrimitives';
+import {
+  ToolbarButton,
+  ToolbarDropdown,
+  ToolbarGroup,
+  ToolbarMenuItem,
+  ToolbarMenuSeparator,
+} from './components/ui/ToolbarPrimitives';
 import { ToolbarIcon } from './components/ui/ToolbarIcon';
+import { FilterPopover } from './components/filters/FilterPopover';
+import {
+  collectFilterValues,
+  columnCriteria,
+  columnLabel,
+  emptyFilterSpec,
+  expandDataRegion,
+  filterColumnIndices,
+  hasCriteria,
+  MAX_FILTER_VALUES,
+  withColumnCriteria,
+} from './components/filters/filterSpec';
+import type { ExpandedRegion, FilterSpec } from './components/filters/filterSpec';
+import {
+  CommentEditorPopover,
+  CommentViewPopover,
+} from './components/comments/CommentPopover';
+import { commentAt, resolveCommentAuthor } from './components/comments/commentState';
 import {
   expandRangeToMergedCells,
   PresenceStrip,
@@ -71,11 +97,31 @@ import { ProposalsPanel } from './proposals/ProposalsPanel';
 /**
  * The imperative surface handed to {@link XlsxEditorProps.onReady}: the open
  * workbook handle plus a `refreshProposals` to re-read the pending list after an
- * external caller (e.g. a demo agent) stages proposals on the same handle.
+ * external caller (e.g. a demo agent) stages proposals on the same handle, and
+ * the editor's own history, clipboard, selection, and zoom actions so a host
+ * shell (menus, command palettes) can drive them against the live selection.
  */
 export interface XlsxEditorApi {
   handle: WorkbookHandle;
   refreshProposals: () => void;
+  /** Undo the last edit through the editor's history pipeline. */
+  undo: () => void;
+  /** Redo the last undone edit through the editor's history pipeline. */
+  redo: () => void;
+  /** Copy the current selection to the system clipboard as TSV. */
+  copySelection: () => Promise<void>;
+  /** Copy the current selection to the clipboard, then clear it. */
+  cutSelection: () => Promise<void>;
+  /** Paste clipboard TSV into the grid at the current selection. */
+  pasteSelection: () => Promise<void>;
+  /** Clear the contents of the current selection (Delete key equivalent). */
+  clearSelection: () => void;
+  /** Select the sheet's whole used range (Cmd/Ctrl+A equivalent). */
+  selectAll: () => void;
+  /** The current zoom factor (1 = 100%). */
+  getZoom: () => number;
+  /** Set the zoom factor, clamped to the toolbar's 25%–400% range. */
+  setZoom: (zoom: number) => void;
 }
 
 export interface XlsxEditorCollaborationOptions {
@@ -99,6 +145,10 @@ export interface XlsxEditorProps {
   fileName?: string;
   /** Receive saved bytes instead of triggering a browser download. */
   onSave?: (bytes: Uint8Array) => void;
+  /** Called after every applied local edit — dirty tracking without polling. */
+  onEdit?: () => void;
+  /** Author name stamped on new cell comments; falls back to `User`. */
+  userName?: string;
   /** Open a network-ready Yrs replica and repaint when peer updates arrive. */
   collaboration?: XlsxEditorCollaborationOptions;
   i18n?: Translations;
@@ -119,8 +169,34 @@ interface EditState {
   value: string;
 }
 
+/** the open filter popover: its column and the distinct values read for it. */
+interface OpenFilterState {
+  col: number;
+  values: string[];
+  hasBlanks: boolean;
+  truncated: boolean;
+}
+
+/** the open comment popover: its cell and whether it views or edits. */
+interface OpenCommentState {
+  row: number;
+  col: number;
+  mode: 'view' | 'edit';
+}
+
+function cellA1(row: number, col: number): string {
+  return `${columnLabel(col)}${row + 1}`;
+}
+
+const XLSX_MAX_ROW = 1_048_575;
+const XLSX_MAX_COL = 16_383;
+const MAX_FILTER_REGION_ROWS = 10_000;
+const MAX_FILTER_REGION_COLS = 256;
+
 const COL_W = 96;
 const ROW_H = 24;
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 4;
 const BRAND = '#217346';
 const DEFAULT_XLSX_TOOLBAR_HEIGHT = 87;
 const MAX_OVERLAY_MERGED_RANGES = 1024;
@@ -355,6 +431,8 @@ function XlsxEditorContent({
   file,
   fileName,
   onSave,
+  onEdit,
+  userName,
   collaboration,
   onReady,
   className,
@@ -380,6 +458,23 @@ function XlsxEditorContent({
   // callback identity never reopens the workbook.
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
+  // latest onEdit, read by applyResult so a changing callback identity never
+  // invalidates every mutation callback.
+  const onEditRef = useRef(onEdit);
+  onEditRef.current = onEdit;
+  // latest history/clipboard callbacks, read by the api handed to onReady so
+  // its stable methods always act on the current selection.
+  const editorActionsRef = useRef<{
+    undo: () => void;
+    redo: () => void;
+    copySelection: () => Promise<void>;
+    cutSelection: () => Promise<void>;
+    pasteSelection: () => Promise<void>;
+    clearSelection: () => void;
+    selectAll: () => void;
+    getZoom: () => number;
+    setZoom: (zoom: number) => void;
+  } | null>(null);
 
   const [sheetInfo, setSheetInfo] = useState<SheetInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -401,6 +496,13 @@ function XlsxEditorContent({
   const [borderStyleChoice, setBorderStyleChoice] = useState<SelectionFormatting['borderStyle']>();
   const [borderColorChoice, setBorderColorChoice] = useState<string>();
   const [capturedFormat, setCapturedFormat] = useState<CapturedFormat | null>(null);
+  // auto filters keyed by sheet index, seeded from the engine on open and
+  // re-read after every mutation, so persisted filters keep their chrome.
+  const [filterSpecs, setFilterSpecs] = useState<Record<number, FilterSpec>>({});
+  const [openFilter, setOpenFilter] = useState<OpenFilterState | null>(null);
+  // the active sheet's comments, re-read from the engine after every mutation.
+  const [sheetComments, setSheetComments] = useState<readonly SheetComment[]>([]);
+  const [openComment, setOpenComment] = useState<OpenCommentState | null>(null);
   const paintSourceRef = useRef<string | null>(null);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [proposalsPanelOpen, setProposalsPanelOpen] = useState(false);
@@ -449,6 +551,24 @@ function XlsxEditorContent({
     setRevision((r) => r + 1);
   }, []);
 
+  // re-read a sheet's persisted auto filter and comments from the engine so
+  // header dropdowns and comment indicators track undo/redo, structural ops,
+  // and remote updates instead of drifting on in-session state.
+  const refreshSheetState = useCallback((sheet: number) => {
+    const handle = handleRef.current;
+    if (!handle) return;
+    try {
+      const spec = handle.sheetAutoFilter(sheet);
+      setFilterSpecs((specs) => {
+        if (spec) return { ...specs, [sheet]: spec };
+        if (!(sheet in specs)) return specs;
+        const { [sheet]: _removed, ...rest } = specs;
+        return rest;
+      });
+      setSheetComments(handle.sheetComments(sheet));
+    } catch {}
+  }, []);
+
   // open the workbook when the file changes; dispose it on change/unmount and
   // reset all editing state so a dropped file starts clean.
   useEffect(() => {
@@ -465,6 +585,10 @@ function XlsxEditorContent({
     setBorderStyleChoice(undefined);
     setBorderColorChoice(undefined);
     setCapturedFormat(null);
+    setFilterSpecs({});
+    setOpenFilter(null);
+    setSheetComments([]);
+    setOpenComment(null);
     paintSourceRef.current = null;
     pendingSheetViewRef.current = false;
     if (!file) {
@@ -503,7 +627,9 @@ function XlsxEditorContent({
           unsubscribeUpdates = handle.onUpdate(() => {
             if (disposed || !handle) return;
             try {
-              setSheetInfo(handle.sheetInfo());
+              const info = handle.sheetInfo();
+              setSheetInfo(info);
+              refreshSheetState(info.activeSheet);
               setRevision((current) => current + 1);
               setStaleFor({});
               refreshProposals();
@@ -513,12 +639,35 @@ function XlsxEditorContent({
             }
           });
           pendingSheetViewRef.current = true;
-          setSheetInfo(handle.sheetInfo());
+          const info = handle.sheetInfo();
+          setSheetInfo(info);
+          const seededSpecs: Record<number, FilterSpec> = {};
+          info.sheetIds.forEach((_, sheet) => {
+            const spec = handle?.sheetAutoFilter(sheet);
+            if (spec) seededSpecs[sheet] = spec;
+          });
+          setFilterSpecs(seededSpecs);
+          setSheetComments(handle.sheetComments(info.activeSheet));
           setSelection(selectionAt({ row: 0, col: 0 }));
           setCollaborationReplica(handle);
           setError(null);
           refreshProposals();
-          const cleanup = onReadyRef.current?.({ handle, refreshProposals });
+          const cleanup = onReadyRef.current?.({
+            handle,
+            refreshProposals,
+            undo: () => editorActionsRef.current?.undo(),
+            redo: () => editorActionsRef.current?.redo(),
+            copySelection: () =>
+              editorActionsRef.current?.copySelection() ?? Promise.resolve(),
+            cutSelection: () =>
+              editorActionsRef.current?.cutSelection() ?? Promise.resolve(),
+            pasteSelection: () =>
+              editorActionsRef.current?.pasteSelection() ?? Promise.resolve(),
+            clearSelection: () => editorActionsRef.current?.clearSelection(),
+            selectAll: () => editorActionsRef.current?.selectAll(),
+            getZoom: () => editorActionsRef.current?.getZoom() ?? 1,
+            setZoom: (zoom: number) => editorActionsRef.current?.setZoom(zoom),
+          });
           if (typeof cleanup === 'function') cleanupReady = cleanup;
         } catch (e) {
           runReadyCleanup();
@@ -553,6 +702,7 @@ function XlsxEditorContent({
     collaborationClientId,
     collaborationInitialUpdate,
     refreshProposals,
+    refreshSheetState,
   ]);
 
   useEffect(() => {
@@ -752,14 +902,17 @@ function XlsxEditorContent({
   }, [editing]);
 
   // fold a mutation result back into state and queue a repaint. re-reads the
-  // pending proposals because structural ops and undo/redo can drop them.
+  // pending proposals because structural ops and undo/redo can drop them, and
+  // the active sheet's filter + comments because any mutation can move them.
   const applyResult = useCallback(
     (result: EditResult) => {
       setSheetInfo(result.sheetInfo);
+      refreshSheetState(result.sheetInfo.activeSheet);
       setRevision((r) => r + 1);
       refreshProposals();
+      if (result.applied) onEditRef.current?.();
     },
-    [refreshProposals]
+    [refreshProposals, refreshSheetState]
   );
 
   const selectedRangeA1 = useCallback(
@@ -852,6 +1005,15 @@ function XlsxEditorContent({
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [selection, activeSheet, applyResult]);
+
+  const selectAllCells = useCallback(() => {
+    if (!sheetInfo) return;
+    const bounds = limits();
+    setSelection({
+      anchor: { row: 0, col: 0 },
+      focus: { row: bounds.rows - 1, col: bounds.cols - 1 },
+    });
+  }, [sheetInfo, limits]);
 
   const copySelection = useCallback(async () => {
     const handle = handleRef.current;
@@ -1060,9 +1222,193 @@ function XlsxEditorContent({
     }
   }, [applyResult]);
 
+  editorActionsRef.current = {
+    undo,
+    redo,
+    copySelection,
+    cutSelection,
+    pasteSelection,
+    clearSelection: clearCells,
+    selectAll: selectAllCells,
+    getZoom: () => zoom,
+    setZoom: (next: number) => setZoom(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next))),
+  };
+
   const print = useCallback(() => window.print(), []);
 
+  const sortSelection = useCallback(
+    (ascending: boolean) => {
+      const handle = handleRef.current;
+      if (!handle || !selection) return;
+      const minRow = Math.min(selection.anchor.row, selection.focus.row);
+      const maxRow = Math.max(selection.anchor.row, selection.focus.row);
+      const keyCol = selection.anchor.col;
+      try {
+        applyResult(handle.sortRange(activeSheet, minRow, maxRow, keyCol, ascending));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [applyResult, selection, activeSheet]
+  );
+
   const searchMenus = useCallback(() => undefined, []);
+
+  const freezePanes = useCallback(
+    (rows: number | null, cols: number | null) => {
+      const handle = handleRef.current;
+      if (!handle) return;
+      try {
+        applyResult(handle.setFreezePane(activeSheet, rows, cols));
+        focusContainer();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [activeSheet, applyResult, focusContainer]
+  );
+
+  // the contiguous non-empty block around the selection (with its header row),
+  // probed one boundary row/column per step through the wasm cell reader.
+  const dataRegionForSelection = useCallback((): ExpandedRegion | null => {
+    const handle = handleRef.current;
+    if (!handle || !selection) return null;
+    const normalized = normalizeRange(selection);
+    const anyContent = (fromRow: number, fromCol: number, toRow: number, toCol: number) =>
+      handle
+        .rangeCells(activeSheet, `${cellA1(fromRow, fromCol)}:${cellA1(toRow, toCol)}`)
+        .some((row) => row.some((cell) => cell.input !== ''));
+    return expandDataRegion(
+      normalized,
+      {
+        rowHasContent: (row, left, right) => anyContent(row, left, row, right),
+        colHasContent: (col, top, bottom) => anyContent(top, col, bottom, col),
+      },
+      {
+        maxRow: Math.min(XLSX_MAX_ROW, normalized.top + MAX_FILTER_REGION_ROWS - 1),
+        maxCol: Math.min(XLSX_MAX_COL, normalized.left + MAX_FILTER_REGION_COLS - 1),
+      }
+    );
+  }, [selection, activeSheet]);
+
+  const toggleFilter = useCallback(() => {
+    const handle = handleRef.current;
+    if (!handle || !selection) return;
+    try {
+      if (filterSpecs[activeSheet]) {
+        applyResult(handle.setAutoFilter(activeSheet, null));
+      } else {
+        const region = dataRegionForSelection();
+        if (!region) return;
+        const normalized = normalizeRange(selection);
+        const explicit = normalized.top !== normalized.bottom || normalized.left !== normalized.right;
+        // A partial region would leave the rows past its edge visible whatever
+        // the criteria say, so fall back to what the user picked, or ask.
+        if (region.truncated && !explicit) {
+          setError(t('filter.regionTooLarge'));
+          return;
+        }
+        const range = region.truncated ? normalized : region.range;
+        const spec = emptyFilterSpec({
+          startRow: range.top,
+          startCol: range.left,
+          endRow: range.bottom,
+          endCol: range.right,
+        });
+        applyResult(handle.setAutoFilter(activeSheet, spec));
+      }
+      setOpenFilter(null);
+      focusContainer();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [
+    selection,
+    activeSheet,
+    filterSpecs,
+    dataRegionForSelection,
+    applyResult,
+    focusContainer,
+    t,
+  ]);
+
+  // open (or toggle closed) a column's popover, reading the distinct raw cell
+  // texts of its body rows — the same texts the engine matches criteria against.
+  const openFilterFor = useCallback(
+    (col: number) => {
+      const handle = handleRef.current;
+      const spec = filterSpecs[activeSheet];
+      if (!handle || !spec) return;
+      if (openFilter?.col === col) {
+        setOpenFilter(null);
+        return;
+      }
+      // the applied criteria values are unioned into the list so a selection
+      // beyond the collection cap stays visible and survives the next Apply.
+      const selected = columnCriteria(spec, col).values;
+      const bodyStart = spec.range.startRow + 1;
+      if (bodyStart > spec.range.endRow) {
+        setOpenFilter({ col, ...collectFilterValues([], MAX_FILTER_VALUES, selected) });
+        return;
+      }
+      try {
+        const cells = handle
+          .rangeCells(
+            activeSheet,
+            `${cellA1(bodyStart, col)}:${cellA1(spec.range.endRow, col)}`
+          )
+          .map((row) => row[0]);
+        setOpenFilter({ col, ...collectFilterValues(cells, MAX_FILTER_VALUES, selected) });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [filterSpecs, activeSheet, openFilter]
+  );
+
+  const applyColumnFilter = useCallback(
+    (col: number, values: string[] | null, showBlanks: boolean, clearPreserved = false) => {
+      const handle = handleRef.current;
+      const spec = filterSpecs[activeSheet];
+      if (!handle || !spec) return;
+      const next = withColumnCriteria(spec, col, values, showBlanks, clearPreserved);
+      try {
+        applyResult(handle.setAutoFilter(activeSheet, next));
+        setOpenFilter(null);
+        focusContainer();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [filterSpecs, activeSheet, applyResult, focusContainer]
+  );
+
+  // toggle the comment editor popover for the anchored cell.
+  const toggleCommentEditor = useCallback(() => {
+    if (!selection) return;
+    const { row, col } = selection.focus;
+    setOpenComment((open) =>
+      open?.mode === 'edit' && open.row === row && open.col === col
+        ? null
+        : { row, col, mode: 'edit' }
+    );
+  }, [selection]);
+
+  // set, replace, or (null) delete a cell's comment as one undo step.
+  const setCellComment = useCallback(
+    (row: number, col: number, comment: CellComment | null) => {
+      const handle = handleRef.current;
+      if (!handle) return;
+      try {
+        applyResult(handle.setComment(activeSheet, row, col, comment));
+        setOpenComment(null);
+        focusContainer();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [activeSheet, applyResult, focusContainer]
+  );
 
   const mergeSelection = useCallback(
     (action: MergeAction) => {
@@ -1320,13 +1666,15 @@ function XlsxEditorContent({
         const hyperlink = frameRef.current
           ? hyperlinkAtCell(frameRef.current, addr.row, addr.col)
           : null;
+        const comment = commentAt(sheetComments, addr.row, addr.col);
         e.currentTarget.style.cursor = hyperlink ? 'pointer' : 'default';
-        e.currentTarget.title = hyperlink?.tooltip ?? '';
+        e.currentTarget.title =
+          hyperlink?.tooltip ?? (comment ? `${comment.author}: ${comment.text}` : '');
         return;
       }
       setSelection((prev) => (prev ? extendTo(prev, addr, limits()) : prev));
     },
-    [pointToCell, limits]
+    [pointToCell, limits, sheetComments]
   );
 
   const activateHyperlink = useCallback(
@@ -1383,9 +1731,11 @@ function XlsxEditorContent({
       const start = clickStartRef.current;
       clickStartRef.current = null;
       if (!addr || !start || addr.row !== start.row || addr.col !== start.col) return;
-      activateHyperlink(addr);
+      if (activateHyperlink(addr)) return;
+      const comment = commentAt(sheetComments, addr.row, addr.col);
+      setOpenComment(comment ? { row: addr.row, col: addr.col, mode: 'view' } : null);
     },
-    [activateHyperlink, editing, pointToCell]
+    [activateHyperlink, editing, pointToCell, sheetComments]
   );
 
   const onDoubleClick = useCallback(
@@ -1431,6 +1781,43 @@ function XlsxEditorContent({
   const scaledFocusRect = focusRect ? scaledRect(focusRect, zoom) : null;
   const scaledEditRect = editRect ? scaledRect(editRect, zoom) : null;
 
+  const anchorRow = selection?.anchor.row ?? 0;
+  const anchorCol = selection?.anchor.col ?? 0;
+  const frozenRows = sheetInfo?.frozenRows ?? 0;
+  const frozenCols = sheetInfo?.frozenCols ?? 0;
+
+  const activeFilterSpec = sheetInfo ? filterSpecs[activeSheet] ?? null : null;
+  const filterButtonRects =
+    activeFilterSpec && grid
+      ? filterColumnIndices(activeFilterSpec.range).flatMap((col) => {
+          const rect = cellRect(grid, activeFilterSpec.range.startRow, col);
+          return rect ? [{ col, rect: scaledRect(rect, zoom) }] : [];
+        })
+      : [];
+  const openFilterHeaderRect =
+    activeFilterSpec && grid && openFilter
+      ? cellRect(grid, activeFilterSpec.range.startRow, openFilter.col)
+      : null;
+  const scaledOpenFilterRect = openFilterHeaderRect
+    ? scaledRect(openFilterHeaderRect, zoom)
+    : null;
+  const openFilterCriteria =
+    activeFilterSpec && openFilter ? columnCriteria(activeFilterSpec, openFilter.col) : null;
+
+  const commentIndicators = grid
+    ? sheetComments.flatMap((comment) => {
+        const rect = cellRect(grid, comment.row, comment.col);
+        return rect ? [{ comment, rect: scaledRect(rect, zoom) }] : [];
+      })
+    : [];
+  const openCommentRect =
+    grid && openComment ? cellRect(grid, openComment.row, openComment.col) : null;
+  const scaledOpenCommentRect = openCommentRect ? scaledRect(openCommentRect, zoom) : null;
+  const openCommentExisting = openComment
+    ? commentAt(sheetComments, openComment.row, openComment.col)
+    : null;
+  const openCommentAuthor = resolveCommentAuthor(openCommentExisting, userName);
+
   const spacerWidth = sheetInfo ? sheetInfo.contentWidth * zoom : undefined;
   const spacerHeight = sheetInfo ? sheetInfo.contentHeight * zoom : undefined;
   const formulaValue = formulaDraft ?? focusedCell?.input ?? '';
@@ -1453,8 +1840,11 @@ function XlsxEditorContent({
       setEditing(null);
       setFormulaDraft(null);
       setCapturedFormat(null);
+      setOpenFilter(null);
+      setOpenComment(null);
       paintSourceRef.current = null;
       setSheetInfo(handle.sheetInfo());
+      refreshSheetState(index);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -1527,6 +1917,117 @@ function XlsxEditorContent({
               >
                 <ToolbarIcon name="image" size={18} />
               </ToolbarButton>
+            </ToolbarGroup>
+            <ToolbarGroup
+              style={{ ...xlsxToolbarStyles.group }}
+              label={t('toolbar.sortLabel')}
+            >
+              <ToolbarButton
+                testId="xlsx-sort-asc"
+                onClick={() => sortSelection(true)}
+                disabled={!sheetInfo || !selection}
+                title={t('toolbar.sortAsc')}
+              >
+                <ToolbarIcon name="sortAsc" size={18} />
+              </ToolbarButton>
+              <ToolbarButton
+                testId="xlsx-sort-desc"
+                onClick={() => sortSelection(false)}
+                disabled={!sheetInfo || !selection}
+                title={t('toolbar.sortDesc')}
+              >
+                <ToolbarIcon name="sortDesc" size={18} />
+              </ToolbarButton>
+            </ToolbarGroup>
+            <ToolbarGroup
+              style={{ ...xlsxToolbarStyles.group }}
+              label={t('toolbar.freezeLabel')}
+            >
+              <ToolbarDropdown
+                testId="xlsx-freeze"
+                title={t('toolbar.freezeLabel')}
+                disabled={!sheetInfo}
+                menuWidth={240}
+                trigger={
+                  <>
+                    <ToolbarIcon name="freeze" size={18} />
+                    <ToolbarIcon name="chevronDown" size={13} />
+                  </>
+                }
+              >
+                {(close) => (
+                  <>
+                    <ToolbarMenuItem
+                      label={t('toolbar.freezeUpToRow', { row: Math.max(1, anchorRow) })}
+                      disabled={anchorRow < 1}
+                      onClick={() =>
+                        freezePanes(anchorRow, frozenCols > 0 ? frozenCols : null)
+                      }
+                      close={close}
+                    />
+                    <ToolbarMenuItem
+                      label={t('toolbar.freezeUpToColumn', {
+                        column: columnLabel(Math.max(0, anchorCol - 1)),
+                      })}
+                      disabled={anchorCol < 1}
+                      onClick={() =>
+                        freezePanes(frozenRows > 0 ? frozenRows : null, anchorCol)
+                      }
+                      close={close}
+                    />
+                    <ToolbarMenuSeparator />
+                    <ToolbarMenuItem
+                      label={t('toolbar.freezeFirstRow')}
+                      onClick={() => freezePanes(1, null)}
+                      close={close}
+                    />
+                    <ToolbarMenuItem
+                      label={t('toolbar.freezeFirstColumn')}
+                      onClick={() => freezePanes(null, 1)}
+                      close={close}
+                    />
+                    <ToolbarMenuSeparator />
+                    <ToolbarMenuItem
+                      label={t('toolbar.unfreeze')}
+                      disabled={frozenRows === 0 && frozenCols === 0}
+                      onClick={() => freezePanes(null, null)}
+                      close={close}
+                    />
+                  </>
+                )}
+              </ToolbarDropdown>
+            </ToolbarGroup>
+            <ToolbarGroup
+              style={{ ...xlsxToolbarStyles.group }}
+              label={t('toolbar.filterLabel')}
+            >
+              <ToolbarButton
+                testId="xlsx-filter-toggle"
+                onClick={toggleFilter}
+                disabled={!sheetInfo || !selection}
+                active={activeFilterSpec !== null}
+                title={t('toolbar.filterToggle')}
+              >
+                <ToolbarIcon name="filter" size={18} />
+              </ToolbarButton>
+            </ToolbarGroup>
+            <ToolbarGroup
+              style={{ ...xlsxToolbarStyles.group }}
+              label={t('toolbar.commentLabel')}
+            >
+              <span data-xlsx-comment-trigger style={{ display: 'inline-flex' }}>
+                <ToolbarButton
+                  testId="xlsx-comment-toggle"
+                  onClick={toggleCommentEditor}
+                  disabled={
+                    !sheetInfo || !selection || selectionRows > 1 || selectionColumns > 1
+                  }
+                  active={openComment?.mode === 'edit'}
+                  title={t('toolbar.commentToggle')}
+                >
+                  <ToolbarIcon name="comment" size={18} />
+                </ToolbarButton>
+              </span>
             </ToolbarGroup>
             <div
               style={xlsxToolbarStyles.formulaGroup}
@@ -1688,6 +2189,124 @@ function XlsxEditorContent({
               zoom={zoom}
               mergedRanges={visibleMergedRanges}
             />
+            {filterButtonRects.map(({ col, rect }) => {
+              const size = Math.min(16, Math.max(10, rect.h - 6));
+              const constrained = activeFilterSpec
+                ? hasCriteria(columnCriteria(activeFilterSpec, col))
+                : false;
+              return (
+                <button
+                  key={col}
+                  type="button"
+                  data-xlsx-filter-trigger
+                  data-testid={`xlsx-filter-button-${col}`}
+                  aria-label={t('filter.columnButton', { column: columnLabel(col) })}
+                  aria-expanded={openFilter?.col === col}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onDoubleClick={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openFilterFor(col);
+                  }}
+                  style={{
+                    position: 'absolute',
+                    left: rect.x + rect.w - size - 2,
+                    top: rect.y + (rect.h - size) / 2,
+                    width: size,
+                    height: size,
+                    display: 'grid',
+                    placeItems: 'center',
+                    padding: 0,
+                    border: `1px solid ${constrained ? BRAND : '#c7cacf'}`,
+                    borderRadius: 3,
+                    background: constrained ? BRAND : '#ffffff',
+                    color: constrained ? '#ffffff' : '#3c4043',
+                    cursor: 'pointer',
+                    pointerEvents: 'auto',
+                    boxSizing: 'border-box',
+                  }}
+                >
+                  <ToolbarIcon name="chevronDown" size={size - 4} />
+                </button>
+              );
+            })}
+            {openFilter && scaledOpenFilterRect && openFilterCriteria && (
+              <FilterPopover
+                key={`${activeSheet}:${openFilter.col}`}
+                columnName={columnLabel(openFilter.col)}
+                values={openFilter.values}
+                hasBlanks={openFilter.hasBlanks}
+                truncated={openFilter.truncated}
+                initialValues={openFilterCriteria.values}
+                initialShowBlanks={openFilterCriteria.showBlanks}
+                style={{
+                  position: 'absolute',
+                  left: Math.max(0, scaledOpenFilterRect.x),
+                  top: scaledOpenFilterRect.y + scaledOpenFilterRect.h + 2,
+                  pointerEvents: 'auto',
+                }}
+                onApply={(values, showBlanks) =>
+                  applyColumnFilter(openFilter.col, values, showBlanks)
+                }
+                onClear={() => applyColumnFilter(openFilter.col, null, true, true)}
+                onClose={() => setOpenFilter(null)}
+              />
+            )}
+            {commentIndicators.map(({ comment, rect }) => (
+              <div
+                key={`${comment.row}:${comment.col}`}
+                data-testid={`xlsx-comment-indicator-${comment.row}-${comment.col}`}
+                style={{
+                  position: 'absolute',
+                  left: rect.x + rect.w - 7,
+                  top: rect.y + 1,
+                  width: 0,
+                  height: 0,
+                  borderTop: '6px solid #d93025',
+                  borderLeft: '6px solid transparent',
+                }}
+              />
+            ))}
+            {openComment?.mode === 'view' && openCommentExisting && scaledOpenCommentRect && (
+              <CommentViewPopover
+                cellName={cellA1(openComment.row, openComment.col)}
+                author={openCommentExisting.author}
+                text={openCommentExisting.text}
+                style={{
+                  position: 'absolute',
+                  left: Math.max(0, scaledOpenCommentRect.x + scaledOpenCommentRect.w + 2),
+                  top: Math.max(0, scaledOpenCommentRect.y),
+                  pointerEvents: 'auto',
+                }}
+                onClose={() => setOpenComment(null)}
+              />
+            )}
+            {openComment?.mode === 'edit' && scaledOpenCommentRect && (
+              <CommentEditorPopover
+                key={`${activeSheet}:${openComment.row}:${openComment.col}`}
+                cellName={cellA1(openComment.row, openComment.col)}
+                author={openCommentAuthor}
+                initialText={openCommentExisting?.text ?? ''}
+                canDelete={openCommentExisting !== null}
+                style={{
+                  position: 'absolute',
+                  left: Math.max(0, scaledOpenCommentRect.x + scaledOpenCommentRect.w + 2),
+                  top: Math.max(0, scaledOpenCommentRect.y),
+                  pointerEvents: 'auto',
+                }}
+                onSave={(text) =>
+                  setCellComment(openComment.row, openComment.col, {
+                    author: openCommentAuthor,
+                    text,
+                  })
+                }
+                onDelete={() => setCellComment(openComment.row, openComment.col, null)}
+                onClose={() => setOpenComment(null)}
+              />
+            )}
             {editing && scaledEditRect && (
               <input
                 ref={editorInputRef}

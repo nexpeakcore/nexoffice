@@ -569,53 +569,62 @@ describe('CollaborationProvider awareness', () => {
   });
 
   it('coalesces cursor movement and keeps typing updates local', async () => {
-    const replica = new FakeReplica();
-    const transport = new FakeTransport();
-    const provider = new CollaborationProvider(replica, transport, {
-      user: { name: 'Calm Otter' },
-    });
-    provider.connect();
-    transport.emit({ type: 'open' });
-    const initialFrames = transport.sent.length;
+    // the provider reads performance.now() to decide whether a cursor can go
+    // out immediately or must wait out the coalescing interval; freezing it
+    // keeps the branch deterministic when a loaded runner stalls this test.
+    const realNow = globalThis.performance.now.bind(globalThis.performance);
+    globalThis.performance.now = () => 0;
+    try {
+      const replica = new FakeReplica();
+      const transport = new FakeTransport();
+      const provider = new CollaborationProvider(replica, transport, {
+        user: { name: 'Calm Otter' },
+      });
+      provider.connect();
+      transport.emit({ type: 'open' });
+      const initialFrames = transport.sent.length;
 
-    provider.setCursor({
-      story: 'body',
-      anchor: Uint8Array.of(1),
-      head: Uint8Array.of(1),
-    });
-    provider.setCursor({
-      story: 'body',
-      anchor: Uint8Array.of(2),
-      head: Uint8Array.of(2),
-    });
-    await Bun.sleep(100);
-
-    expect(transport.sent).toHaveLength(initialFrames + 1);
-    const movement = decodeMessages(transport.sent.at(-1) ?? Uint8Array.of())[0];
-    expect(movement.type).toBe('awareness');
-    if (movement.type !== 'awareness') return;
-    expect(decodeAwarenessUpdate(movement.update)[0]?.state?.cursor).toEqual({
-      story: 'body',
-      anchor: Uint8Array.of(2),
-      head: Uint8Array.of(2),
-    });
-
-    provider.setCursor({
-      story: 'body',
-      anchor: Uint8Array.of(3),
-      head: Uint8Array.of(3),
-    });
-    provider.setCursor(
-      {
+      provider.setCursor({
         story: 'body',
-        anchor: Uint8Array.of(4),
-        head: Uint8Array.of(4),
-      },
-      false
-    );
-    await Bun.sleep(100);
-    expect(transport.sent).toHaveLength(initialFrames + 1);
-    provider.destroy();
+        anchor: Uint8Array.of(1),
+        head: Uint8Array.of(1),
+      });
+      provider.setCursor({
+        story: 'body',
+        anchor: Uint8Array.of(2),
+        head: Uint8Array.of(2),
+      });
+      await Bun.sleep(100);
+
+      expect(transport.sent).toHaveLength(initialFrames + 1);
+      const movement = decodeMessages(transport.sent.at(-1) ?? Uint8Array.of())[0];
+      expect(movement.type).toBe('awareness');
+      if (movement.type !== 'awareness') return;
+      expect(decodeAwarenessUpdate(movement.update)[0]?.state?.cursor).toEqual({
+        story: 'body',
+        anchor: Uint8Array.of(2),
+        head: Uint8Array.of(2),
+      });
+
+      provider.setCursor({
+        story: 'body',
+        anchor: Uint8Array.of(3),
+        head: Uint8Array.of(3),
+      });
+      provider.setCursor(
+        {
+          story: 'body',
+          anchor: Uint8Array.of(4),
+          head: Uint8Array.of(4),
+        },
+        false
+      );
+      await Bun.sleep(100);
+      expect(transport.sent).toHaveLength(initialFrames + 1);
+      provider.destroy();
+    } finally {
+      globalThis.performance.now = realNow;
+    }
   });
 
   it('truncates an overlength user name and keeps document sync alive', () => {

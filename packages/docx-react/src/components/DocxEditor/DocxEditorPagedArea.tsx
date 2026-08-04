@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
 import type {
@@ -7,7 +7,7 @@ import type {
   SectionProperties,
   HeaderFooter,
 } from '@betteroffice/docx/types/document';
-import type { Comment } from '@betteroffice/docx/types/content';
+import type { Comment, SimpleField } from '@betteroffice/docx/types/content';
 import { type BundledFontProvider } from '@betteroffice/docx/layout';
 import { PagedEditor, type PagedEditorRef } from './PagedEditor';
 import type { RustFontChainsProvider } from './hooks/useRustMeasurement';
@@ -271,6 +271,53 @@ export function DocxEditorPagedArea({
     setHfSelection(null);
   }, [hfEditPosition, activeHfRid]);
 
+  const handleInsertField = useCallback(
+    (fieldType: 'PAGE' | 'NUMPAGES') => {
+      const editor = pagedEditorRef.current;
+      const session = editor?.getYrsSession();
+      if (!editor || !session || !activeHfRid) return;
+      const story = `hf:${activeHfRid}`;
+      const selection = session.selection();
+      const head = selection && selection.head.story === story ? selection.head : null;
+      let index: number;
+      if (head) {
+        index = session.locateParagraph(story, head.paraId).start + head.offset;
+      } else {
+        const paragraphs = session.paragraphs(story);
+        if (paragraphs.length === 0) return;
+        index = session.locateParagraph(story, paragraphs[paragraphs.length - 1].paraId).end;
+      }
+      const field: SimpleField = {
+        type: 'simpleField',
+        fieldType,
+        instruction: fieldType,
+        content: [{ type: 'run', content: [{ type: 'text', text: '' }] }],
+        dirty: true,
+      };
+      session.applyRawOps(story, [
+        {
+          op: 'insertEmbed',
+          index,
+          kind: 'field',
+          payload: {
+            fieldType,
+            instruction: fieldType,
+            displayText: '',
+            fieldKind: 'simple',
+            fldLock: false,
+            dirty: true,
+            displayMode: 'result',
+            hasCachedResult: false,
+            fieldData: JSON.stringify(field),
+            modelKind: 'field',
+          },
+        },
+      ]);
+      editor.syncYrsInputState(true);
+    },
+    [activeHfRid]
+  );
+
   // UI chrome is independent of renderer readiness and always portals onto
   // the positioned editor-content host.
   const canvasOverlayTarget = useCanvasOverlayTarget(true, editorContentRef);
@@ -531,6 +578,7 @@ export function DocxEditorPagedArea({
                 setHfEditPosition(null);
               }}
               onRemove={onRemoveHeaderFooter}
+              onInsertField={handleInsertField}
             />
           );
           return canvasOverlayTarget ? createPortal(editor, canvasOverlayTarget) : editor;

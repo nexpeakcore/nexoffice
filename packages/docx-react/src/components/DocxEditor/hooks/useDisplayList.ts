@@ -351,16 +351,29 @@ export function useRustDisplayList(
   // Handle acquisition (page-delta serialization into the Rust query store) is
   // deferred out of the keystroke path: prime the newest facade from idle time
   // so the first interaction after a typing burst pays one accumulated delta
-  // at most. Superseded facades no-op their pending prime.
+  // at most. Superseded facades no-op their pending prime. The trailing
+  // timeout matters: a 90ms typing cadence leaves idle slices, so a bare
+  // requestIdleCallback would re-serialize the dense changed page on every
+  // keystroke; the timeout makes a burst pay one accumulated delta at its
+  // tail, and any query landing mid-burst still primes on demand. On the
+  // owned frame-delta path adoption cannot reuse pages (they are patched in
+  // place), so a fired prime serializes the WHOLE list — the delay must
+  // exceed worst-case keystroke jitter or bursts pay that cost repeatedly.
   useEffect(() => {
     const queries = snapshot.queries;
     if (!queries) return;
-    if (typeof requestIdleCallback === 'function') {
-      const id = requestIdleCallback(() => queries.prime());
-      return () => cancelIdleCallback(id);
-    }
-    const id = setTimeout(() => queries.prime(), 200);
-    return () => clearTimeout(id);
+    let idle: number | null = null;
+    const timer = setTimeout(() => {
+      if (typeof requestIdleCallback === 'function') {
+        idle = requestIdleCallback(() => queries.prime());
+      } else {
+        queries.prime();
+      }
+    }, 400);
+    return () => {
+      clearTimeout(timer);
+      if (idle !== null) cancelIdleCallback(idle);
+    };
   }, [snapshot.queries]);
 
   const applyResidentInput = useCallback(

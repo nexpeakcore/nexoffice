@@ -540,6 +540,98 @@ fn mentions_sheet(source: &str, sheet: &str) -> bool {
     false
 }
 
+/// rewrite a moved cell's formula for a whole-row move of `delta` rows, with
+/// excel's copy semantics: every relative row reference shifts with the cell
+/// (whatever sheet it names), `$`-anchored rows stay, columns never change,
+/// and a reference pushed off the sheet collapses to `#REF!`. `Ok(None)` when
+/// nothing changed, `Err(())` when the formula cannot be safely rewritten.
+#[allow(clippy::result_unit_err)]
+pub(crate) fn shift_formula_rows(source: &str, delta: i64) -> Result<Option<String>, ()> {
+    let expr = parse_formula(source).map_err(|_| ())?;
+    let mut changed = false;
+    let shifted = shift_expr_rows(&expr, delta, &mut changed);
+    if !changed {
+        return Ok(None);
+    }
+    let formula = shifted.to_formula();
+    if formula.len() > MAX_FORMULA_BYTES || parse_formula(&formula).is_err() {
+        return Err(());
+    }
+    Ok(Some(formula))
+}
+
+fn shift_expr_rows(expr: &Expr, delta: i64, changed: &mut bool) -> Expr {
+    match expr {
+        Expr::Ref { sheet, cell } => match shift_cell_rows(*cell, delta) {
+            Some(new_cell) if new_cell == *cell => expr.clone(),
+            Some(new_cell) => {
+                *changed = true;
+                Expr::Ref {
+                    sheet: sheet.clone(),
+                    cell: new_cell,
+                }
+            }
+            None => {
+                *changed = true;
+                Expr::Error(ErrorValue::Ref)
+            }
+        },
+        Expr::Range { sheet, range } => {
+            match (
+                shift_cell_rows(range.start, delta),
+                shift_cell_rows(range.end, delta),
+            ) {
+                (Some(start), Some(end)) if start == range.start && end == range.end => {
+                    expr.clone()
+                }
+                (Some(start), Some(end)) => {
+                    *changed = true;
+                    Expr::Range {
+                        sheet: sheet.clone(),
+                        range: CellRange { start, end },
+                    }
+                }
+                _ => {
+                    *changed = true;
+                    Expr::Error(ErrorValue::Ref)
+                }
+            }
+        }
+        Expr::Unary { op, expr } => Expr::Unary {
+            op: *op,
+            expr: Box::new(shift_expr_rows(expr, delta, changed)),
+        },
+        Expr::Percent(inner) => Expr::Percent(Box::new(shift_expr_rows(inner, delta, changed))),
+        Expr::Binary { op, lhs, rhs } => Expr::Binary {
+            op: *op,
+            lhs: Box::new(shift_expr_rows(lhs, delta, changed)),
+            rhs: Box::new(shift_expr_rows(rhs, delta, changed)),
+        },
+        Expr::FuncCall { name, args } => Expr::FuncCall {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|arg| shift_expr_rows(arg, delta, changed))
+                .collect(),
+        },
+        _ => expr.clone(),
+    }
+}
+
+fn shift_cell_rows(cell: CellRef, delta: i64) -> Option<CellRef> {
+    if cell.abs_row || delta == 0 {
+        return Some(cell);
+    }
+    let row = i64::from(cell.row) + delta;
+    if !(0..i64::from(MAX_ROWS)).contains(&row) {
+        return None;
+    }
+    Some(CellRef {
+        row: row as u32,
+        ..cell
+    })
+}
+
 pub(crate) fn remap_hyperlink_range(range: CellRange, op: &Op) -> Option<CellRange> {
     match remap_span(range, op) {
         Remapped::Unchanged => Some(range),
@@ -1635,6 +1727,23 @@ mod tests {
             rename_hyperlink_location("#Target!A1#2", "Target", "Renamed"),
             "#Renamed!A1#2"
         );
+    }
+
+    #[test]
+    fn shift_formula_rows_applies_copy_semantics() {
+        assert_eq!(
+            shift_formula_rows("A1+$B$1+Other!C2", 2),
+            Ok(Some("A3+$B$1+Other!C4".into()))
+        );
+        assert_eq!(shift_formula_rows("B$1+$C2", 3), Ok(Some("B$1+$C5".into())));
+        assert_eq!(shift_formula_rows("$A$1:$B$2", 5), Ok(None));
+        assert_eq!(shift_formula_rows("\"A1\"&A1", 0), Ok(None));
+        assert_eq!(
+            shift_formula_rows("SUM(A2:A4)*2", -1),
+            Ok(Some("SUM(A1:A3)*2".into()))
+        );
+        assert_eq!(shift_formula_rows("A1+1", -1), Ok(Some("#REF!+1".into())));
+        assert!(shift_formula_rows("SUM(", 1).is_err());
     }
 
     #[test]

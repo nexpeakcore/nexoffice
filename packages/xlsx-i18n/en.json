@@ -101,13 +101,42 @@
     "save": "Save",
     "exportPng": "Export PNG",
     "undo": "Undo",
-    "redo": "Redo"
+    "redo": "Redo",
+    "sortLabel": "Sort",
+    "sortAsc": "Sort A to Z",
+    "sortDesc": "Sort Z to A",
+    "freezeLabel": "Freeze panes",
+    "freezeUpToRow": "Freeze up to row {row}",
+    "freezeUpToColumn": "Freeze up to column {column}",
+    "freezeFirstRow": "Freeze first row",
+    "freezeFirstColumn": "Freeze first column",
+    "unfreeze": "Unfreeze",
+    "filterLabel": "Filter",
+    "filterToggle": "Filter",
+    "commentLabel": "Comments",
+    "commentToggle": "Comment"
   },
   "editor": {
     "appLabel": "Spreadsheet editor",
     "demoCellText": "OpenOOXML xlsx",
     "openError": "Couldn't open this workbook",
     "sheetTabsLabel": "Sheets"
+  },
+  "filter": {
+    "columnButton": "Filter column {column}",
+    "selectAll": "Select all",
+    "blanks": "(Blanks)",
+    "apply": "Apply",
+    "clear": "Clear",
+    "truncated": "Showing the first {count} values",
+    "regionTooLarge": "The data region is larger than a filter can cover — select the range to filter."
+  },
+  "comment": {
+    "viewLabel": "Comment on {cell}",
+    "editLabel": "Edit comment on {cell}",
+    "textPlaceholder": "Enter a comment",
+    "save": "Save",
+    "delete": "Delete"
   },
   "proposals": {
     "panelLabel": "Agent proposals",

@@ -1,0 +1,167 @@
+{
+  "menu": {
+    "app": {
+      "checkForUpdates": "Periksa Pembaruan…",
+      "services": "Layanan",
+      "hide": "Sembunyikan NexOffice",
+      "hideOthers": "Sembunyikan Lainnya",
+      "unhide": "Tampilkan Semua",
+      "quit": "Keluar dari NexOffice"
+    },
+    "file": {
+      "label": "&Berkas",
+      "new": "Baru",
+      "open": "Buka…",
+      "openRecent": "Buka Terkini",
+      "noRecentFiles": "Tidak Ada Berkas Terkini",
+      "clearRecent": "Bersihkan Daftar",
+      "save": "Simpan",
+      "saveAs": "Simpan Sebagai…",
+      "exportPdf": "Ekspor sebagai PDF…",
+      "closeWindow": "Tutup Jendela",
+      "exit": "Keluar"
+    },
+    "edit": {
+      "label": "&Sunting",
+      "undo": "Urungkan",
+      "redo": "Ulangi",
+      "cut": "Potong",
+      "copy": "Salin",
+      "paste": "Tempel",
+      "pasteAndMatchStyle": "Tempel dan Samakan Gaya",
+      "delete": "Hapus",
+      "selectAll": "Pilih Semua",
+      "find": "Cari…"
+    },
+    "view": {
+      "label": "&Tampilan",
+      "zoomIn": "Perbesar",
+      "zoomOut": "Perkecil",
+      "actualSize": "Ukuran Sebenarnya",
+      "wordCount": "Jumlah Kata",
+      "spellCheck": "Periksa Ejaan",
+      "freezeTopRow": "Bekukan Baris Atas",
+      "freezeFirstColumn": "Bekukan Kolom Pertama",
+      "unfreeze": "Lepas Pembekuan",
+      "language": "Bahasa",
+      "fullScreen": "Alihkan Layar Penuh"
+    },
+    "window": {
+      "label": "&Jendela",
+      "minimize": "Minimalkan",
+      "zoom": "Zoom",
+      "front": "Bawa Semua ke Depan"
+    },
+    "help": {
+      "label": "Bantuan",
+      "documentation": "Dokumentasi NexOffice",
+      "checkForUpdates": "Periksa Pembaruan…",
+      "about": "Tentang NexOffice"
+    }
+  },
+  "dialog": {
+    "filters": {
+      "officeDocuments": "Dokumen Office",
+      "wordDocument": "Dokumen Word",
+      "excelWorkbook": "Buku Kerja Excel",
+      "powerpointPresentation": "Presentasi PowerPoint",
+      "pdfDocument": "Dokumen PDF",
+      "allFiles": "Semua Berkas"
+    },
+    "fileNotFound": {
+      "message": "Berkas tidak ditemukan",
+      "detail": "{path}\n\nBerkas sudah tidak ada dan telah dihapus dari daftar Buka Terkini."
+    },
+    "about": {
+      "title": "Tentang NexOffice",
+      "version": "Versi {version}"
+    },
+    "unsaved": {
+      "message": "Apakah Anda ingin menyimpan perubahan pada {name}?",
+      "detail": "Perubahan Anda akan hilang jika tidak disimpan.",
+      "save": "Simpan",
+      "dontSave": "Jangan Simpan",
+      "cancel": "Batal"
+    },
+    "pdfTruncated": {
+      "message": "Ekspor PDF terpotong",
+      "detail": "Dokumen melebihi batas ekspor {cap} halaman; hanya {pages} halaman pertama yang diekspor."
+    },
+    "pdfFailed": {
+      "title": "Ekspor PDF Gagal"
+    },
+    "openFailed": {
+      "title": "Tidak Dapat Membuka Berkas"
+    }
+  },
+  "app": {
+    "edited": " — Disunting",
+    "kind": {
+      "docx": "Dokumen",
+      "xlsx": "Buku Kerja",
+      "pptx": "Presentasi"
+    },
+    "meta": {
+      "type": "Jenis",
+      "size": "Ukuran",
+      "path": "Jalur"
+    },
+    "presentationComingSoon": "Editor presentasi segera hadir.",
+    "empty": {
+      "subtitle": "Buka berkas .docx, .xlsx, atau .pptx untuk memulai.",
+      "openFile": "Buka Berkas"
+    }
+  },
+  "status": {
+    "ready": "Siap",
+    "newDocument": "Dokumen baru",
+    "opened": "{name} dibuka",
+    "openFailed": "Gagal membuka: {message}",
+    "unsupported": "Jenis berkas tidak didukung: {name}",
+    "saved": "{path} disimpan",
+    "saveCanceled": "Penyimpanan dibatalkan",
+    "saveFailed": "Gagal menyimpan: {message}",
+    "openFirst": "Buka dokumen terlebih dahulu",
+    "openWordFirst": "Buka dokumen Word terlebih dahulu",
+    "exportingPdf": "Mengekspor PDF…",
+    "pdfCanceled": "Ekspor PDF dibatalkan",
+    "pdfFailed": "Ekspor PDF gagal: {message}",
+    "exported": "{path} diekspor",
+    "exportedPagesOne": "{path} diekspor (1 halaman)",
+    "exportedPagesMany": "{path} diekspor ({pages} halaman)",
+    "truncatedSuffix": " — terpotong pada batas halaman",
+    "wordCount": "Kata: {words} · Karakter: {characters} · Halaman {page}/{pages}",
+    "frozeTopRow": "Baris atas dibekukan",
+    "frozeFirstColumn": "Kolom pertama dibekukan",
+    "unfroze": "Pembekuan dilepas"
+  },
+  "footer": {
+    "stats": "{words} kata · {characters} karakter · Halaman {page}/{pages}",
+    "misspelledOne": "1 kata salah eja",
+    "misspelledMany": "{count} kata salah eja",
+    "spellingOk": "Ejaan benar",
+    "loadingDictionary": "Memuat kamus…",
+    "dictError": "Kesalahan kamus"
+  },
+  "spellPanel": {
+    "title": "Periksa Ejaan",
+    "close": "Tutup",
+    "none": "Tidak ditemukan kata yang salah eja.",
+    "countOne": "1 kata salah eja",
+    "countMany": "{count} kata salah eja"
+  },
+  "update": {
+    "ready": "Pembaruan {version} siap",
+    "restart": "Mulai ulang untuk memperbarui",
+    "checking": "Memeriksa pembaruan…",
+    "downloading": "Mengunduh pembaruan {version}…",
+    "downloadingPercent": "Mengunduh pembaruan… {percent}%",
+    "upToDate": "NexOffice sudah versi terbaru",
+    "devDisabled": "Pembaruan dinonaktifkan pada build pengembangan",
+    "failed": "Pemeriksaan pembaruan gagal: {message}"
+  },
+  "editor": {
+    "loading": "Memuat {name}…",
+    "couldNotOpen": "Tidak dapat membuka {name}"
+  }
+}

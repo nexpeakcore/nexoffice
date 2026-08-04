@@ -11,6 +11,9 @@ import type { InitInput } from './generated/xlsx_wasm.js';
 import type { CollaborationReplica, CollaborationUpdateOrigin } from '../collaboration/types';
 import type { DisplayList } from '../display-list/types';
 
+/** last 0-based column index in the xlsx grid (column XFD). */
+const XLSX_MAX_COL = 16_383;
+
 /**
  * A scrolled window into a sheet. `x`/`y` are content-pixel offsets into the
  * non-frozen body. Mirrors the Rust `Viewport`.
@@ -61,6 +64,39 @@ export interface EditResult {
 
 export interface CalculationStatus {
   limitedCells: string[];
+}
+
+/**
+ * An auto filter over `range`. Each column entry keeps only the listed cell
+ * texts visible (`values: null` means no value criteria for that column);
+ * `showBlanks` keeps blank cells visible alongside `values`.
+ */
+export interface AutoFilterSpec {
+  range: { startRow: number; startCol: number; endRow: number; endCol: number };
+  columns: {
+    col: number;
+    values: string[] | null;
+    showBlanks: boolean;
+    /**
+     * source xml of criteria the engine keeps but cannot evaluate (custom
+     * comparisons, top ten, colour, date groups). Such a column constrains
+     * nothing. Send it back untouched to keep it in the file; replacing a
+     * column's criteria means dropping it.
+     */
+    unsupported?: string;
+  }[];
+}
+
+/** A classic cell note: plain text plus its author. Mirrors the Rust `Comment`. */
+export interface CellComment {
+  author: string;
+  text: string;
+}
+
+/** A cell note with its coordinates, as returned by {@link WorkbookHandle.sheetComments}. */
+export interface SheetComment extends CellComment {
+  row: number;
+  col: number;
 }
 
 export type NumberFormat =
@@ -185,11 +221,16 @@ export interface OpenWorkbookOptions {
  * The editable view of one cell: A1 address, the exact string the user would
  * edit (formulas as `=...`, guarded literals with a leading `'`), and whether
  * that string is a formula. Mirrors the Rust `CellEdit`.
+ *
+ * `filterText` is the text the engine's auto filter matches criteria against:
+ * the cached bare value (for formula cells, the calculated result) with no
+ * number formats. Omitted by cores built before it, so treat it as additive.
  */
 export interface CellEdit {
   a1: string;
   input: string;
   isFormula: boolean;
+  filterText?: string;
 }
 
 /** One cell of a batch edit: target coordinates plus the raw user input. */
@@ -292,6 +333,35 @@ export interface WorkbookHandle extends CollaborationReplica {
   editCells(sheet: number, edits: CellInputEdit[]): EditResult;
   /** raw op-list escape hatch for structural ops (insert/delete rows, merges…). */
   applyOps(ops: unknown[]): EditResult;
+  /**
+   * freeze the first `row` rows and `col` columns of a sheet — `row`/`col` are
+   * the index of the first scrollable row/column, i.e. the count frozen.
+   * `null` (or 0) leaves that axis unfrozen; both `null` clears the freeze.
+   * one undo step; persists through save.
+   */
+  setFreezePane(sheet: number, row: number | null, col: number | null): EditResult;
+  /**
+   * sort rows `startRow..=endRow` (inclusive, whole rows) by the values in
+   * absolute column `keyCol`; ascending=true for A→Z. one undo step.
+   */
+  sortRange(
+    sheet: number,
+    startRow: number,
+    endRow: number,
+    keyCol: number,
+    ascending: boolean
+  ): EditResult;
+  /** set or replace a sheet's auto filter; `null` clears it and unhides its rows. */
+  setAutoFilter(sheet: number, filter: AutoFilterSpec | null): EditResult;
+  /** the sheet's current auto filter, or `null` when it has none. */
+  sheetAutoFilter(sheet: number): AutoFilterSpec | null;
+  /** every comment on a sheet in row-major order; empty when it has none. */
+  sheetComments(sheet: number): SheetComment[];
+  /**
+   * set or replace the comment at a cell; `null` deletes it. one undo step;
+   * persists through save.
+   */
+  setComment(sheet: number, row: number, col: number, comment: CellComment | null): EditResult;
   undo(): EditResult;
   redo(): EditResult;
   /** the editable view of one cell (formula bar / in-cell editor prefill). */
@@ -580,6 +650,73 @@ export function openWorkbook(
       return parseJson(() => doc.editCellsJson(JSON.stringify({ sheet, edits })), true);
     },
     applyOps(ops: unknown[]): EditResult {
+      return parseJson(() => doc.applyOpsJson(JSON.stringify({ ops })), true);
+    },
+    setFreezePane(sheet: number, row: number | null, col: number | null): EditResult {
+      const rows = row ?? 0;
+      const cols = col ?? 0;
+      const pane =
+        rows > 0 || cols > 0
+          ? { rows, cols, top_left: { row: rows, col: cols } }
+          : null;
+      const ops = [{ type: 'setFreezePane', sheet, pane }];
+      return parseJson(() => doc.applyOpsJson(JSON.stringify({ ops })), true);
+    },
+    sortRange(
+      sheet: number,
+      startRow: number,
+      endRow: number,
+      keyCol: number,
+      ascending: boolean
+    ): EditResult {
+      const ops = [
+        {
+          type: 'sortRange',
+          sheet,
+          range: {
+            start: { row: startRow, col: 0 },
+            end: { row: endRow, col: XLSX_MAX_COL },
+          },
+          key_col: keyCol,
+          ascending,
+        },
+      ];
+      return parseJson(() => doc.applyOpsJson(JSON.stringify({ ops })), true);
+    },
+    setAutoFilter(sheet: number, filter: AutoFilterSpec | null): EditResult {
+      const wire = filter
+        ? {
+            range: {
+              start: { row: filter.range.startRow, col: filter.range.startCol },
+              end: { row: filter.range.endRow, col: filter.range.endCol },
+            },
+            columns: filter.columns.map((c) => ({
+              col: c.col,
+              values: c.unsupported ? null : c.values,
+              show_blanks: c.showBlanks,
+              ...(c.unsupported ? { unsupported: c.unsupported } : {}),
+            })),
+          }
+        : null;
+      const ops = [{ type: 'setAutoFilter', sheet, filter: wire }];
+      return parseJson(() => doc.applyOpsJson(JSON.stringify({ ops })), true);
+    },
+    sheetAutoFilter(sheet: number): AutoFilterSpec | null {
+      return parseJson(() => doc.sheetAutoFilterJson(JSON.stringify({ sheet })));
+    },
+    sheetComments(sheet: number): SheetComment[] {
+      const parsed = parseJson<{ comments: SheetComment[] }>(() =>
+        doc.sheetCommentsJson(JSON.stringify({ sheet }))
+      );
+      return parsed.comments;
+    },
+    setComment(
+      sheet: number,
+      row: number,
+      col: number,
+      comment: CellComment | null
+    ): EditResult {
+      const ops = [{ type: 'setComment', sheet, cell: { row, col }, comment }];
       return parseJson(() => doc.applyOpsJson(JSON.stringify({ ops })), true);
     },
     undo(): EditResult {
