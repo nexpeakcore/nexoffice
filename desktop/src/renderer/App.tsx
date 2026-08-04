@@ -10,6 +10,7 @@ import { useI18n } from './i18n.js'
 interface DocumentState extends Omit<OpenedDocument, 'kind'> {
   kind: DocumentKind
   dirty: boolean
+  id: number
 }
 
 interface StatusMessage {
@@ -44,6 +45,7 @@ export function App() {
   const closingRef = useRef(false)
   const editGenerationRef = useRef(0)
   const savedGenerationRef = useRef(0)
+  const documentIdRef = useRef(0)
 
   useEffect(() => {
     documentRef.current = document
@@ -122,12 +124,20 @@ export function App() {
 
   const performSave = useCallback(
     async (
+      target: DocumentState,
       forceDialog: boolean,
       bytesOverride: Uint8Array | undefined,
       overrideGeneration: number,
     ): Promise<boolean> => {
-      const current = documentRef.current
-      if (!current) return false
+      // The saved document is identified by the id captured at enqueue time;
+      // a queued save picks up path renames from earlier saves via documentRef,
+      // but never crosses over to a different document opened in the meantime.
+      const live = documentRef.current
+      const targetIsCurrent = live !== null && live.id === target.id
+      const current = targetIsCurrent ? live : target
+      // The editor only holds the current document, so a queued save whose
+      // document was replaced before it ran has nothing valid to serialize.
+      if (!bytesOverride && !targetIsCurrent) return false
       // Override bytes were serialized when the save was requested, so they
       // only cover edits up to that point; freshly serialized bytes cover
       // everything up to now.
@@ -140,17 +150,24 @@ export function App() {
           setStatus({ key: 'status.saveCanceled' })
           return false
         }
-        savedGenerationRef.current = Math.max(savedGenerationRef.current, generation)
         const savedPath = result.path
         const savedName = savedPath.split(/[\\/]/).pop() ?? current.name
+        if (documentRef.current?.id !== target.id) {
+          // The write targeted the captured document's own path, which stays
+          // correct; the document open now is a different one, so its state
+          // (path, name, bytes, dirty flag, generations) must not be touched.
+          setStatus({ key: 'status.saved', vars: { path: savedPath } })
+          return true
+        }
+        savedGenerationRef.current = Math.max(savedGenerationRef.current, generation)
         const dirty = editGenerationRef.current !== savedGenerationRef.current
         // Queued saves read documentRef before React commits the state update,
         // so the new path/name must be visible synchronously.
-        if (documentRef.current) {
-          documentRef.current = { ...documentRef.current, path: savedPath, name: savedName, data, dirty }
-        }
+        documentRef.current = { ...documentRef.current, path: savedPath, name: savedName, data, dirty }
         setDocument((prev) =>
-          prev ? { ...prev, path: savedPath, name: savedName, data, dirty } : prev,
+          prev && prev.id === target.id
+            ? { ...prev, path: savedPath, name: savedName, data, dirty }
+            : prev,
         )
         setStatus({ key: 'status.saved', vars: { path: savedPath } })
         return true
@@ -171,10 +188,12 @@ export function App() {
 
   const saveDocument = useCallback(
     (forceDialog: boolean, bytesOverride?: Uint8Array): Promise<boolean> => {
+      const target = documentRef.current
+      if (!target) return Promise.resolve(false)
       const generationAtRequest = editGenerationRef.current
       const queued = saveQueueRef.current.then(
-        () => performSave(forceDialog, bytesOverride, generationAtRequest),
-        () => performSave(forceDialog, bytesOverride, generationAtRequest),
+        () => performSave(target, forceDialog, bytesOverride, generationAtRequest),
+        () => performSave(target, forceDialog, bytesOverride, generationAtRequest),
       )
       saveQueueRef.current = queued
       return queued
@@ -206,7 +225,12 @@ export function App() {
       return
     }
     savedGenerationRef.current = editGenerationRef.current
-    setDocument({ ...opened, kind, dirty: false })
+    documentIdRef.current += 1
+    const next: DocumentState = { ...opened, kind, dirty: false, id: documentIdRef.current }
+    // In-flight save completions compare against documentRef, so the switch
+    // must be visible before React commits the state update.
+    documentRef.current = next
+    setDocument(next)
     setStatus({ key: 'status.opened', vars: { name: opened.name } })
   }, [])
 
@@ -301,6 +325,7 @@ export function App() {
           void ensureSaved().then((proceed) => {
             if (!proceed) return
             savedGenerationRef.current = editGenerationRef.current
+            documentRef.current = null
             setDocument(null)
             setStatus({ key: 'status.newDocument' })
           })

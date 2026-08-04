@@ -10,14 +10,23 @@ const RASTER_SCALE = 2
 function frozenExtent(
   indices: number[] | undefined,
   offsets: number[] | undefined,
+  start: number,
   frozenCount: number,
 ): number {
-  if (frozenCount <= 0 || !indices || !offsets) return 0
-  let visibleFrozen = 0
-  for (const index of indices) {
-    if (index < frozenCount) visibleFrozen += 1
+  if (frozenCount <= 0 || !offsets || offsets.length === 0) return 0
+  let visibleFrozen: number
+  if (indices) {
+    visibleFrozen = 0
+    for (const index of indices) {
+      if (index < frozenCount) visibleFrozen += 1
+    }
+  } else {
+    // The engine omits indices when the visible tracks are contiguous from
+    // `start`, so the first (frozenCount - start) tracks are the frozen ones.
+    visibleFrozen = Math.max(0, frozenCount - start)
   }
-  return offsets[visibleFrozen] ?? 0
+  const boundary = Math.min(visibleFrozen, offsets.length - 1)
+  return (offsets[boundary] ?? 0) - (offsets[0] ?? 0)
 }
 
 export async function renderXlsxPages(data: Uint8Array): Promise<PageSet> {
@@ -29,8 +38,18 @@ export async function renderXlsxPages(data: Uint8Array): Promise<PageSet> {
     const innerHeight = PAGE_HEIGHT - PAGE_PADDING * 2
 
     const probe = handle.displayList({ x: 0, y: 0, width: innerWidth, height: innerHeight })
-    const frozenWidth = frozenExtent(probe.grid?.colIndices, probe.grid?.colOffsets, info.frozenCols)
-    const frozenHeight = frozenExtent(probe.grid?.rowIndices, probe.grid?.rowOffsets, info.frozenRows)
+    const frozenWidth = frozenExtent(
+      probe.grid?.colIndices,
+      probe.grid?.colOffsets,
+      probe.grid?.startCol ?? 0,
+      info.frozenCols,
+    )
+    const frozenHeight = frozenExtent(
+      probe.grid?.rowIndices,
+      probe.grid?.rowOffsets,
+      probe.grid?.startRow ?? 0,
+      info.frozenRows,
+    )
 
     const stepX = Math.max(innerWidth - frozenWidth, innerWidth / 2)
     const stepY = Math.max(innerHeight - frozenHeight, innerHeight / 2)
