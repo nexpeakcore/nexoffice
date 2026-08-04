@@ -292,6 +292,48 @@ describe('wasm loader', () => {
     }
   });
 
+  it('exposes the engine filter text for formula cells and filters rows by it', () => {
+    const handle = openWorkbook(sampleBytes());
+    try {
+      // a formula column in empty space below the fixture data: a header plus
+      // three formula rows whose calculated values are 16.5, 33, 16.5.
+      handle.editCell(0, 20, 5, 'Total');
+      handle.editCell(0, 21, 5, '=8.25*2');
+      handle.editCell(0, 22, 5, '=16.5+16.5');
+      handle.editCell(0, 23, 5, '=33/2');
+
+      const formulaCell = handle.cell(0, 21, 5);
+      expect(formulaCell.isFormula).toBe(true);
+      expect(formulaCell.input).toBe('=8.25*2');
+      expect(formulaCell.filterText).toBe('16.5');
+      // literals and blanks carry their raw text so one field serves all cells.
+      expect(handle.cell(0, 20, 5).filterText).toBe('Total');
+      expect(handle.cell(0, 30, 5).filterText).toBe('');
+
+      const column = handle.rangeCells(0, 'F22:F24').map((row) => row[0].filterText);
+      expect(column).toEqual(['16.5', '33', '16.5']);
+
+      // criteria built from that text hide exactly the non-matching rows.
+      const before = handle.sheetInfo().contentHeight;
+      const filtered = handle.setAutoFilter(0, {
+        range: { startRow: 20, startCol: 5, endRow: 23, endCol: 5 },
+        columns: [{ col: 5, values: ['16.5'], showBlanks: false }],
+      });
+      expect(filtered.applied).toBe(true);
+      expect(filtered.sheetInfo.contentHeight).toBeLessThan(before);
+
+      const texts = handle
+        .displayList({ x: 0, y: 0, width: 800, height: 600 })
+        .commands.filter((c) => c.op === 'text')
+        .map((c) => (c.op === 'text' ? c.text : ''));
+      expect(texts).toContain('Total');
+      expect(texts).toContain('16.5');
+      expect(texts).not.toContain('33');
+    } finally {
+      handle.dispose();
+    }
+  });
+
   it('sets, reads, and deletes cell comments as undoable steps', () => {
     const handle = openWorkbook(sampleBytes());
     try {

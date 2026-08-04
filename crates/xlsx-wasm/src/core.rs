@@ -2,7 +2,7 @@
 use betteroffice_xlsx::RenderOptions;
 use betteroffice_xlsx::{
     CalculationOptions, CapturedFormat, CellAddress, CellInput as WorkbookCellInput, CellRange,
-    CellRef, MutationResult, NumberFormatMutation, Op, Proposal,
+    CellRef, CellValue, MutationResult, NumberFormatMutation, Op, Proposal,
     ProposalEditInput as WorkbookProposalEditInput, ProposalRequest, SheetId, StylePatch,
     UpdateEvent, UpdateSubscription, Viewport, Workbook,
 };
@@ -160,6 +160,7 @@ struct CellEdit {
     a1: String,
     input: String,
     is_formula: bool,
+    filter_text: String,
 }
 
 #[derive(Serialize)]
@@ -414,14 +415,17 @@ impl Session {
     pub fn cell_json(&self, args: &str) -> Result<String, String> {
         let args: CellArgs =
             serde_json::from_str(args).map_err(|error| format!("bad cell args: {error}"))?;
+        let at = CellRef::new(args.row, args.col);
         let cell = self
             .workbook
-            .cell(SheetId(args.sheet), CellRef::new(args.row, args.col))
+            .cell(SheetId(args.sheet), at)
             .map_err(|error| error.to_string())?;
+        let filter_text = self.cell_filter_text(SheetId(args.sheet), at)?;
         serde_json::to_string(&CellEdit {
             a1: cell.cell.to_a1(),
             input: cell.input,
             is_formula: cell.is_formula,
+            filter_text,
         })
         .map_err(|error| error.to_string())
     }
@@ -441,15 +445,24 @@ impl Session {
             serde_json::from_str(args).map_err(|error| format!("bad range args: {error}"))?;
         let range =
             CellRange::parse_a1(&args.range).map_err(|error| format!("bad range: {error}"))?;
-        let cells = self
+        let edits = self
             .workbook
             .range_cells(SheetId(args.sheet), range)
-            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        let sheet = self
+            .workbook
+            .sheet(SheetId(args.sheet))
+            .map_err(|error| error.to_string())?;
+        let cells = edits
             .into_iter()
             .map(|row| {
                 row.into_iter()
                     .map(|cell| CellEdit {
                         a1: cell.cell.to_a1(),
+                        filter_text: sheet
+                            .cell(cell.cell)
+                            .map(|stored| filter_text(&stored.value))
+                            .unwrap_or_default(),
                         input: cell.input,
                         is_formula: cell.is_formula,
                     })
@@ -704,6 +717,31 @@ impl Session {
             .map(|address| self.workbook.format_address(*address))
             .collect()
     }
+
+    fn cell_filter_text(&self, sheet: SheetId, at: CellRef) -> Result<String, String> {
+        let sheet = self
+            .workbook
+            .sheet(sheet)
+            .map_err(|error| error.to_string())?;
+        Ok(sheet
+            .cell(at)
+            .map(|cell| filter_text(&cell.value))
+            .unwrap_or_default())
+    }
+}
+
+/// mirror of the engine's auto-filter matching text (xlsx-ops `filter_text`):
+/// the cached bare value — for formula cells the calculated result — with no
+/// number formats applied. exposed so the filter UI can offer and send the
+/// exact strings the engine will compare against.
+fn filter_text(value: &CellValue) -> String {
+    match value {
+        CellValue::Empty => String::new(),
+        CellValue::Number { value } => value.to_string(),
+        CellValue::Text { value } => value.clone(),
+        CellValue::Bool { value } => if *value { "TRUE" } else { "FALSE" }.to_string(),
+        CellValue::Error { value } => value.as_str().to_string(),
+    }
 }
 
 fn calculation_options(now_serial: Option<f64>) -> CalculationOptions {
@@ -937,6 +975,47 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&range).unwrap();
         assert_eq!(value["cells"].as_array().unwrap().len(), 2);
         assert_eq!(value["cells"][0].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn cell_reads_expose_the_engine_filter_text() {
+        let mut session = Session::open(&formula_xlsx(), None).unwrap();
+        let formula_cell = session.cell_json(r#"{"sheet":0,"row":0,"col":1}"#).unwrap();
+        assert!(
+            formula_cell.contains(r#""isFormula":true"#),
+            "{formula_cell}"
+        );
+        assert!(
+            formula_cell.contains(r#""filterText":"15""#),
+            "{formula_cell}"
+        );
+        assert!(
+            session
+                .cell_json(r#"{"sheet":0,"row":0,"col":0}"#)
+                .unwrap()
+                .contains(r#""filterText":"10""#)
+        );
+        assert!(
+            session
+                .cell_json(r#"{"sheet":0,"row":5,"col":5}"#)
+                .unwrap()
+                .contains(r#""filterText":"""#)
+        );
+
+        session
+            .edit_cell_json(r#"{"sheet":0,"row":2,"col":0,"input":"'42"}"#, None)
+            .unwrap();
+        let guarded = session.cell_json(r#"{"sheet":0,"row":2,"col":0}"#).unwrap();
+        assert!(guarded.contains(r#""input":"'42""#), "{guarded}");
+        assert!(guarded.contains(r#""filterText":"42""#), "{guarded}");
+
+        let range = session
+            .range_cells_json(r#"{"sheet":0,"range":"A1:B1"}"#)
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&range).unwrap();
+        assert_eq!(value["cells"][0][0]["filterText"], "10");
+        assert_eq!(value["cells"][0][1]["filterText"], "15");
+        assert_eq!(value["cells"][0][1]["input"], "=SUM(A1:A2)");
     }
 
     #[test]

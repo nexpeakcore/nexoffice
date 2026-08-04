@@ -37,13 +37,23 @@ describe('rawFilterText', () => {
     expect(rawFilterText({ input: "'=not a formula", isFormula: false })).toBe('=not a formula');
   });
 
-  it('cannot derive text for formula cells', () => {
+  it('cannot derive text for formula cells without an engine filterText', () => {
     expect(rawFilterText({ input: '=SUM(A1:A2)', isFormula: true })).toBeNull();
+  });
+
+  it('uses the engine filterText verbatim when the core provides it', () => {
+    expect(rawFilterText({ input: '=SUM(A1:A2)', isFormula: true, filterText: '15' })).toBe('15');
+    expect(rawFilterText({ input: '=A1&"x"', isFormula: true, filterText: '10x' })).toBe('10x');
+    expect(rawFilterText({ input: '=1/0', isFormula: true, filterText: '#DIV/0!' })).toBe(
+      '#DIV/0!'
+    );
+    expect(rawFilterText({ input: '=IF(A1,"","x")', isFormula: true, filterText: '' })).toBe('');
+    expect(rawFilterText({ input: "'123", isFormula: false, filterText: '123' })).toBe('123');
   });
 });
 
 describe('collectFilterValues', () => {
-  it('dedupes, flags blanks, skips formulas, and sorts numerically', () => {
+  it('dedupes, flags blanks, skips opaque formulas, and sorts numerically', () => {
     const collected = collectFilterValues([
       { input: '10', isFormula: false },
       { input: '2', isFormula: false },
@@ -54,6 +64,18 @@ describe('collectFilterValues', () => {
       { input: 'apple', isFormula: false },
     ]);
     expect(collected.values).toEqual(['2', '10', 'apple']);
+    expect(collected.hasBlanks).toBe(true);
+    expect(collected.truncated).toBe(false);
+  });
+
+  it('includes formula cells by their engine filterText, deduped against literals', () => {
+    const collected = collectFilterValues([
+      { input: '15', isFormula: false, filterText: '15' },
+      { input: '=SUM(A1:A2)', isFormula: true, filterText: '15' },
+      { input: '=B1*2', isFormula: true, filterText: '30' },
+      { input: '=IF(A1>0,"","x")', isFormula: true, filterText: '' },
+    ]);
+    expect(collected.values).toEqual(['15', '30']);
     expect(collected.hasBlanks).toBe(true);
     expect(collected.truncated).toBe(false);
   });

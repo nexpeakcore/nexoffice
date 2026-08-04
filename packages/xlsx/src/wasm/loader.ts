@@ -210,11 +210,16 @@ export interface OpenWorkbookOptions {
  * The editable view of one cell: A1 address, the exact string the user would
  * edit (formulas as `=...`, guarded literals with a leading `'`), and whether
  * that string is a formula. Mirrors the Rust `CellEdit`.
+ *
+ * `filterText` is the text the engine's auto filter matches criteria against:
+ * the cached bare value (for formula cells, the calculated result) with no
+ * number formats. Omitted by cores built before it, so treat it as additive.
  */
 export interface CellEdit {
   a1: string;
   input: string;
   isFormula: boolean;
+  filterText?: string;
 }
 
 /** One cell of a batch edit: target coordinates plus the raw user input. */

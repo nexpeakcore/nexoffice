@@ -2,11 +2,12 @@
  * Pure auto-filter spec logic, kept DOM-free so it is unit-testable. The engine
  * matches criteria against the raw stored cell text (xlsx-ops `filter_text`):
  * numbers as their canonical string, booleans as TRUE/FALSE, text verbatim —
- * never the number-formatted display text. `CellEdit.input` mirrors that raw
- * text except for two cases handled here: guarded literals carry a leading
- * apostrophe (stripped), and formula cells carry the formula source instead of
- * the cached value (excluded — the raw computed value never crosses the wasm
- * boundary).
+ * never the number-formatted display text. Current cores expose that exact
+ * text as `CellEdit.filterText`, used verbatim when present. Against older
+ * cores that omit it, `input` mirrors the raw text except for two cases
+ * handled here: guarded literals carry a leading apostrophe (stripped), and
+ * formula cells carry the formula source instead of the cached value
+ * (excluded — nothing else derivable matches the engine).
  */
 
 import type { CellRange } from '@betteroffice/xlsx';
@@ -32,6 +33,7 @@ export interface FilterSpec {
 export interface FilterCellText {
   input: string;
   isFormula: boolean;
+  filterText?: string;
 }
 
 export interface CollectedFilterValues {
@@ -52,6 +54,7 @@ export function columnLabel(col: number): string {
 }
 
 export function rawFilterText(cell: FilterCellText): string | null {
+  if (cell.filterText !== undefined) return cell.filterText;
   if (cell.isFormula) return null;
   return cell.input.startsWith("'") ? cell.input.slice(1) : cell.input;
 }
