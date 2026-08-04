@@ -82,6 +82,23 @@ describe('FilterPopover', () => {
     expect(applied).toEqual([{ values: ['Beta'], showBlanks: false }]);
   });
 
+  it('preserves a selection the value list only carries because it is applied', () => {
+    const { applied, container } = renderPopover({
+      values: ['Alpha', 'Beta', 'Omega'],
+      truncated: true,
+      initialValues: ['Alpha', 'Omega'],
+      initialShowBlanks: false,
+    });
+    fireEvent.click(getByTestId(container, 'xlsx-filter-apply'));
+    expect(applied).toEqual([{ values: ['Alpha', 'Omega'], showBlanks: false }]);
+  });
+
+  it('keeps an all-checked truncated list explicit instead of unconstrained', () => {
+    const { applied, container } = renderPopover({ truncated: true });
+    fireEvent.click(getByTestId(container, 'xlsx-filter-apply'));
+    expect(applied).toEqual([{ values: ['Alpha', 'Beta'], showBlanks: true }]);
+  });
+
   it('clears through the clear button', () => {
     const rendered = renderPopover();
     fireEvent.click(getByTestId(rendered.container, 'xlsx-filter-clear'));

@@ -12,8 +12,10 @@ import { resolveCriteria } from './filterSpec';
 
 export interface FilterPopoverProps {
   columnName: string;
+  /** distinct column values, already unioned with the applied criteria values. */
   values: string[];
   hasBlanks: boolean;
+  /** the value list was capped, so it does not describe the whole column. */
   truncated: boolean;
   /** the column's applied criteria; `null` means unconstrained (all visible). */
   initialValues: string[] | null;
@@ -194,7 +196,7 @@ export function FilterPopover({
           type="button"
           data-testid="xlsx-filter-apply"
           onClick={() => {
-            const criteria = resolveCriteria(values, checked, showBlanks);
+            const criteria = resolveCriteria(values, checked, showBlanks, !truncated);
             onApply(criteria.values, criteria.showBlanks);
           }}
           style={{

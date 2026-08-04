@@ -73,7 +73,18 @@ export interface CalculationStatus {
  */
 export interface AutoFilterSpec {
   range: { startRow: number; startCol: number; endRow: number; endCol: number };
-  columns: { col: number; values: string[] | null; showBlanks: boolean }[];
+  columns: {
+    col: number;
+    values: string[] | null;
+    showBlanks: boolean;
+    /**
+     * source xml of criteria the engine keeps but cannot evaluate (custom
+     * comparisons, top ten, colour, date groups). Such a column constrains
+     * nothing. Send it back untouched to keep it in the file; replacing a
+     * column's criteria means dropping it.
+     */
+    unsupported?: string;
+  }[];
 }
 
 /** A classic cell note: plain text plus its author. Mirrors the Rust `Comment`. */
@@ -681,8 +692,9 @@ export function openWorkbook(
             },
             columns: filter.columns.map((c) => ({
               col: c.col,
-              values: c.values,
+              values: c.unsupported ? null : c.values,
               show_blanks: c.showBlanks,
+              ...(c.unsupported ? { unsupported: c.unsupported } : {}),
             })),
           }
         : null;

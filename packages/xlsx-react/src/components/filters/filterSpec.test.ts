@@ -11,7 +11,7 @@ import {
   resolveCriteria,
   withColumnCriteria,
 } from './filterSpec';
-import type { RegionProbes } from './filterSpec';
+import type { FilterSpec, RegionProbes } from './filterSpec';
 
 describe('columnLabel', () => {
   it('maps indices to spreadsheet letters', () => {
@@ -89,6 +89,45 @@ describe('collectFilterValues', () => {
     expect(collected.values.length).toBe(3);
     expect(collected.truncated).toBe(true);
   });
+
+  it('keeps active selections that fall beyond the cap', () => {
+    const cells = Array.from({ length: 5 }, (_, i) => ({
+      input: `v${i}`,
+      isFormula: false,
+    }));
+    const collected = collectFilterValues(cells, 2, ['v4']);
+    expect(collected.values).toEqual(['v0', 'v1', 'v4']);
+    expect(collected.truncated).toBe(true);
+  });
+
+  it('does not let selections eat the collection budget', () => {
+    const cells = Array.from({ length: 5 }, (_, i) => ({
+      input: `v${i}`,
+      isFormula: false,
+    }));
+    const collected = collectFilterValues(cells, 3, ['v0', 'v3']);
+    expect(collected.values).toEqual(['v0', 'v1', 'v2', 'v3', 'v4']);
+    expect(collected.truncated).toBe(false);
+  });
+
+  it('surfaces selections that no longer exist in the column', () => {
+    const collected = collectFilterValues([{ input: 'b', isFormula: false }], 10, ['a', 'z']);
+    expect(collected.values).toEqual(['a', 'b', 'z']);
+    expect(collected.truncated).toBe(false);
+  });
+
+  it('ignores a blank selection entry, which blanks state already carries', () => {
+    const collected = collectFilterValues([{ input: '', isFormula: false }], 10, ['']);
+    expect(collected.values).toEqual([]);
+    expect(collected.hasBlanks).toBe(true);
+  });
+
+  it('keeps every selection visible when the column has no body rows left', () => {
+    const collected = collectFilterValues([], 10, ['b', 'a']);
+    expect(collected.values).toEqual(['a', 'b']);
+    expect(collected.hasBlanks).toBe(false);
+    expect(collected.truncated).toBe(false);
+  });
 });
 
 describe('filter spec construction', () => {
@@ -155,6 +194,13 @@ describe('resolveCriteria', () => {
       showBlanks: false,
     });
   });
+
+  it('never widens an all-checked truncated list to unconstrained', () => {
+    expect(resolveCriteria(values, new Set(values), true, false)).toEqual({
+      values: ['a', 'b', 'c'],
+      showBlanks: true,
+    });
+  });
 });
 
 describe('expandDataRegion', () => {
@@ -185,5 +231,30 @@ describe('expandDataRegion', () => {
       { maxRow: 4, maxCol: 2 }
     );
     expect(region).toEqual({ top: 2, left: 1, bottom: 4, right: 2 });
+  });
+});
+
+describe('unsupported criteria', () => {
+  const spec: FilterSpec = {
+    range: { startRow: 0, startCol: 0, endRow: 9, endCol: 2 },
+    columns: [
+      { col: 0, values: ['a'], showBlanks: false },
+      { col: 1, values: null, showBlanks: true, unsupported: '<top10 val="5"/>' },
+    ],
+  };
+
+  it('keeps another column preserved xml when one column is edited', () => {
+    const next = withColumnCriteria(spec, 0, ['b'], false);
+    expect(next.columns.find((c) => c.col === 1)?.unsupported).toBe('<top10 val="5"/>');
+  });
+
+  it('drops the preserved xml when that column is edited', () => {
+    const next = withColumnCriteria(spec, 1, ['x'], false);
+    expect(next.columns.find((c) => c.col === 1)?.unsupported).toBeUndefined();
+  });
+
+  it('reports a preserved column as constrained', () => {
+    expect(hasCriteria(columnCriteria(spec, 1))).toBe(true);
+    expect(hasCriteria(columnCriteria(spec, 2))).toBe(false);
   });
 });

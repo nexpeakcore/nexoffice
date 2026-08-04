@@ -23,6 +23,13 @@ export interface FilterColumnCriteria {
   col: number;
   values: string[] | null;
   showBlanks: boolean;
+  /**
+   * Source xml of criteria the engine keeps but cannot evaluate — custom
+   * comparisons, top ten, colour, date groups. Such a column hides nothing and
+   * must travel back untouched so editing a neighbouring column does not erase
+   * it from the file; replacing this column's own criteria drops it.
+   */
+  unsupported?: string;
 }
 
 export interface FilterSpec {
@@ -59,11 +66,24 @@ export function rawFilterText(cell: FilterCellText): string | null {
   return cell.input.startsWith("'") ? cell.input.slice(1) : cell.input;
 }
 
+/**
+ * Distinct raw texts of a column's body cells, capped at `cap` so a huge column
+ * cannot build an unbounded popover. `selected` (the column's applied criteria
+ * values) is always unioned in, on top of and regardless of the cap: an active
+ * selection that fell outside the cap would otherwise show as checked-but-absent
+ * and be silently dropped on Apply, narrowing or emptying a valid filter. The
+ * list therefore holds at most `cap` collected values plus every active
+ * selection, and `truncated` stays true whenever any collected value was left
+ * out — callers must treat a truncated list as incomplete (see
+ * `resolveCriteria`).
+ */
 export function collectFilterValues(
   cells: readonly FilterCellText[],
-  cap = MAX_FILTER_VALUES
+  cap = MAX_FILTER_VALUES,
+  selected: readonly string[] | null = null
 ): CollectedFilterValues {
-  const seen = new Set<string>();
+  const seen = new Set<string>((selected ?? []).filter((value) => value !== ''));
+  let collected = 0;
   let hasBlanks = false;
   let truncated = false;
   for (const cell of cells) {
@@ -74,11 +94,12 @@ export function collectFilterValues(
       continue;
     }
     if (seen.has(text)) continue;
-    if (seen.size >= cap) {
+    if (collected >= cap) {
       truncated = true;
       continue;
     }
     seen.add(text);
+    collected += 1;
   }
   const values = [...seen].sort((a, b) =>
     a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
@@ -109,7 +130,7 @@ export function columnCriteria(spec: FilterSpec, col: number): FilterColumnCrite
 }
 
 export function hasCriteria(criteria: FilterColumnCriteria): boolean {
-  return criteria.values !== null;
+  return criteria.values !== null || criteria.unsupported !== undefined;
 }
 
 export function withColumnCriteria(
@@ -131,14 +152,18 @@ export function withColumnCriteria(
 /**
  * Collapse a popover's checkbox state into wire criteria: everything checked
  * (values and blanks) means the column is unconstrained (`values: null`).
+ * `complete` is false when the list was capped (`CollectedFilterValues.truncated`)
+ * — an all-checked truncated list says nothing about the values that were left
+ * out, so it stays an explicit allow-list instead of widening to unconstrained.
  */
 export function resolveCriteria(
   allValues: readonly string[],
   checked: ReadonlySet<string>,
-  showBlanks: boolean
+  showBlanks: boolean,
+  complete = true
 ): { values: string[] | null; showBlanks: boolean } {
   const allChecked = allValues.every((v) => checked.has(v));
-  if (allChecked && showBlanks) return { values: null, showBlanks: true };
+  if (allChecked && showBlanks && complete) return { values: null, showBlanks: true };
   return { values: allValues.filter((v) => checked.has(v)), showBlanks };
 }
 

@@ -78,6 +78,7 @@ import {
   expandDataRegion,
   filterColumnIndices,
   hasCriteria,
+  MAX_FILTER_VALUES,
   withColumnCriteria,
 } from './components/filters/filterSpec';
 import type { FilterSpec } from './components/filters/filterSpec';
@@ -1337,9 +1338,12 @@ function XlsxEditorContent({
         setOpenFilter(null);
         return;
       }
+      // the applied criteria values are unioned into the list so a selection
+      // beyond the collection cap stays visible and survives the next Apply.
+      const selected = columnCriteria(spec, col).values;
       const bodyStart = spec.range.startRow + 1;
       if (bodyStart > spec.range.endRow) {
-        setOpenFilter({ col, values: [], hasBlanks: false, truncated: false });
+        setOpenFilter({ col, ...collectFilterValues([], MAX_FILTER_VALUES, selected) });
         return;
       }
       try {
@@ -1349,7 +1353,7 @@ function XlsxEditorContent({
             `${cellA1(bodyStart, col)}:${cellA1(spec.range.endRow, col)}`
           )
           .map((row) => row[0]);
-        setOpenFilter({ col, ...collectFilterValues(cells) });
+        setOpenFilter({ col, ...collectFilterValues(cells, MAX_FILTER_VALUES, selected) });
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
