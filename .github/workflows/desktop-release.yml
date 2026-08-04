@@ -31,6 +31,9 @@ jobs:
     name: macOS installers
     runs-on: macos-latest
     timeout-minutes: 90
+    # step-level `if` cannot read the secrets context, so gate on job env
+    env:
+      APPLE_ID: ${{ secrets.APPLE_ID }}
     steps:
       - uses: actions/checkout@v7
 
@@ -69,21 +72,34 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
           # electron-builder notarizes the app bundle automatically when the
           # APPLE_* credentials are present in the environment.
-          APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: bun run dist:mac
 
       # electron-builder only notarizes the app bundle; the dmg itself needs
       # its own sign + notarize + staple pass or Gatekeeper blocks the download.
+      # electron-builder's temporary keychain is gone once the build exits, so
+      # the certificate is imported again into a keychain owned by this step.
       - name: Sign + notarize + staple dmg
-        if: ${{ secrets.APPLE_ID != '' }}
+        if: env.APPLE_ID != ''
         working-directory: desktop
         env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
+          CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: node scripts/notarize-dmg.mjs
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/nexoffice-dmg.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          printf '%s' "$CSC_LINK" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          node scripts/notarize-dmg.mjs
 
       - uses: actions/upload-artifact@v4
         with:
