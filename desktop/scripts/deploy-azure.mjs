@@ -343,9 +343,20 @@ async function main() {
     fail(`No feed manifest found in release/ for: ${platforms.join(', ')} (looked for ${platforms.map((p) => FEEDS[p]).join(', ')}).`)
   }
 
+  // A manifest naming an installer that never uploads would leave every client
+  // on that channel downloading a 404 until the next deploy repairs it.
+  const incomplete = bundles.filter((bundle) => bundle.missing.length)
+  if (incomplete.length) {
+    for (const bundle of incomplete) {
+      for (const url of bundle.missing) {
+        console.error(`  ❌ listed in ${bundle.feedName} but not found locally: ${url}`)
+      }
+    }
+    fail('Refusing to deploy: rebuild the missing artifacts, then run the deploy again.')
+  }
+
   for (const bundle of bundles) {
     console.log(`\n📦 ${bundle.platform} v${bundle.version ?? '?'} — ${bundle.files.length} artifact(s)`)
-    for (const url of bundle.missing) console.warn(`  ⚠️  listed in ${bundle.feedName} but not found locally: ${url}`)
 
     // Binaries first…
     for (const file of bundle.files) await uploadFile(target, file.local, file.blobName, dryRun)
