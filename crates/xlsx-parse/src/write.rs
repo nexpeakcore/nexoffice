@@ -1020,9 +1020,11 @@ fn write_comment_element(
 /// Regenerates a comments part on top of its source: a comment the model still
 /// reads back identically keeps its source element verbatim, so rich runs,
 /// `rPr` formatting and phonetic properties survive an edit to a neighbouring
-/// note. Added comments, and comments whose author or text changed, are written
-/// as plain text — the model carries no runs. Without a readable source the
-/// whole part is regenerated.
+/// note. A note a sort or a row insert relocated is matched on its author and
+/// text instead and re-emitted at its new `ref`, keeping the rest of the source
+/// element. Added comments, and comments whose author or text changed, are
+/// written as plain text — the model carries no runs. Without a readable source
+/// the whole part is regenerated.
 fn comments_xml_with_source(
     sheet: &Sheet,
     main_namespace: &str,
@@ -1064,13 +1066,36 @@ fn comments_xml_with_source(
         }
     }
 
-    let mut elements = Vec::with_capacity(sheet.comments.len());
+    let mut claimed: HashSet<(RowId, ColId)> = HashSet::new();
+    let mut claims: Vec<Option<(RowId, ColId)>> = Vec::with_capacity(sheet.comments.len());
     for (&at, comment) in &sheet.comments {
-        let preserved = source_elements
-            .get(&at)
-            .filter(|_| source_comments.get(&at) == Some(comment));
-        match preserved {
-            Some(child) => elements.push(child.bytes.clone()),
+        let unchanged =
+            source_elements.contains_key(&at) && source_comments.get(&at) == Some(comment);
+        if unchanged {
+            claimed.insert(at);
+        }
+        claims.push(unchanged.then_some(at));
+    }
+    for (claim, comment) in claims.iter_mut().zip(sheet.comments.values()) {
+        if claim.is_some() {
+            continue;
+        }
+        *claim = source_comments
+            .iter()
+            .find(|(at, source)| {
+                *source == comment && !claimed.contains(*at) && source_elements.contains_key(*at)
+            })
+            .map(|(&at, _)| at);
+        if let Some(at) = *claim {
+            claimed.insert(at);
+        }
+    }
+
+    let mut elements = Vec::with_capacity(sheet.comments.len());
+    for ((&at, comment), claim) in sheet.comments.iter().zip(claims.iter().copied()) {
+        let element = match claim {
+            Some(from) if from == at => source_elements[&from].bytes.clone(),
+            Some(from) => comment_element_at(&source_elements[&from].bytes, at)?,
             None => {
                 let element = fragment(|w| {
                     write_comment_element(
@@ -1081,9 +1106,10 @@ fn comments_xml_with_source(
                         &comment.text,
                     )
                 })?;
-                elements.push(list.qualify_fragment(&element)?);
+                list.qualify_fragment(&element)?
             }
-        }
+        };
+        elements.push(element);
     }
     let comment_list = list.render_repeated("comment", &elements, &[])?;
 
@@ -1124,6 +1150,45 @@ fn comment_element_ref(bytes: &[u8]) -> Result<Option<(RowId, ColId)>, ParseErro
             Event::Eof => return Ok(None),
             _ => {}
         }
+    }
+}
+
+/// Re-emits a source `<comment>` element at `at`: only the start tag is
+/// rewritten, with the new `ref`; the runs, `rPr`, phonetic properties and every
+/// other attribute are copied through byte for byte.
+fn comment_element_at(bytes: &[u8], at: (RowId, ColId)) -> Result<Vec<u8>, ParseError> {
+    let mut attributes = attributes_from_fragment(bytes)?;
+    set_attribute(
+        &mut attributes,
+        "ref",
+        "ref",
+        CellRef::new(at.0, at.1).to_a1(),
+    );
+    let mut reader = quick_xml::Reader::from_reader(bytes);
+    loop {
+        let (mut start, self_closing) = match reader.read_event().map_err(xml_err)? {
+            Event::Start(element) => (element, false),
+            Event::Empty(element) => (element, true),
+            Event::Eof => {
+                return Err(ParseError::Malformed(
+                    "comment element has no start tag".into(),
+                ));
+            }
+            _ => continue,
+        };
+        start.clear_attributes();
+        for attribute in &attributes {
+            start.push_attribute((attribute.name.as_str(), attribute.value.as_str()));
+        }
+        let mut rewritten = fragment(|w| {
+            w.write_event(if self_closing {
+                Event::Empty(start)
+            } else {
+                Event::Start(start)
+            })
+        })?;
+        rewritten.extend_from_slice(&bytes[reader.buffer_position() as usize..]);
+        return Ok(rewritten);
     }
 }
 

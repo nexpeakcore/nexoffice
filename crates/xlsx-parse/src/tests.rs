@@ -2354,6 +2354,123 @@ fn deleting_a_comment_keeps_the_survivor_formatted() {
     assert_eq!(comments.matches("<comment ").count(), 1, "{comments}");
 }
 
+#[test]
+fn a_relocated_comment_keeps_its_source_element_at_the_new_ref() {
+    let comments = edited_comments_part(|workbook| {
+        let sheet = &mut workbook.sheets[0];
+        let moved = sheet.set_comment(CellRef::parse_a1("C3").unwrap(), None);
+        sheet.set_comment(CellRef::parse_a1("C2").unwrap(), moved);
+    });
+
+    assert!(comments.contains(PLAIN_COMMENT_ELEMENT), "{comments}");
+    assert!(
+        comments.contains(&RICH_COMMENT_ELEMENT.replace(r#"ref="C3""#, r#"ref="C2""#)),
+        "{comments}"
+    );
+    assert_eq!(comments.matches("<comment ").count(), 2, "{comments}");
+}
+
+#[test]
+fn a_relocated_comment_that_was_also_edited_is_written_as_plain_text() {
+    let comments = edited_comments_part(|workbook| {
+        let sheet = &mut workbook.sheets[0];
+        sheet.set_comment(CellRef::parse_a1("C3").unwrap(), None);
+        sheet.set_comment(
+            CellRef::parse_a1("C2").unwrap(),
+            Some(note("Grace", "rewritten elsewhere")),
+        );
+    });
+
+    assert!(comments.contains(PLAIN_COMMENT_ELEMENT), "{comments}");
+    assert!(
+        comments.contains(r#"<comment ref="C2" authorId="1">"#),
+        "{comments}"
+    );
+    assert!(comments.contains("rewritten elsewhere"), "{comments}");
+    assert!(!comments.contains("<rPr>"), "{comments}");
+    assert_eq!(comments.matches("<comment ").count(), 2, "{comments}");
+}
+
+const TWIN_COMMENTS_PART: &str = concat!(
+    r#"<comments><authors><author>Ada</author></authors><commentList>"#,
+    r#"<comment ref="A1" authorId="0" shapeId="11"><text><r><rPr><b/></rPr><t>twin</t></r></text></comment>"#,
+    r#"<comment ref="A2" authorId="0" shapeId="22"><text><r><rPr><i/></rPr><t>twin</t></r></text></comment>"#,
+    r#"</commentList></comments>"#,
+);
+
+/// Edits the commented fixture, its comments part swapped for two notes with
+/// identical author and flattened text, and hands back the saved part.
+fn edited_twin_comments_part(edit: impl Fn(&mut Workbook)) -> String {
+    let mut parts = commented_package();
+    replace_part(
+        &mut parts,
+        "xl/comments1.xml",
+        TWIN_COMMENTS_PART.as_bytes().to_vec(),
+    );
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+    let save = || {
+        let mut workbook = parsed.workbook.clone();
+        edit(&mut workbook);
+        let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+        assert_eq!(
+            parse_workbook(&saved).unwrap().sheets[0].comments,
+            workbook.sheets[0].comments
+        );
+        part_bytes(&saved, "xl/comments1.xml")
+    };
+    let first = save();
+    assert_eq!(first, save());
+    String::from_utf8(first).unwrap()
+}
+
+#[test]
+fn relocated_identical_comments_each_claim_their_own_source_element() {
+    let comments = edited_twin_comments_part(|workbook| {
+        let sheet = &mut workbook.sheets[0];
+        let first = sheet.set_comment(CellRef::parse_a1("A1").unwrap(), None);
+        let second = sheet.set_comment(CellRef::parse_a1("A2").unwrap(), None);
+        sheet.set_comment(CellRef::parse_a1("B1").unwrap(), first);
+        sheet.set_comment(CellRef::parse_a1("B2").unwrap(), second);
+    });
+
+    assert!(
+        comments.contains(
+            r#"<comment ref="B1" authorId="0" shapeId="11"><text><r><rPr><b/></rPr><t>twin</t></r></text></comment>"#
+        ),
+        "{comments}"
+    );
+    assert!(
+        comments.contains(
+            r#"<comment ref="B2" authorId="0" shapeId="22"><text><r><rPr><i/></rPr><t>twin</t></r></text></comment>"#
+        ),
+        "{comments}"
+    );
+    assert_eq!(comments.matches("<comment ").count(), 2, "{comments}");
+}
+
+#[test]
+fn a_relocated_comment_never_steals_the_element_of_one_that_stayed() {
+    let comments = edited_twin_comments_part(|workbook| {
+        let sheet = &mut workbook.sheets[0];
+        let moved = sheet.set_comment(CellRef::parse_a1("A2").unwrap(), None);
+        sheet.set_comment(CellRef::parse_a1("A3").unwrap(), moved);
+    });
+
+    assert!(
+        comments.contains(
+            r#"<comment ref="A1" authorId="0" shapeId="11"><text><r><rPr><b/></rPr><t>twin</t></r></text></comment>"#
+        ),
+        "{comments}"
+    );
+    assert!(
+        comments.contains(
+            r#"<comment ref="A3" authorId="0" shapeId="22"><text><r><rPr><i/></rPr><t>twin</t></r></text></comment>"#
+        ),
+        "{comments}"
+    );
+    assert_eq!(comments.matches("<comment ").count(), 2, "{comments}");
+}
+
 fn replace_part(parts: &mut [(String, Vec<u8>)], name: &str, bytes: Vec<u8>) {
     parts
         .iter_mut()
