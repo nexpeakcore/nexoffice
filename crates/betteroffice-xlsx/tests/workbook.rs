@@ -3708,6 +3708,131 @@ fn auto_filter_and_hidden_rows_survive_save_and_reopen() {
     assert_eq!(survived.hidden_rows, sheet.hidden_rows);
 }
 
+/// A workbook whose row 4 is hidden despite passing the `keep` filter, and
+/// whose rows 3 and 5 are hidden because they fail it.
+fn manually_hidden_row_fixture() -> Vec<u8> {
+    let mut model = WorkbookModel::default();
+    let mut sheet = Sheet::new("Data");
+    for (address, value) in [
+        ("A1", "Name"),
+        ("A2", "keep"),
+        ("A3", "drop"),
+        ("A4", "keep"),
+        ("A5", "drop"),
+    ] {
+        sheet.set_cell(
+            cell(address),
+            Cell {
+                value: CellValue::Text {
+                    value: value.to_owned(),
+                },
+                ..Cell::default()
+            },
+        );
+    }
+    sheet.auto_filter = Some(betteroffice_xlsx::AutoFilter {
+        range: CellRange::parse_a1("A1:A5").unwrap(),
+        columns: vec![betteroffice_xlsx::AutoFilterColumn {
+            col: 0,
+            values: Some(vec!["keep".to_owned()]),
+            show_blanks: false,
+        }],
+    });
+    sheet.hidden_rows = [2, 3, 4].into_iter().collect();
+    model.sheets.push(sheet);
+    ooxml_opc::rezip_parts(&xlsx_parse::serialize_workbook(&model).unwrap()).unwrap()
+}
+
+/// SpreadsheetML records only `hidden="1"`, so a load has to reconstruct why
+/// each row is hidden; from there the distinction is tracked exactly, and a
+/// manual hide that also fails the filter outlives the filter.
+#[test]
+fn manual_hides_are_seeded_at_load_and_outlive_the_filter() {
+    let mut workbook = Workbook::open(&manually_hidden_row_fixture()).unwrap();
+    let opened = workbook.model().sheet(SheetId(0)).unwrap();
+    assert_eq!(opened.hidden_rows, [2, 3, 4].into_iter().collect());
+    assert_eq!(
+        opened.manual_hidden_rows,
+        [3].into_iter().collect(),
+        "only the hidden row that passes the filter can have been hidden by hand"
+    );
+
+    let internal = workbook
+        .apply_ops(
+            vec![Op::SetHiddenRows {
+                sheet: SheetId(0),
+                hidden: vec![2, 3, 4],
+                manual: vec![3, 4],
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(internal, Error::InvalidOperation(_)),
+        "hidden-row provenance is not directly settable: {internal}"
+    );
+
+    let before_clear = workbook.model().clone();
+    workbook
+        .apply_ops(
+            vec![Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: None,
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    let cleared = workbook.model().sheet(SheetId(0)).unwrap();
+    assert_eq!(
+        cleared.hidden_rows,
+        [3].into_iter().collect(),
+        "the filter hides lift and the manual hide stays"
+    );
+
+    workbook.undo(CalculationOptions::default()).unwrap();
+    assert_eq!(workbook.model(), &before_clear);
+
+    let reopened = Workbook::open(&workbook.save().unwrap()).unwrap();
+    let survived = reopened.model().sheet(SheetId(0)).unwrap();
+    assert_eq!(survived.hidden_rows, [2, 3, 4].into_iter().collect());
+    assert_eq!(survived.manual_hidden_rows, [3].into_iter().collect());
+}
+
+/// The v8 collaborative schema carries manual-hide provenance, so a replica
+/// that never saw the file agrees about which hides outlive the filter.
+#[test]
+fn manual_hides_reach_collaborative_replicas() {
+    let original = manually_hidden_row_fixture();
+    let mut left = Workbook::open_collaborative(&original, 1401).unwrap();
+    let mut right = Workbook::open_collaborative(&original, 1402).unwrap();
+    assert_eq!(
+        right.model().sheets[0].manual_hidden_rows,
+        [3].into_iter().collect()
+    );
+
+    left.edit_cell(
+        SheetId(0),
+        cell("C1"),
+        "sync",
+        CalculationOptions::default(),
+    )
+    .unwrap();
+    let update = left
+        .encode_diff_v1(&right.encode_state_vector_v1())
+        .unwrap();
+    right
+        .apply_update_v1(&update, CalculationOptions::default())
+        .unwrap();
+    assert_eq!(
+        left.model().sheets[0].manual_hidden_rows,
+        right.model().sheets[0].manual_hidden_rows
+    );
+    assert_eq!(
+        right.model().sheets[0].manual_hidden_rows,
+        [3].into_iter().collect()
+    );
+}
+
 /// Provenance is recorded against the address a cell was read from, so a row
 /// or column edit that moves the cell has to move it too.
 #[test]

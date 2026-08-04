@@ -33,7 +33,8 @@ const MIN_SUPPORTED_SCHEMA_VERSION: i64 = 3;
 const FREEZE_PANE_SCHEMA_VERSION: i64 = 4;
 const HYPERLINKS_SCHEMA_VERSION: i64 = 5;
 const AUTO_FILTER_SCHEMA_VERSION: i64 = 6;
-const SCHEMA_VERSION: i64 = 7;
+const COMMENTS_SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 const BASE_FINGERPRINT: &str = "baseFingerprint";
 const STRUCTURE_GENERATION: &str = "structureGeneration";
 const AUTO_FILTER: &str = "autoFilter";
@@ -43,6 +44,7 @@ const COL_WIDTHS: &str = "colWidths";
 const FREEZE_PANE: &str = "freezePane";
 const HIDDEN_ROWS: &str = "hiddenRows";
 const HYPERLINKS: &str = "hyperlinks";
+const MANUAL_HIDDEN_ROWS: &str = "manualHiddenRows";
 const MERGES: &str = "merges";
 const NAME: &str = "name";
 const ROW_HEIGHTS: &str = "rowHeights";
@@ -101,6 +103,7 @@ struct WorkbookBase {
     freeze_panes: Vec<Option<FreezePane>>,
     hidden_rows: Vec<BTreeSet<RowId>>,
     hyperlinks: Vec<Vec<Hyperlink>>,
+    manual_hidden_rows: Vec<BTreeSet<RowId>>,
     shared_strings: Vec<String>,
     styles: Stylesheet,
 }
@@ -144,6 +147,11 @@ impl WorkbookBase {
                 .sheets
                 .iter()
                 .map(|sheet| sheet.hyperlinks.clone())
+                .collect(),
+            manual_hidden_rows: model
+                .sheets
+                .iter()
+                .map(|sheet| sheet.manual_hidden_rows.clone())
                 .collect(),
             shared_strings: model.shared_strings.clone(),
             styles: model.styles.clone(),
@@ -602,62 +610,43 @@ impl WorkbookAuthority {
             .sheet_keys
             .iter()
             .zip(&model.sheets)
-            .map(|(key, sheet)| {
-                let hyperlinks = serde_json::to_string(&sheet.hyperlinks)
-                    .map_err(|error| format!("cannot encode sheet hyperlinks: {error}"))?;
-                let auto_filter = serde_json::to_string(&sheet.auto_filter)
-                    .map_err(|error| format!("cannot encode sheet auto filter: {error}"))?;
-                let hidden_rows = serde_json::to_string(&sheet.hidden_rows)
-                    .map_err(|error| format!("cannot encode sheet hidden rows: {error}"))?;
-                let comments = comments_to_json(&sheet.comments)?;
-                Ok((
-                    key.clone(),
-                    (
-                        sheet.freeze_pane,
-                        hyperlinks,
-                        auto_filter,
-                        hidden_rows,
-                        comments,
-                    ),
-                ))
-            })
+            .map(|(key, sheet)| Ok((key.clone(), UpgradedSheetFeatures::encode(sheet)?)))
             .collect::<Result<BTreeMap<_, _>, String>>()?;
         let mut txn = self.doc.transact_mut_with(HYDRATE_ORIGIN);
         let sheets = txn
             .get_map(SHEETS)
             .ok_or_else(|| "missing sheet map".to_string())?;
         let keys = sheets.keys(&txn).map(str::to_string).collect::<Vec<_>>();
+        let empty = UpgradedSheetFeatures::default();
         for key in keys {
             let sheet = sheets
                 .get(&txn, &key)
                 .and_then(|value| value.cast::<MapRef>().ok())
                 .ok_or_else(|| format!("sheet {key} is not a map"))?;
-            let (freeze_pane, hyperlinks, auto_filter, hidden_rows, comments) = features
-                .get(&key)
-                .map(
-                    |(freeze_pane, hyperlinks, auto_filter, hidden_rows, comments)| {
-                        (
-                            *freeze_pane,
-                            hyperlinks.as_str(),
-                            auto_filter.as_str(),
-                            hidden_rows.as_str(),
-                            comments.as_str(),
-                        )
-                    },
-                )
-                .unwrap_or((None, "[]", "null", "[]", "[]"));
+            let feature = features.get(&key).unwrap_or(&empty);
             if version < FREEZE_PANE_SCHEMA_VERSION {
-                sheet.try_update(&mut txn, FREEZE_PANE, freeze_pane_to_any(freeze_pane));
+                sheet.try_update(
+                    &mut txn,
+                    FREEZE_PANE,
+                    freeze_pane_to_any(feature.freeze_pane),
+                );
             }
             if version < HYPERLINKS_SCHEMA_VERSION {
-                sheet.try_update(&mut txn, HYPERLINKS, hyperlinks);
+                sheet.try_update(&mut txn, HYPERLINKS, feature.hyperlinks.as_str());
             }
             if version < AUTO_FILTER_SCHEMA_VERSION {
-                sheet.try_update(&mut txn, AUTO_FILTER, auto_filter);
-                sheet.try_update(&mut txn, HIDDEN_ROWS, hidden_rows);
+                sheet.try_update(&mut txn, AUTO_FILTER, feature.auto_filter.as_str());
+                sheet.try_update(&mut txn, HIDDEN_ROWS, feature.hidden_rows.as_str());
+            }
+            if version < COMMENTS_SCHEMA_VERSION {
+                sheet.try_update(&mut txn, COMMENTS, feature.comments.as_str());
             }
             if version < SCHEMA_VERSION {
-                sheet.try_update(&mut txn, COMMENTS, comments);
+                sheet.try_update(
+                    &mut txn,
+                    MANUAL_HIDDEN_ROWS,
+                    feature.manual_hidden_rows.as_str(),
+                );
             }
         }
         let meta = txn
@@ -770,6 +759,7 @@ impl WorkbookAuthority {
                     .get(index)
                     .map(Vec::as_slice)
                     .unwrap_or_default(),
+                manual_hidden_rows: self.base.manual_hidden_rows.get(index),
             };
             model.sheets.push(materialize_sheet(
                 &sheet_map,
@@ -2112,6 +2102,9 @@ fn sync_sheet(
     let hyperlinks = serde_json::to_string(&sheet.hyperlinks)
         .map_err(|error| format!("cannot encode sheet hyperlinks: {error}"))?;
     sheet_map.try_update(txn, HYPERLINKS, hyperlinks);
+    let manual_hidden_rows = serde_json::to_string(&sheet.manual_hidden_rows)
+        .map_err(|error| format!("cannot encode sheet manual hidden rows: {error}"))?;
+    sheet_map.try_update(txn, MANUAL_HIDDEN_ROWS, manual_hidden_rows);
     sheet_map.try_update(txn, MERGES, merges_to_any(&sheet.merges));
     sheet_map.try_update(txn, NAME, sheet.name.as_str());
     let row_heights: MapRef = sheet_map.get_or_init(txn, ROW_HEIGHTS);
@@ -2334,6 +2327,48 @@ struct SheetFallback<'a> {
     freeze_pane: Option<FreezePane>,
     hidden_rows: Option<&'a BTreeSet<RowId>>,
     hyperlinks: &'a [Hyperlink],
+    manual_hidden_rows: Option<&'a BTreeSet<RowId>>,
+}
+
+/// encoded sheet state written into a shared document whose schema predates
+/// each feature, filling the keys a schema upgrade must add.
+struct UpgradedSheetFeatures {
+    auto_filter: String,
+    comments: String,
+    freeze_pane: Option<FreezePane>,
+    hidden_rows: String,
+    hyperlinks: String,
+    manual_hidden_rows: String,
+}
+
+impl UpgradedSheetFeatures {
+    fn encode(sheet: &Sheet) -> Result<Self, String> {
+        Ok(Self {
+            auto_filter: serde_json::to_string(&sheet.auto_filter)
+                .map_err(|error| format!("cannot encode sheet auto filter: {error}"))?,
+            comments: comments_to_json(&sheet.comments)?,
+            freeze_pane: sheet.freeze_pane,
+            hidden_rows: serde_json::to_string(&sheet.hidden_rows)
+                .map_err(|error| format!("cannot encode sheet hidden rows: {error}"))?,
+            hyperlinks: serde_json::to_string(&sheet.hyperlinks)
+                .map_err(|error| format!("cannot encode sheet hyperlinks: {error}"))?,
+            manual_hidden_rows: serde_json::to_string(&sheet.manual_hidden_rows)
+                .map_err(|error| format!("cannot encode sheet manual hidden rows: {error}"))?,
+        })
+    }
+}
+
+impl Default for UpgradedSheetFeatures {
+    fn default() -> Self {
+        Self {
+            auto_filter: "null".to_string(),
+            comments: "[]".to_string(),
+            freeze_pane: None,
+            hidden_rows: "[]".to_string(),
+            hyperlinks: "[]".to_string(),
+            manual_hidden_rows: "[]".to_string(),
+        }
+    }
 }
 
 fn materialize_sheet<T: ReadTxn>(
@@ -2438,14 +2473,31 @@ fn materialize_sheet<T: ReadTxn>(
         _ => fallback.hidden_rows.cloned().unwrap_or_default(),
     };
     sheet.comments = match (version, sheet_map.get(txn, COMMENTS)) {
-        (SCHEMA_VERSION.., Some(value)) => {
+        (COMMENTS_SCHEMA_VERSION.., Some(value)) => {
             let json = value
                 .cast::<String>()
                 .map_err(|_| "sheet comments are not a string".to_string())?;
             comments_from_json(&json)?
         }
-        (SCHEMA_VERSION.., None) => return Err("sheet is missing its comments".to_string()),
+        (COMMENTS_SCHEMA_VERSION.., None) => {
+            return Err("sheet is missing its comments".to_string());
+        }
         _ => fallback.comments.cloned().unwrap_or_default(),
+    };
+    sheet.manual_hidden_rows = match (version, sheet_map.get(txn, MANUAL_HIDDEN_ROWS)) {
+        (SCHEMA_VERSION.., Some(value)) => {
+            let json = value
+                .cast::<String>()
+                .map_err(|_| "sheet manual hidden rows are not a string".to_string())?;
+            let rows: Vec<RowId> = serde_json::from_str(&json)
+                .map_err(|error| format!("sheet manual hidden rows are invalid: {error}"))?;
+            validate_hidden_rows(&rows)?;
+            rows.into_iter().collect()
+        }
+        (SCHEMA_VERSION.., None) => {
+            return Err("sheet is missing its manual hidden rows".to_string());
+        }
+        _ => fallback.manual_hidden_rows.cloned().unwrap_or_default(),
     };
     sheet.merges = match sheet_map.get(txn, MERGES) {
         Some(Out::Any(value)) => merges_from_any(&value)?,
@@ -2577,12 +2629,27 @@ fn sheet_schema_keys(version: i64) -> &'static [&'static str] {
         ROW_HEIGHTS,
         STYLES,
     ];
+    const V8: &[&str] = &[
+        AUTO_FILTER,
+        COL_WIDTHS,
+        COMMENTS,
+        CONTENTS,
+        FREEZE_PANE,
+        HIDDEN_ROWS,
+        HYPERLINKS,
+        MANUAL_HIDDEN_ROWS,
+        MERGES,
+        NAME,
+        ROW_HEIGHTS,
+        STYLES,
+    ];
     match version {
         MIN_SUPPORTED_SCHEMA_VERSION => V3,
         FREEZE_PANE_SCHEMA_VERSION => V4,
         HYPERLINKS_SCHEMA_VERSION => V5,
         AUTO_FILTER_SCHEMA_VERSION => V6,
-        _ => V7,
+        COMMENTS_SCHEMA_VERSION => V7,
+        _ => V8,
     }
 }
 
@@ -3003,7 +3070,8 @@ fn fingerprint_model_with_schema(
         4 => b"betteroffice-xlsx-yrs-v4".as_slice(),
         5 => b"betteroffice-xlsx-yrs-v5".as_slice(),
         6 => b"betteroffice-xlsx-yrs-v6".as_slice(),
-        _ => b"betteroffice-xlsx-yrs-v7".as_slice(),
+        7 => b"betteroffice-xlsx-yrs-v7".as_slice(),
+        _ => b"betteroffice-xlsx-yrs-v8".as_slice(),
     };
     hasher.update(domain);
     let base = if include_defined_names {
@@ -3081,13 +3149,19 @@ fn fingerprint_model_with_schema(
                 hash_u32(&mut hasher, row);
             }
         }
-        if schema_version >= SCHEMA_VERSION {
+        if schema_version >= COMMENTS_SCHEMA_VERSION {
             hash_u64(&mut hasher, sheet.comments.len() as u64);
             for (&(row, col), comment) in &sheet.comments {
                 hash_u32(&mut hasher, row);
                 hash_u32(&mut hasher, col);
                 hash_bytes(&mut hasher, comment.author.as_bytes());
                 hash_bytes(&mut hasher, comment.text.as_bytes());
+            }
+        }
+        if schema_version >= SCHEMA_VERSION {
+            hash_u64(&mut hasher, sheet.manual_hidden_rows.len() as u64);
+            for &row in &sheet.manual_hidden_rows {
+                hash_u32(&mut hasher, row);
             }
         }
     }
@@ -3179,6 +3253,7 @@ mod tests {
             }],
         });
         first.hidden_rows.insert(4);
+        first.manual_hidden_rows.insert(4);
         first.set_comment(
             CellRef::new(1, 0),
             Some(Comment {
@@ -3233,6 +3308,9 @@ mod tests {
                     .and_then(|value| value.cast::<MapRef>().ok())
                     .unwrap();
                 if version < SCHEMA_VERSION {
+                    sheet.remove(&mut txn, MANUAL_HIDDEN_ROWS);
+                }
+                if version < COMMENTS_SCHEMA_VERSION {
                     sheet.remove(&mut txn, COMMENTS);
                 }
                 if version < AUTO_FILTER_SCHEMA_VERSION {
@@ -3288,10 +3366,16 @@ mod tests {
     #[test]
     fn known_schema_versions_materialize_and_upgrade_to_current() {
         let model = rich_model();
-        for (index, (version, include_defined_names)) in
-            [(3, false), (3, true), (4, true), (5, true), (6, true)]
-                .into_iter()
-                .enumerate()
+        for (index, (version, include_defined_names)) in [
+            (3, false),
+            (3, true),
+            (4, true),
+            (5, true),
+            (6, true),
+            (7, true),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let update = legacy_update(&model, version, include_defined_names);
             let authority = authority_from_update(&model, &update, 101 + index as u64);
@@ -3308,9 +3392,14 @@ mod tests {
     #[test]
     fn legacy_snapshot_merges_into_current_bootstrap() {
         let model = rich_model();
-        for (version, include_defined_names) in
-            [(3, false), (3, true), (4, true), (5, true), (6, true)]
-        {
+        for (version, include_defined_names) in [
+            (3, false),
+            (3, true),
+            (4, true),
+            (5, true),
+            (6, true),
+            (7, true),
+        ] {
             let update = legacy_update(&model, version, include_defined_names);
             let authority = WorkbookAuthority::from_model_with_client_id(&model, 108).unwrap();
             let staged = authority.stage_updates_v1(&[&update]).unwrap();
@@ -3335,7 +3424,7 @@ mod tests {
         };
         assert_eq!(
             error,
-            "unsupported schema version 8; supported versions are 3 through 7"
+            "unsupported schema version 9; supported versions are 3 through 8"
         );
     }
 

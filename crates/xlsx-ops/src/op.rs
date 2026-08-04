@@ -121,6 +121,10 @@ pub enum Op {
     SetHiddenRows {
         sheet: SheetId,
         hidden: Vec<RowId>,
+        /// the subset of `hidden` attributed to a manual hide rather than the
+        /// active filter; restoring it is what makes the undo exact.
+        #[serde(default)]
+        manual: Vec<RowId>,
     },
     #[doc(hidden)]
     SetHyperlinks {

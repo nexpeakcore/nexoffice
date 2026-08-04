@@ -466,6 +466,7 @@ fn parse_worksheet(
         }
     }
     normalize_merges(&mut sheet.merges);
+    sheet.seed_manual_hidden_rows();
     Ok(sheet)
 }
 

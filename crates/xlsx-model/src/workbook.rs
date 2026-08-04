@@ -89,6 +89,12 @@ pub struct Sheet {
     pub row_heights: BTreeMap<RowId, f64>,
     /// rows explicitly hidden (by a filter or a manual hide).
     pub hidden_rows: BTreeSet<RowId>,
+    /// the subset of `hidden_rows` the user hid by hand. SpreadsheetML records
+    /// only `hidden="1"` per row, so provenance cannot be serialized: this is
+    /// seeded at load from the hidden rows that pass the active filter and is
+    /// then maintained exactly for as long as the workbook stays open, which
+    /// is what keeps a manual hide hidden when the filter changes or clears.
+    pub manual_hidden_rows: BTreeSet<RowId>,
     pub auto_filter: Option<AutoFilter>,
     pub comments: BTreeMap<(RowId, ColId), Comment>,
 }
@@ -134,16 +140,64 @@ impl Sheet {
         })
     }
 
+    /// hide `row` by hand: it stays hidden across filter changes until it is
+    /// shown again.
     pub fn hide_row(&mut self, row: RowId) {
         self.hidden_rows.insert(row);
+        self.manual_hidden_rows.insert(row);
     }
 
+    /// show `row` by hand, dropping any manual hide on it. a row the active
+    /// filter rejects re-hides the next time the filter is evaluated.
     pub fn show_row(&mut self, row: RowId) {
         self.hidden_rows.remove(&row);
+        self.manual_hidden_rows.remove(&row);
     }
 
     pub fn is_row_hidden(&self, row: RowId) -> bool {
         self.hidden_rows.contains(&row)
+    }
+
+    /// the non-header rows of `filter`'s range that fail its criteria against
+    /// this sheet's current cells — the rows the filter itself hides. the
+    /// filter is passed in because callers evaluate a candidate filter before
+    /// installing it.
+    pub fn rows_failing_filter(&self, filter: Option<&AutoFilter>) -> BTreeSet<RowId> {
+        let Some(filter) = filter else {
+            return BTreeSet::new();
+        };
+        (filter.range.start.row..=filter.range.end.row)
+            .filter(|&row| row != filter.range.start.row && !self.row_passes_filter(filter, row))
+            .collect()
+    }
+
+    /// a row is visible when every column with value criteria matches its cell
+    /// text, blanks counting only when the column keeps blanks.
+    fn row_passes_filter(&self, filter: &AutoFilter, row: RowId) -> bool {
+        filter.columns.iter().all(|column| {
+            let Some(values) = &column.values else {
+                return true;
+            };
+            let text = self
+                .cell(CellRef::new(row, column.col))
+                .map(|cell| filter_text(&cell.value))
+                .unwrap_or_default();
+            if text.is_empty() {
+                column.show_blanks
+            } else {
+                values.contains(&text)
+            }
+        })
+    }
+
+    /// recover manual-hide provenance for a freshly loaded sheet. the file
+    /// says only that a row is hidden, so a hidden row the active filter would
+    /// keep visible must have been hidden by hand; a hidden row the filter
+    /// rejects is indistinguishable from a filter hide and is attributed to
+    /// the filter.
+    pub fn seed_manual_hidden_rows(&mut self) {
+        let failing = self.rows_failing_filter(self.auto_filter.as_ref());
+        self.manual_hidden_rows = self.hidden_rows.difference(&failing).copied().collect();
     }
 
     pub fn comment_at(&self, at: CellRef) -> Option<&Comment> {
@@ -188,6 +242,17 @@ impl Sheet {
             CellRef::new(min_r, min_c),
             CellRef::new(max_r, max_c),
         ))
+    }
+}
+
+/// the text an auto filter matches against: the bare value, no number formats.
+pub fn filter_text(value: &CellValue) -> String {
+    match value {
+        CellValue::Empty => String::new(),
+        CellValue::Number { value } => value.to_string(),
+        CellValue::Text { value } => value.clone(),
+        CellValue::Bool { value } => if *value { "TRUE" } else { "FALSE" }.to_string(),
+        CellValue::Error { value } => value.as_str().to_string(),
     }
 }
 
@@ -447,5 +512,47 @@ mod tests {
                 .hyperlink_at(CellRef::parse_a1("A1").unwrap())
                 .is_none()
         );
+    }
+
+    #[test]
+    fn manual_hide_provenance_is_seeded_from_the_filter_and_tracked_by_hand() {
+        let mut sheet = Sheet::new("Data");
+        for (row, name) in [(0, "Name"), (1, "keep"), (2, "drop"), (3, "keep")] {
+            sheet.set_cell(
+                CellRef::new(row, 0),
+                Cell {
+                    value: CellValue::Text { value: name.into() },
+                    ..Cell::default()
+                },
+            );
+        }
+        sheet.auto_filter = Some(AutoFilter {
+            range: CellRange::parse_a1("A1:A4").unwrap(),
+            columns: vec![AutoFilterColumn {
+                col: 0,
+                values: Some(vec!["keep".into()]),
+                show_blanks: false,
+            }],
+        });
+        assert_eq!(
+            sheet.rows_failing_filter(sheet.auto_filter.as_ref()),
+            [2].into_iter().collect::<BTreeSet<_>>(),
+            "the header never fails and only the `drop` row does"
+        );
+
+        sheet.hidden_rows = [2, 3].into_iter().collect();
+        sheet.seed_manual_hidden_rows();
+        assert_eq!(
+            sheet.manual_hidden_rows,
+            [3].into_iter().collect::<BTreeSet<_>>(),
+            "a hidden row the filter would keep must have been hidden by hand"
+        );
+
+        sheet.hide_row(1);
+        assert!(sheet.is_row_hidden(1));
+        assert!(sheet.manual_hidden_rows.contains(&1));
+        sheet.show_row(1);
+        assert!(!sheet.is_row_hidden(1));
+        assert!(!sheet.manual_hidden_rows.contains(&1));
     }
 }

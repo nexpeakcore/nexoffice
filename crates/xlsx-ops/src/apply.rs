@@ -179,15 +179,10 @@ pub fn apply(wb: &mut Workbook, op: &Op) -> Result<InvertedOp, OpError> {
             let s = sheet_mut(wb, *sheet)?;
             let old_filter = s.auto_filter.clone();
             let old_hidden: Vec<RowId> = s.hidden_rows.iter().copied().collect();
-            let previously_filter_hidden = filter_failing_rows(s, old_filter.as_ref());
+            let old_manual: Vec<RowId> = s.manual_hidden_rows.iter().copied().collect();
             s.auto_filter = filter.clone();
-            let mut hidden: BTreeSet<RowId> = s
-                .hidden_rows
-                .iter()
-                .copied()
-                .filter(|row| !previously_filter_hidden.contains(row))
-                .collect();
-            hidden.extend(filter_failing_rows(s, filter.as_ref()));
+            let mut hidden = s.manual_hidden_rows.clone();
+            hidden.extend(s.rows_failing_filter(filter.as_ref()));
             s.hidden_rows = hidden;
             Ok(InvertedOp(vec![
                 Op::SetAutoFilter {
@@ -197,16 +192,24 @@ pub fn apply(wb: &mut Workbook, op: &Op) -> Result<InvertedOp, OpError> {
                 Op::SetHiddenRows {
                     sheet: *sheet,
                     hidden: old_hidden,
+                    manual: old_manual,
                 },
             ]))
         }
-        Op::SetHiddenRows { sheet, hidden } => {
+        Op::SetHiddenRows {
+            sheet,
+            hidden,
+            manual,
+        } => {
             let s = sheet_mut(wb, *sheet)?;
             let old: Vec<RowId> = s.hidden_rows.iter().copied().collect();
+            let old_manual: Vec<RowId> = s.manual_hidden_rows.iter().copied().collect();
             s.hidden_rows = hidden.iter().copied().collect();
+            s.manual_hidden_rows = manual.iter().copied().collect();
             Ok(InvertedOp(vec![Op::SetHiddenRows {
                 sheet: *sheet,
                 hidden: old,
+                manual: old_manual,
             }]))
         }
         Op::SetComment {
@@ -535,7 +538,7 @@ fn move_row_cells(
     }
     let old_filter = s.auto_filter.clone();
     let old_hidden = s.hidden_rows.clone();
-    let pre_move_failing = filter_failing_rows(s, old_filter.as_ref());
+    let old_manual = s.manual_hidden_rows.clone();
     let cols = range.start.col..range.end.col.saturating_add(1);
     let mut writes = Vec::with_capacity(moves.len());
     let mut formula_restores = Vec::new();
@@ -580,34 +583,29 @@ fn move_row_cells(
     }
     move_row_comments(s, range, moves);
     move_row_hyperlinks(s, range, moves);
-    move_row_hidden(s, moves, &pre_move_failing);
+    move_row_hidden(s, moves);
     Ok(RowMoveOutcome {
         inverse_moves: moves.iter().map(|&(from, to)| (to, from)).collect(),
         formula_restores,
-        filter_restores: filter_restore_ops(s, sheet, old_filter, old_hidden),
+        filter_restores: filter_restore_ops(s, sheet, old_filter, old_hidden, old_manual),
     })
 }
 
 /// permute hidden-row flags alongside their rows under the same simultaneous
-/// semantics as `move_row_cells`. when the moves touch an active filter's
-/// rows, only the manual hides (hidden minus the pre-move filter-failing set)
-/// travel with their rows; the filter is then re-evaluated against the moved
-/// contents and its failing rows re-hidden.
-fn move_row_hidden(s: &mut Sheet, moves: &[(RowId, RowId)], pre_move_failing: &BTreeSet<RowId>) {
+/// semantics as `move_row_cells`. manual hides always travel with their rows;
+/// when the moves touch an active filter's rows the filter is re-evaluated
+/// against the moved contents and its failing rows re-hidden on top.
+fn move_row_hidden(s: &mut Sheet, moves: &[(RowId, RowId)]) {
     let filter_touched = s.auto_filter.as_ref().is_some_and(|filter| {
         let rows = filter.range.start.row..=filter.range.end.row;
         moves
             .iter()
             .any(|&(from, to)| rows.contains(&from) || rows.contains(&to))
     });
+    s.manual_hidden_rows = permute_row_set(&s.manual_hidden_rows, moves);
     if filter_touched {
-        let manual: BTreeSet<RowId> = s
-            .hidden_rows
-            .difference(pre_move_failing)
-            .copied()
-            .collect();
-        let mut hidden = permute_row_set(&manual, moves);
-        hidden.extend(filter_failing_rows(s, s.auto_filter.as_ref()));
+        let mut hidden = s.manual_hidden_rows.clone();
+        hidden.extend(s.rows_failing_filter(s.auto_filter.as_ref()));
         s.hidden_rows = hidden;
     } else {
         s.hidden_rows = permute_row_set(&s.hidden_rows, moves);
@@ -748,47 +746,6 @@ fn value_rank(value: &CellValue) -> u8 {
     }
 }
 
-/// the non-header rows of `filter`'s range that fail its criteria against the
-/// sheet's current cells — the rows the filter itself hides.
-fn filter_failing_rows(sheet: &Sheet, filter: Option<&AutoFilter>) -> BTreeSet<RowId> {
-    let Some(filter) = filter else {
-        return BTreeSet::new();
-    };
-    (filter.range.start.row..=filter.range.end.row)
-        .filter(|&row| row != filter.range.start.row && !row_passes_filter(sheet, filter, row))
-        .collect()
-}
-
-/// a row is visible when every column with value criteria matches its cell
-/// text, blanks counting only when the column keeps blanks.
-fn row_passes_filter(sheet: &Sheet, filter: &AutoFilter, row: RowId) -> bool {
-    filter.columns.iter().all(|column| {
-        let Some(values) = &column.values else {
-            return true;
-        };
-        let text = sheet
-            .cell(CellRef::new(row, column.col))
-            .map(|cell| filter_text(&cell.value))
-            .unwrap_or_default();
-        if text.is_empty() {
-            column.show_blanks
-        } else {
-            values.contains(&text)
-        }
-    })
-}
-
-/// the text a filter matches against: the bare value, no number formats.
-fn filter_text(value: &CellValue) -> String {
-    match value {
-        CellValue::Empty => String::new(),
-        CellValue::Number { value } => value.to_string(),
-        CellValue::Text { value } => value.clone(),
-        CellValue::Bool { value } => if *value { "TRUE" } else { "FALSE" }.to_string(),
-        CellValue::Error { value } => value.as_str().to_string(),
-    }
-}
-
 /// remap an address through a structural op; `None` when it falls inside a
 /// deleted span. non-structural ops leave the address unchanged.
 pub fn remap_ref(at: CellRef, structural_op: &Op) -> Option<CellRef> {
@@ -891,6 +848,7 @@ fn insert_rows(
     let old_hyperlinks = s.hyperlinks.clone();
     let old_filter = s.auto_filter.clone();
     let old_hidden = s.hidden_rows.clone();
+    let old_manual = s.manual_hidden_rows.clone();
     let dropped = shift_cells(s, op);
     shift_row_heights_up(s, at, count);
     remap_merges_keep(s, op);
@@ -912,7 +870,9 @@ fn insert_rows(
         sheet,
         hyperlinks: old_hyperlinks,
     });
-    inv.extend(filter_restore_ops(s, sheet, old_filter, old_hidden));
+    inv.extend(filter_restore_ops(
+        s, sheet, old_filter, old_hidden, old_manual,
+    ));
     inv.extend(restores);
     inv.extend(defined_name_restore);
     inv.extend(hyperlink_restores);
@@ -934,6 +894,7 @@ fn delete_rows(
     let old_hyperlinks = s.hyperlinks.clone();
     let old_filter = s.auto_filter.clone();
     let old_hidden = s.hidden_rows.clone();
+    let old_manual = s.manual_hidden_rows.clone();
     let deleted = shift_cells(s, op);
     let dropped_heights = shift_row_heights_down(s, at, count);
     let dropped_merges = remap_merges_drop(s, op);
@@ -965,7 +926,9 @@ fn delete_rows(
         sheet,
         hyperlinks: old_hyperlinks,
     });
-    inv.extend(filter_restore_ops(s, sheet, old_filter, old_hidden));
+    inv.extend(filter_restore_ops(
+        s, sheet, old_filter, old_hidden, old_manual,
+    ));
     inv.extend(restores);
     inv.extend(defined_name_restore);
     inv.extend(hyperlink_restores);
@@ -987,6 +950,7 @@ fn insert_cols(
     let old_hyperlinks = s.hyperlinks.clone();
     let old_filter = s.auto_filter.clone();
     let old_hidden = s.hidden_rows.clone();
+    let old_manual = s.manual_hidden_rows.clone();
     let dropped = shift_cells(s, op);
     shift_col_widths_up(s, at, count);
     remap_merges_keep(s, op);
@@ -1007,7 +971,9 @@ fn insert_cols(
         sheet,
         hyperlinks: old_hyperlinks,
     });
-    inv.extend(filter_restore_ops(s, sheet, old_filter, old_hidden));
+    inv.extend(filter_restore_ops(
+        s, sheet, old_filter, old_hidden, old_manual,
+    ));
     inv.extend(restores);
     inv.extend(defined_name_restore);
     inv.extend(hyperlink_restores);
@@ -1029,6 +995,7 @@ fn delete_cols(
     let old_hyperlinks = s.hyperlinks.clone();
     let old_filter = s.auto_filter.clone();
     let old_hidden = s.hidden_rows.clone();
+    let old_manual = s.manual_hidden_rows.clone();
     let deleted = shift_cells(s, op);
     let dropped_widths = shift_col_widths_down(s, at, count);
     let dropped_merges = remap_merges_drop(s, op);
@@ -1059,7 +1026,9 @@ fn delete_cols(
         sheet,
         hyperlinks: old_hyperlinks,
     });
-    inv.extend(filter_restore_ops(s, sheet, old_filter, old_hidden));
+    inv.extend(filter_restore_ops(
+        s, sheet, old_filter, old_hidden, old_manual,
+    ));
     inv.extend(restores);
     inv.extend(defined_name_restore);
     inv.extend(hyperlink_restores);
@@ -1180,18 +1149,21 @@ fn remap_merges_drop(s: &mut Sheet, op: &Op) -> Vec<CellRange> {
     dropped
 }
 
-/// remap explicitly hidden rows through a row insert or delete, dropping
-/// entries for deleted rows.
+/// remap explicitly hidden rows — and the manual hides among them — through a
+/// row insert or delete, dropping entries for deleted rows.
 fn remap_hidden_rows(sheet: &mut Sheet, op: &Op) {
-    sheet.hidden_rows = sheet
-        .hidden_rows
-        .iter()
+    sheet.hidden_rows = remap_row_set(&sheet.hidden_rows, op);
+    sheet.manual_hidden_rows = remap_row_set(&sheet.manual_hidden_rows, op);
+}
+
+fn remap_row_set(rows: &BTreeSet<RowId>, op: &Op) -> BTreeSet<RowId> {
+    rows.iter()
         .filter_map(|&row| match *op {
             Op::InsertRows { at, count, .. } => insert_axis(row, at, count, MAX_ROWS),
             Op::DeleteRows { at, count, .. } => delete_axis(row, at, count),
             _ => Some(row),
         })
-        .collect();
+        .collect()
 }
 
 /// remap comment anchors through a structural op, returning the comments
@@ -1295,8 +1267,12 @@ fn filter_restore_ops(
     id: SheetId,
     old_filter: Option<AutoFilter>,
     old_hidden: BTreeSet<RowId>,
+    old_manual: BTreeSet<RowId>,
 ) -> Vec<Op> {
-    if sheet.auto_filter == old_filter && sheet.hidden_rows == old_hidden {
+    if sheet.auto_filter == old_filter
+        && sheet.hidden_rows == old_hidden
+        && sheet.manual_hidden_rows == old_manual
+    {
         return Vec::new();
     }
     vec![
@@ -1307,6 +1283,7 @@ fn filter_restore_ops(
         Op::SetHiddenRows {
             sheet: id,
             hidden: old_hidden.into_iter().collect(),
+            manual: old_manual.into_iter().collect(),
         },
     ]
 }
@@ -1398,10 +1375,11 @@ fn remove_sheet(wb: &mut Workbook, index: usize) -> Result<InvertedOp, OpError> 
             filter: Some(filter.clone()),
         });
     }
-    if !removed.hidden_rows.is_empty() {
+    if !removed.hidden_rows.is_empty() || !removed.manual_hidden_rows.is_empty() {
         inv.push(Op::SetHiddenRows {
             sheet,
             hidden: removed.hidden_rows.iter().copied().collect(),
+            manual: removed.manual_hidden_rows.iter().copied().collect(),
         });
     }
     if !removed.hyperlinks.is_empty() {
@@ -2463,15 +2441,21 @@ mod tests {
             &Op::SetHiddenRows {
                 sheet: SheetId(0),
                 hidden: vec![1, 3],
+                manual: vec![1],
             },
         )
         .unwrap();
         assert!(wb.sheets[0].is_row_hidden(1));
         assert!(wb.sheets[0].is_row_hidden(3));
         assert!(!wb.sheets[0].is_row_hidden(2));
+        assert_eq!(
+            wb.sheets[0].manual_hidden_rows,
+            [1].into_iter().collect::<BTreeSet<_>>()
+        );
 
         apply_ops(&mut wb, &inv.0).unwrap();
         assert!(wb.sheets[0].hidden_rows.is_empty());
+        assert!(wb.sheets[0].manual_hidden_rows.is_empty());
     }
 
     #[test]
@@ -2812,6 +2796,7 @@ mod tests {
             &Op::SetHiddenRows {
                 sheet: SheetId(0),
                 hidden: vec![2, 3],
+                manual: vec![3],
             },
         )
         .unwrap();
@@ -2936,6 +2921,7 @@ mod tests {
             &Op::SetHiddenRows {
                 sheet: SheetId(0),
                 hidden: vec![1, 2, 3],
+                manual: vec![2],
             },
         )
         .unwrap();
@@ -2995,6 +2981,197 @@ mod tests {
 
         apply_ops(&mut wb, &inv.0).unwrap();
         assert_eq!(wb, before);
+    }
+
+    /// a sheet whose rows 2 and 4 fail a `keep` filter, with row 4 also hidden
+    /// by hand — the one state a single hidden set cannot represent.
+    fn doubly_hidden_sheet(wb: &mut Workbook) {
+        let s = wb.sheet_mut(SheetId(0)).unwrap();
+        for (row, name) in [
+            (0, "Name"),
+            (1, "keep"),
+            (2, "drop"),
+            (3, "keep"),
+            (4, "drop"),
+        ] {
+            s.set_cell(CellRef::new(row, 0), text_cell(name));
+        }
+    }
+
+    fn keep_filter(values: &[&str]) -> Option<AutoFilter> {
+        Some(AutoFilter {
+            range: rng("A1:A5"),
+            columns: vec![AutoFilterColumn {
+                col: 0,
+                values: Some(values.iter().map(|v| (*v).to_string()).collect()),
+                show_blanks: false,
+            }],
+        })
+    }
+
+    #[test]
+    fn manual_hide_that_also_fails_the_filter_outlives_the_filter() {
+        let mut wb = wb_one_sheet();
+        doubly_hidden_sheet(&mut wb);
+        let state_zero = wb.clone();
+
+        let inv_manual = apply(
+            &mut wb,
+            &Op::SetHiddenRows {
+                sheet: SheetId(0),
+                hidden: vec![4],
+                manual: vec![4],
+            },
+        )
+        .unwrap();
+        let state_manual = wb.clone();
+
+        let inv_filter = apply(
+            &mut wb,
+            &Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: keep_filter(&["keep"]),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            wb.sheets[0].hidden_rows,
+            [2, 4].into_iter().collect::<BTreeSet<_>>(),
+            "the filter hides both failing rows, one of them already manual"
+        );
+        let state_filtered = wb.clone();
+
+        let mut replaced = wb.clone();
+        let inv_replace = apply(
+            &mut replaced,
+            &Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: keep_filter(&["keep", "drop"]),
+            },
+        )
+        .unwrap();
+        assert!(
+            replaced.sheets[0].is_row_hidden(4),
+            "the manual hide survives a filter that would show its row"
+        );
+        assert!(
+            !replaced.sheets[0].is_row_hidden(2),
+            "the filter-only hide lifts"
+        );
+        apply_ops(&mut replaced, &inv_replace.0).unwrap();
+        assert_eq!(replaced, state_filtered);
+
+        let inv_clear = apply(
+            &mut wb,
+            &Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            wb.sheets[0].hidden_rows,
+            [4].into_iter().collect::<BTreeSet<_>>(),
+            "clearing the filter keeps the manual hide and lifts the rest"
+        );
+
+        apply_ops(&mut wb, &inv_clear.0).unwrap();
+        assert_eq!(wb, state_filtered);
+        apply_ops(&mut wb, &inv_filter.0).unwrap();
+        assert_eq!(wb, state_manual);
+        apply_ops(&mut wb, &inv_manual.0).unwrap();
+        assert_eq!(wb, state_zero);
+    }
+
+    #[test]
+    fn row_insert_and_delete_remap_manual_hides() {
+        let mut wb = wb_one_sheet();
+        doubly_hidden_sheet(&mut wb);
+        apply(
+            &mut wb,
+            &Op::SetHiddenRows {
+                sheet: SheetId(0),
+                hidden: vec![4],
+                manual: vec![4],
+            },
+        )
+        .unwrap();
+        apply(
+            &mut wb,
+            &Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: keep_filter(&["keep"]),
+            },
+        )
+        .unwrap();
+        let before_insert = wb.clone();
+
+        let inv_insert = apply(
+            &mut wb,
+            &Op::InsertRows {
+                sheet: SheetId(0),
+                at: 1,
+                count: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            wb.sheets[0].manual_hidden_rows,
+            [5].into_iter().collect::<BTreeSet<_>>(),
+            "the manual hide follows its row down"
+        );
+        let after_insert = wb.clone();
+
+        let inv_clear = apply(
+            &mut wb,
+            &Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            wb.sheets[0].hidden_rows,
+            [5].into_iter().collect::<BTreeSet<_>>(),
+            "the remapped manual hide still outlives the filter"
+        );
+        apply_ops(&mut wb, &inv_clear.0).unwrap();
+        assert_eq!(wb, after_insert);
+        apply_ops(&mut wb, &inv_insert.0).unwrap();
+        assert_eq!(wb, before_insert);
+
+        let inv_delete = apply(
+            &mut wb,
+            &Op::DeleteRows {
+                sheet: SheetId(0),
+                at: 1,
+                count: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            wb.sheets[0].manual_hidden_rows,
+            [3].into_iter().collect::<BTreeSet<_>>(),
+            "the manual hide follows its row up"
+        );
+        apply_ops(&mut wb, &inv_delete.0).unwrap();
+        assert_eq!(wb, before_insert);
+
+        let inv_delete_manual = apply(
+            &mut wb,
+            &Op::DeleteRows {
+                sheet: SheetId(0),
+                at: 4,
+                count: 1,
+            },
+        )
+        .unwrap();
+        assert!(
+            wb.sheets[0].manual_hidden_rows.is_empty(),
+            "deleting the manually hidden row drops its provenance"
+        );
+        apply_ops(&mut wb, &inv_delete_manual.0).unwrap();
+        assert_eq!(wb, before_insert);
     }
 
     #[test]
