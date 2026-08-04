@@ -2261,6 +2261,7 @@ mod tests {
                         col: 0,
                         values: Some(vec!["keep".into()]),
                         show_blanks: false,
+                        unsupported: None,
                     }],
                 }),
             },
@@ -2273,6 +2274,55 @@ mod tests {
 
         apply_ops(&mut wb, &inv.0).unwrap();
         assert_eq!(wb, before);
+    }
+
+    /// A column whose criteria the engine only preserves constrains nothing, so
+    /// installing the filter must leave every row visible rather than hide the
+    /// whole range behind an allow-list nobody filled in.
+    #[test]
+    fn set_auto_filter_ignores_columns_whose_criteria_are_unsupported() {
+        let mut wb = wb_one_sheet();
+        let s = wb.sheet_mut(SheetId(0)).unwrap();
+        s.set_cell(r("A1"), text_cell("Name"));
+        s.set_cell(r("A2"), text_cell("keep"));
+        s.set_cell(r("A3"), text_cell("drop"));
+        s.set_cell(r("B2"), text_cell("2024-06-01"));
+
+        apply(
+            &mut wb,
+            &Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: Some(AutoFilter {
+                    range: rng("A1:B3"),
+                    columns: vec![
+                        AutoFilterColumn {
+                            col: 0,
+                            values: Some(vec!["keep".into()]),
+                            show_blanks: false,
+                            unsupported: None,
+                        },
+                        AutoFilterColumn {
+                            col: 1,
+                            values: None,
+                            show_blanks: true,
+                            unsupported: Some(
+                                r#"<filters><dateGroupItem year="2024" dateTimeGrouping="year"/></filters>"#
+                                    .into(),
+                            ),
+                        },
+                    ],
+                }),
+            },
+        )
+        .unwrap();
+
+        let sheet = wb.sheet(SheetId(0)).unwrap();
+        assert!(!sheet.is_row_hidden(0));
+        assert!(
+            !sheet.is_row_hidden(1),
+            "the date-group column must not hide a non-blank row"
+        );
+        assert!(sheet.is_row_hidden(2), "the literal column still applies");
     }
 
     fn note(author: &str, text: &str) -> Comment {
@@ -2493,6 +2543,7 @@ mod tests {
                 col: 0,
                 values: None,
                 show_blanks: true,
+                unsupported: None,
             }],
         });
         s.hidden_rows.insert(2);
@@ -2543,11 +2594,13 @@ mod tests {
                     col: 1,
                     values: Some(vec!["x".into()]),
                     show_blanks: false,
+                    unsupported: None,
                 },
                 AutoFilterColumn {
                     col: 2,
                     values: None,
                     show_blanks: true,
+                    unsupported: None,
                 },
             ],
         });
@@ -2775,6 +2828,7 @@ mod tests {
                     col: 0,
                     values: Some(values.iter().map(|v| (*v).to_string()).collect()),
                     show_blanks: false,
+                    unsupported: None,
                 }],
             })
         };
@@ -2873,6 +2927,7 @@ mod tests {
                 col: 0,
                 values: Some(filter_values.iter().map(|v| (*v).to_string()).collect()),
                 show_blanks: false,
+                unsupported: None,
             }],
         });
     }
@@ -3005,6 +3060,7 @@ mod tests {
                 col: 0,
                 values: Some(values.iter().map(|v| (*v).to_string()).collect()),
                 show_blanks: false,
+                unsupported: None,
             }],
         })
     }

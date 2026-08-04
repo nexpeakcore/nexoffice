@@ -2144,6 +2144,16 @@ fn validate_op(model: &WorkbookModel, op: &Op) -> Result<()> {
                         "filter criteria column is outside the filter range".to_string(),
                     ));
                 }
+                if filter
+                    .columns
+                    .iter()
+                    .any(|column| column.unsupported.is_some() && column.values.is_some())
+                {
+                    return Err(Error::InvalidOperation(
+                        "a filter column keeping its source criteria cannot also carry values"
+                            .to_string(),
+                    ));
+                }
             }
         }
         Op::SetHyperlinks { sheet, hyperlinks } => {

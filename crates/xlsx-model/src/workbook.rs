@@ -46,10 +46,28 @@ pub struct AutoFilter {
 pub struct AutoFilterColumn {
     /// absolute sheet column; the xml `colId` is relative to `range.start`.
     pub col: ColId,
-    /// explicit cell texts kept visible; `None` when the column has no value criteria.
+    /// explicit cell texts kept visible. `None` places no constraint on a row;
+    /// `Some(list)` is an allow-list, and an empty list is spreadsheetml's
+    /// blanks-only filter, which only keeps rows when `show_blanks`.
     pub values: Option<Vec<String>>,
     /// whether blank cells stay visible alongside `values`.
     pub show_blanks: bool,
+    /// criteria this engine does not model — `customFilters`, `top10`,
+    /// `dynamicFilter`, `colorFilter`, `iconFilter`, date-group items — kept as
+    /// the source `filterColumn`'s inner xml so a save writes them back
+    /// unchanged. mutually exclusive with `values`: such a column constrains
+    /// nothing, so re-evaluating the filter never hides a row on its account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsupported: Option<String>,
+}
+
+impl AutoFilterColumn {
+    /// the allow-list the column narrows rows to, or `None` when it constrains
+    /// nothing: either it carries no criteria or its criteria are only
+    /// preserved (`unsupported`) rather than evaluated.
+    pub fn criteria(&self) -> Option<&[String]> {
+        self.values.as_deref()
+    }
 }
 
 /// a classic cell note: plain text plus its author. rich runs collapse to
@@ -172,10 +190,12 @@ impl Sheet {
     }
 
     /// a row is visible when every column with value criteria matches its cell
-    /// text, blanks counting only when the column keeps blanks.
+    /// text, blanks counting only when the column keeps blanks. a column that
+    /// constrains nothing — no criteria at all, or criteria this engine only
+    /// preserves rather than evaluates — always passes.
     fn row_passes_filter(&self, filter: &AutoFilter, row: RowId) -> bool {
         filter.columns.iter().all(|column| {
-            let Some(values) = &column.values else {
+            let Some(values) = column.criteria() else {
                 return true;
             };
             let text = self
@@ -217,10 +237,14 @@ impl Sheet {
         self.hyperlinks.iter().find(|link| link.range.contains(at))
     }
 
+    /// the rectangle covering everything anchored to a cell: values,
+    /// hyperlinks, and comments. a note on an otherwise empty cell counts, so
+    /// the grid a viewer scrolls always reaches far enough to show it.
     pub fn used_range(&self) -> Option<CellRange> {
         let mut bounds = self
             .cells
             .keys()
+            .chain(self.comments.keys())
             .map(|&(row, col)| CellRange::new(CellRef::new(row, col), CellRef::new(row, col)))
             .chain(self.hyperlinks.iter().map(|link| link.range));
         let first = bounds.next()?;
@@ -514,6 +538,81 @@ mod tests {
         );
     }
 
+    /// A note on an otherwise empty cell has to sit inside the used range, or
+    /// the editor never lays out a rect for its indicator and the note becomes
+    /// invisible and uneditable.
+    #[test]
+    fn comments_extend_the_used_range() {
+        let mut sheet = Sheet::new("Data");
+        sheet.set_cell(
+            CellRef::parse_a1("B2").unwrap(),
+            Cell {
+                value: CellValue::Text {
+                    value: "only".into(),
+                },
+                ..Cell::default()
+            },
+        );
+        sheet.set_comment(
+            CellRef::parse_a1("E9").unwrap(),
+            Some(Comment {
+                author: "Ada".into(),
+                text: "look here".into(),
+            }),
+        );
+
+        assert_eq!(sheet.used_range().unwrap().to_a1(), "B2:E9");
+    }
+
+    #[test]
+    fn a_comment_alone_gives_an_otherwise_empty_sheet_an_extent() {
+        let mut sheet = Sheet::new("Data");
+        sheet.set_comment(
+            CellRef::parse_a1("C3").unwrap(),
+            Some(Comment {
+                author: "Ada".into(),
+                text: "note".into(),
+            }),
+        );
+
+        assert_eq!(sheet.used_range().unwrap().to_a1(), "C3");
+    }
+
+    /// Criteria the engine only preserves must not narrow anything: an empty
+    /// allow-list would hide every non-blank row in the filter's range.
+    #[test]
+    fn unsupported_filter_criteria_hide_no_rows() {
+        let mut sheet = Sheet::new("Data");
+        for row in 0..4 {
+            sheet.set_cell(
+                CellRef::new(row, 0),
+                Cell {
+                    value: CellValue::Number {
+                        value: f64::from(row),
+                    },
+                    ..Cell::default()
+                },
+            );
+        }
+        let column = AutoFilterColumn {
+            col: 0,
+            values: None,
+            show_blanks: true,
+            unsupported: Some(r#"<top10 top="1" val="2"/>"#.into()),
+        };
+        assert!(column.criteria().is_none());
+        sheet.auto_filter = Some(AutoFilter {
+            range: CellRange::parse_a1("A1:A4").unwrap(),
+            columns: vec![column],
+        });
+
+        assert!(
+            sheet
+                .rows_failing_filter(sheet.auto_filter.as_ref())
+                .is_empty()
+        );
+    }
+
     #[test]
     fn manual_hide_provenance_is_seeded_from_the_filter_and_tracked_by_hand() {
         let mut sheet = Sheet::new("Data");
@@ -532,6 +631,7 @@ mod tests {
                 col: 0,
                 values: Some(vec!["keep".into()]),
                 show_blanks: false,
+                unsupported: None,
             }],
         });
         assert_eq!(

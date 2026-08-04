@@ -3117,6 +3117,12 @@ fn write_auto_filter(w: &mut Writer<Vec<u8>>, sheet: &Sheet) -> io::Result<()> {
             .saturating_sub(filter.range.start.col)
             .to_string();
         element.push_attribute(("colId", col_id.as_str()));
+        if let Some(criteria) = &column.unsupported {
+            w.write_event(Event::Start(element))?;
+            w.write_event(Event::Text(BytesText::from_escaped(criteria.as_str())))?;
+            w.write_event(Event::End(BytesEnd::new("filterColumn")))?;
+            continue;
+        }
         let Some(values) = &column.values else {
             w.write_event(Event::Empty(element))?;
             continue;

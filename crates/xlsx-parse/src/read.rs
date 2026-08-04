@@ -16,7 +16,7 @@ use crate::xml::{
 };
 use crate::{
     MAX_CELLS, MAX_COMMENT_AUTHORS, MAX_COMMENT_TEXT_BYTES, MAX_COMMENTS, MAX_DEFINED_NAMES,
-    MAX_HYPERLINKS, MAX_SHARED_STRINGS, ParseError,
+    MAX_FILTER_CRITERIA_BYTES, MAX_HYPERLINKS, MAX_SHARED_STRINGS, ParseError,
 };
 
 /// parse a full workbook from opc parts, resolving sheets through the
@@ -298,6 +298,15 @@ struct CellBuild {
     formula: Option<String>,
 }
 
+/// in-progress auto-filter column state: the modeled criteria plus the offset
+/// where the `filterColumn` element's inner xml starts, so criteria this engine
+/// cannot evaluate are kept verbatim instead of being silently dropped.
+struct FilterColumnBuild {
+    column: AutoFilterColumn,
+    content_start: usize,
+    unsupported: bool,
+}
+
 /// parse one worksheet into a `Sheet`: cells (values, cached formulas, types),
 /// merges, and column/row sizing. `shared` resolves `t="s"` indices.
 fn parse_worksheet(
@@ -317,129 +326,147 @@ fn parse_worksheet(
     let mut cell_count: u64 = 0;
     let mut hyperlink_count: usize = 0;
     let mut in_auto_filter = false;
-    let mut filter_column: Option<AutoFilterColumn> = None;
+    let mut filter_column: Option<FilterColumnBuild> = None;
 
     loop {
+        let position = reader.buffer_position() as usize;
         match next_event(&mut reader, &mut buf, &mut depth)? {
-            Event::Start(e) => match local_name(&e).as_slice() {
-                b"row" => {
-                    let row = match attr(&e, b"r")? {
-                        Some(v) => parse_index(&v, MAX_ROWS)?,
-                        None => cur_row.map_or(0, |r| r + 1),
-                    };
-                    cur_row = Some(row);
-                    col_cursor = 0;
-                    if let Some(h) = attr(&e, b"ht")?.and_then(|v| v.parse::<f64>().ok()) {
-                        sheet.row_heights.insert(row, h);
-                    }
-                    if attr(&e, b"hidden")?.is_some_and(|v| is_truthy(&v)) {
-                        sheet.hidden_rows.insert(row);
-                    }
+            Event::Start(e) => {
+                let name = local_name(&e);
+                if let Some(build) = filter_column.as_mut()
+                    && !matches!(name.as_slice(), b"filters" | b"filter")
+                {
+                    build.unsupported = true;
                 }
-                b"c" => {
-                    cell_count += 1;
-                    if cell_count > MAX_CELLS {
-                        return Err(ParseError::TooManyCells);
-                    }
-                    let addr = match attr(&e, b"r")? {
-                        Some(v) => CellRef::parse_a1(&v)
-                            .map_err(|_| ParseError::Malformed(format!("bad cell ref {v:?}")))?,
-                        None => CellRef::new(cur_row.unwrap_or(0), col_cursor),
-                    };
-                    col_cursor = addr.col;
-                    let style = attr(&e, b"s")?.and_then(|v| v.parse::<u32>().ok());
-                    cur = Some(CellBuild {
-                        addr: Some(addr),
-                        ty: attr(&e, b"t")?,
-                        style,
-                        ..CellBuild::default()
-                    });
-                }
-                b"v" => {
-                    let text = collect_text(&mut reader, &mut buf, &mut depth)?;
-                    if let Some(c) = cur.as_mut() {
-                        c.value_text = Some(text);
-                    }
-                }
-                b"f" => {
-                    let text = collect_text(&mut reader, &mut buf, &mut depth)?;
-                    if let Some(c) = cur.as_mut() {
-                        c.formula = Some(text);
-                    }
-                }
-                b"is" => {
-                    let text = collect_text(&mut reader, &mut buf, &mut depth)?;
-                    if let Some(c) = cur.as_mut() {
-                        c.inline_text = Some(text);
-                    }
-                }
-                b"mergeCell" => {
-                    if let Some(r) = attr(&e, b"ref")? {
-                        let range = CellRange::parse_a1(&r)
-                            .map_err(|_| ParseError::Malformed(format!("bad merge ref {r:?}")))?;
-                        sheet.merges.push(range);
-                    }
-                }
-                b"pane" => {
-                    if sheet.freeze_pane.is_none() {
-                        sheet.freeze_pane = parse_freeze_pane(&e)?;
-                    }
-                }
-                b"autoFilter" => {
-                    if sheet.auto_filter.is_none()
-                        && let Some(r) = attr(&e, b"ref")?
-                    {
-                        let range = CellRange::parse_a1(&r).map_err(|_| {
-                            ParseError::Malformed(format!("bad autoFilter ref {r:?}"))
-                        })?;
-                        sheet.auto_filter = Some(AutoFilter {
-                            range,
-                            columns: Vec::new(),
-                        });
-                        in_auto_filter = true;
-                    }
-                }
-                b"filterColumn" => {
-                    if in_auto_filter
-                        && let Some(filter) = sheet.auto_filter.as_ref()
-                        && let Some(id) = attr(&e, b"colId")?.and_then(|v| v.parse::<u32>().ok())
-                    {
-                        let col = filter.range.start.col.saturating_add(id);
-                        if col < MAX_COLS {
-                            filter_column = Some(AutoFilterColumn {
-                                col,
-                                values: None,
-                                show_blanks: true,
-                            });
+                match name.as_slice() {
+                    b"row" => {
+                        let row = match attr(&e, b"r")? {
+                            Some(v) => parse_index(&v, MAX_ROWS)?,
+                            None => cur_row.map_or(0, |r| r + 1),
+                        };
+                        cur_row = Some(row);
+                        col_cursor = 0;
+                        if let Some(h) = attr(&e, b"ht")?.and_then(|v| v.parse::<f64>().ok()) {
+                            sheet.row_heights.insert(row, h);
+                        }
+                        if attr(&e, b"hidden")?.is_some_and(|v| is_truthy(&v)) {
+                            sheet.hidden_rows.insert(row);
                         }
                     }
-                }
-                b"filters" => {
-                    if let Some(column) = filter_column.as_mut() {
-                        column.values = Some(Vec::new());
-                        column.show_blanks = attr(&e, b"blank")?.is_some_and(|v| is_truthy(&v));
+                    b"c" => {
+                        cell_count += 1;
+                        if cell_count > MAX_CELLS {
+                            return Err(ParseError::TooManyCells);
+                        }
+                        let addr = match attr(&e, b"r")? {
+                            Some(v) => CellRef::parse_a1(&v).map_err(|_| {
+                                ParseError::Malformed(format!("bad cell ref {v:?}"))
+                            })?,
+                            None => CellRef::new(cur_row.unwrap_or(0), col_cursor),
+                        };
+                        col_cursor = addr.col;
+                        let style = attr(&e, b"s")?.and_then(|v| v.parse::<u32>().ok());
+                        cur = Some(CellBuild {
+                            addr: Some(addr),
+                            ty: attr(&e, b"t")?,
+                            style,
+                            ..CellBuild::default()
+                        });
                     }
-                }
-                b"filter" => {
-                    if let Some(column) = filter_column.as_mut()
-                        && let Some(values) = column.values.as_mut()
-                        && let Some(val) = attr(&e, b"val")?
-                    {
-                        values.push(val);
+                    b"v" => {
+                        let text = collect_text(&mut reader, &mut buf, &mut depth)?;
+                        if let Some(c) = cur.as_mut() {
+                            c.value_text = Some(text);
+                        }
                     }
-                }
-                b"hyperlink" => {
-                    hyperlink_count += 1;
-                    if hyperlink_count > MAX_HYPERLINKS {
-                        return Err(ParseError::TooManyHyperlinks);
+                    b"f" => {
+                        let text = collect_text(&mut reader, &mut buf, &mut depth)?;
+                        if let Some(c) = cur.as_mut() {
+                            c.formula = Some(text);
+                        }
                     }
-                    if let Some(link) = parse_hyperlink(&e, relationships)? {
-                        sheet.hyperlinks.push(link);
+                    b"is" => {
+                        let text = collect_text(&mut reader, &mut buf, &mut depth)?;
+                        if let Some(c) = cur.as_mut() {
+                            c.inline_text = Some(text);
+                        }
                     }
+                    b"mergeCell" => {
+                        if let Some(r) = attr(&e, b"ref")? {
+                            let range = CellRange::parse_a1(&r).map_err(|_| {
+                                ParseError::Malformed(format!("bad merge ref {r:?}"))
+                            })?;
+                            sheet.merges.push(range);
+                        }
+                    }
+                    b"pane" => {
+                        if sheet.freeze_pane.is_none() {
+                            sheet.freeze_pane = parse_freeze_pane(&e)?;
+                        }
+                    }
+                    b"autoFilter" => {
+                        if sheet.auto_filter.is_none()
+                            && let Some(r) = attr(&e, b"ref")?
+                        {
+                            let range = CellRange::parse_a1(&r).map_err(|_| {
+                                ParseError::Malformed(format!("bad autoFilter ref {r:?}"))
+                            })?;
+                            sheet.auto_filter = Some(AutoFilter {
+                                range,
+                                columns: Vec::new(),
+                            });
+                            in_auto_filter = true;
+                        }
+                    }
+                    b"filterColumn" => {
+                        if in_auto_filter
+                            && let Some(filter) = sheet.auto_filter.as_ref()
+                            && let Some(id) =
+                                attr(&e, b"colId")?.and_then(|v| v.parse::<u32>().ok())
+                        {
+                            let col = filter.range.start.col.saturating_add(id);
+                            if col < MAX_COLS {
+                                filter_column = Some(FilterColumnBuild {
+                                    column: AutoFilterColumn {
+                                        col,
+                                        values: None,
+                                        show_blanks: true,
+                                        unsupported: None,
+                                    },
+                                    content_start: reader.buffer_position() as usize,
+                                    unsupported: false,
+                                });
+                            }
+                        }
+                    }
+                    b"filters" => {
+                        if let Some(build) = filter_column.as_mut() {
+                            build.column.values = Some(Vec::new());
+                            build.column.show_blanks =
+                                attr(&e, b"blank")?.is_some_and(|v| is_truthy(&v));
+                        }
+                    }
+                    b"filter" => {
+                        if let Some(build) = filter_column.as_mut() {
+                            match (build.column.values.as_mut(), attr(&e, b"val")?) {
+                                (Some(values), Some(val)) => values.push(val),
+                                _ => build.unsupported = true,
+                            }
+                        }
+                    }
+                    b"hyperlink" => {
+                        hyperlink_count += 1;
+                        if hyperlink_count > MAX_HYPERLINKS {
+                            return Err(ParseError::TooManyHyperlinks);
+                        }
+                        if let Some(link) = parse_hyperlink(&e, relationships)? {
+                            sheet.hyperlinks.push(link);
+                        }
+                    }
+                    b"col" => parse_col(&e, &mut sheet)?,
+                    _ => {}
                 }
-                b"col" => parse_col(&e, &mut sheet)?,
-                _ => {}
-            },
+            }
             Event::End(e) => {
                 let name = e.name();
                 match name.local_name().as_ref() {
@@ -453,9 +480,11 @@ fn parse_worksheet(
                     b"autoFilter" => in_auto_filter = false,
                     b"filterColumn" => {
                         if let Some(filter) = sheet.auto_filter.as_mut()
-                            && let Some(column) = filter_column.take()
+                            && let Some(build) = filter_column.take()
                         {
-                            filter.columns.push(column);
+                            filter
+                                .columns
+                                .push(finish_filter_column(build, data, position)?);
                         }
                     }
                     _ => {}
@@ -468,6 +497,39 @@ fn parse_worksheet(
     normalize_merges(&mut sheet.merges);
     sheet.seed_manual_hidden_rows();
     Ok(sheet)
+}
+
+/// close an auto-filter column at the offset its end tag starts. a column
+/// whose criteria this engine cannot evaluate keeps its source xml verbatim and
+/// drops the partial allow-list the criteria would otherwise have produced — an
+/// empty one, which would hide every non-blank row.
+fn finish_filter_column(
+    build: FilterColumnBuild,
+    data: &[u8],
+    content_end: usize,
+) -> Result<AutoFilterColumn, ParseError> {
+    let FilterColumnBuild {
+        mut column,
+        content_start,
+        unsupported,
+    } = build;
+    if !unsupported {
+        return Ok(column);
+    }
+    let xml = data.get(content_start..content_end).unwrap_or_default();
+    if xml.len() > MAX_FILTER_CRITERIA_BYTES {
+        return Err(ParseError::Malformed(
+            "auto filter column criteria exceed the length cap".into(),
+        ));
+    }
+    let xml = std::str::from_utf8(xml)
+        .map_err(|_| ParseError::Malformed("auto filter column criteria are not utf-8".into()))?;
+    column.values = None;
+    column.show_blanks = true;
+    if !xml.is_empty() {
+        column.unsupported = Some(xml.to_string());
+    }
+    Ok(column)
 }
 
 /// resolve the worksheet's comments part through its relationships, relative

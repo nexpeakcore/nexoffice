@@ -3691,6 +3691,7 @@ fn auto_filter_and_hidden_rows_survive_save_and_reopen() {
             col: 0,
             values: Some(vec!["keep".to_owned()]),
             show_blanks: false,
+            unsupported: None,
         }],
     });
     sheet.hidden_rows.insert(2);
@@ -3706,6 +3707,149 @@ fn auto_filter_and_hidden_rows_survive_save_and_reopen() {
     let survived = reopened.model().sheet(SheetId(0)).unwrap();
     assert_eq!(survived.auto_filter, sheet.auto_filter);
     assert_eq!(survived.hidden_rows, sheet.hidden_rows);
+}
+
+/// Criteria the engine cannot evaluate must survive a save unchanged, stay out
+/// of row visibility, and give way only when that column is itself rewritten.
+#[test]
+fn unevaluatable_filter_criteria_survive_editing_a_neighbouring_column() {
+    let mut model = WorkbookModel::default();
+    let mut sheet = Sheet::new("Data");
+    for (address, value) in [("A1", "Name"), ("A2", "keep"), ("A3", "drop")] {
+        sheet.set_cell(
+            cell(address),
+            Cell {
+                value: CellValue::Text {
+                    value: value.to_owned(),
+                },
+                ..Cell::default()
+            },
+        );
+    }
+    for address in ["B2", "B3"] {
+        sheet.set_cell(
+            cell(address),
+            Cell {
+                value: CellValue::Number { value: 7.0 },
+                ..Cell::default()
+            },
+        );
+    }
+    let preserved = betteroffice_xlsx::AutoFilterColumn {
+        col: 1,
+        values: None,
+        show_blanks: true,
+        unsupported: Some(
+            r#"<filters><dateGroupItem year="2024" dateTimeGrouping="year"/></filters>"#.to_owned(),
+        ),
+    };
+    sheet.auto_filter = Some(betteroffice_xlsx::AutoFilter {
+        range: CellRange::parse_a1("A1:B3").unwrap(),
+        columns: vec![
+            betteroffice_xlsx::AutoFilterColumn {
+                col: 0,
+                values: Some(vec!["keep".to_owned()]),
+                show_blanks: false,
+                unsupported: None,
+            },
+            preserved.clone(),
+        ],
+    });
+    model.sheets.push(sheet.clone());
+    let source = ooxml_opc::rezip_parts(&xlsx_parse::serialize_workbook(&model).unwrap())
+        .unwrap_or_default();
+
+    let mut workbook = Workbook::open(&source).unwrap();
+    assert_eq!(
+        workbook.model().sheet(SheetId(0)).unwrap().auto_filter,
+        sheet.auto_filter
+    );
+
+    let mut edited = sheet.auto_filter.clone().unwrap();
+    edited.columns[0].values = Some(vec!["drop".to_owned()]);
+    workbook
+        .apply_ops(
+            vec![Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: Some(edited),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    let after = workbook.model().sheet(SheetId(0)).unwrap();
+    assert_eq!(
+        after.hidden_rows,
+        [1].into_iter().collect(),
+        "only the rewritten literal column may hide a row"
+    );
+    assert_eq!(after.auto_filter.as_ref().unwrap().columns[1], preserved);
+
+    let reopened = Workbook::open(&workbook.save().unwrap()).unwrap();
+    assert_eq!(
+        reopened
+            .model()
+            .sheet(SheetId(0))
+            .unwrap()
+            .auto_filter
+            .as_ref()
+            .unwrap()
+            .columns[1],
+        preserved
+    );
+}
+
+#[test]
+fn a_filter_column_cannot_hold_both_values_and_preserved_criteria() {
+    let mut model = WorkbookModel::default();
+    model.sheets.push(Sheet::new("Data"));
+    let mut workbook = Workbook::from_model(model).unwrap();
+
+    let error = workbook
+        .apply_ops(
+            vec![Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: Some(betteroffice_xlsx::AutoFilter {
+                    range: CellRange::parse_a1("A1:A3").unwrap(),
+                    columns: vec![betteroffice_xlsx::AutoFilterColumn {
+                        col: 0,
+                        values: Some(vec!["keep".to_owned()]),
+                        show_blanks: false,
+                        unsupported: Some(r#"<top10 val="3"/>"#.to_owned()),
+                    }],
+                }),
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(error, Error::InvalidOperation(_)), "{error}");
+}
+
+/// A note beyond the populated cells has to sit inside the reported extent or
+/// the editor never lays out a rect for its indicator.
+#[test]
+fn a_comment_past_the_populated_cells_extends_the_reported_extent() {
+    let mut model = WorkbookModel::default();
+    let mut sheet = Sheet::new("Data");
+    sheet.set_cell(
+        cell("A1"),
+        Cell {
+            value: CellValue::Number { value: 1.0 },
+            ..Cell::default()
+        },
+    );
+    let geometry = GridGeometry::new(&sheet);
+    let without_comment = geometry.col_x(2);
+    sheet.set_comment(cell("H12"), Some(comment("Ada", "look here")));
+    model.sheets.push(sheet);
+
+    let workbook = Workbook::from_model(model).unwrap();
+    let info = workbook.sheet_info().unwrap();
+    assert!(
+        info.content_width > without_comment,
+        "the grid must reach past column H: {} vs {without_comment}",
+        info.content_width
+    );
+    assert!(info.content_height > geometry.row_y(12));
 }
 
 /// A workbook whose row 4 is hidden despite passing the `keep` filter, and
@@ -3736,6 +3880,7 @@ fn manually_hidden_row_fixture() -> Vec<u8> {
             col: 0,
             values: Some(vec!["keep".to_owned()]),
             show_blanks: false,
+            unsupported: None,
         }],
     });
     sheet.hidden_rows = [2, 3, 4].into_iter().collect();

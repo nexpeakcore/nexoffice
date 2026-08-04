@@ -79,6 +79,10 @@ struct AutoFilterColumnSpec {
     col: u32,
     values: Option<Vec<String>>,
     show_blanks: bool,
+    /// source xml of criteria the engine preserves but cannot evaluate; a
+    /// caller rewriting this column drops it, anything else must send it back.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unsupported: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -573,6 +577,7 @@ impl Session {
                     col: column.col,
                     values: column.values.clone(),
                     show_blanks: column.show_blanks,
+                    unsupported: column.unsupported.clone(),
                 })
                 .collect(),
         });

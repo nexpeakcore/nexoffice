@@ -190,11 +190,13 @@ fn parses_and_round_trips_hidden_rows_and_auto_filter() {
                     col: 1,
                     values: Some(vec!["x".into(), "y".into()]),
                     show_blanks: true,
+                    unsupported: None,
                 },
                 AutoFilterColumn {
                     col: 2,
                     values: None,
                     show_blanks: true,
+                    unsupported: None,
                 },
             ],
         })
@@ -1250,6 +1252,7 @@ fn overlays_auto_filter_and_hidden_rows_onto_a_retained_worksheet() {
             col: 1,
             values: Some(vec!["beta".into()]),
             show_blanks: false,
+            unsupported: None,
         }],
     });
     let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
@@ -1277,6 +1280,163 @@ fn overlays_auto_filter_and_hidden_rows_onto_a_retained_worksheet() {
         reparsed.sheets[0].auto_filter,
         workbook.sheets[0].auto_filter
     );
+}
+
+const CUSTOM_FILTERS: &str =
+    r#"<customFilters and="1"><customFilter operator="greaterThan" val="5"/></customFilters>"#;
+const TOP10: &str = r#"<top10 top="1" percent="0" val="3" filterVal="3"/>"#;
+const DATE_GROUP: &str =
+    r#"<filters><dateGroupItem year="2024" month="6" dateTimeGrouping="month"/></filters>"#;
+
+/// a filter whose first column is a literal allow-list and whose remaining
+/// columns use criteria the engine does not evaluate.
+fn mixed_filter_body() -> String {
+    format!(
+        r#"<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>head</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>alpha</t></is></c><c r="D2"><v>9</v></c></row><row r="3"><c r="A3" t="inlineStr"><is><t>omega</t></is></c><c r="D3"><v>1</v></c></row></sheetData><autoFilter ref="A1:D3"><filterColumn colId="0"><filters><filter val="alpha"/></filters></filterColumn><filterColumn colId="1">{CUSTOM_FILTERS}</filterColumn><filterColumn colId="2">{TOP10}</filterColumn><filterColumn colId="3">{DATE_GROUP}</filterColumn></autoFilter><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>"#
+    )
+}
+
+#[test]
+fn keeps_unevaluatable_filter_criteria_instead_of_dropping_them() {
+    let parsed = parse_workbook_with_package(&package(&mixed_filter_body(), &[], false)).unwrap();
+    let filter = parsed.workbook.sheets[0].auto_filter.clone().unwrap();
+
+    assert_eq!(
+        filter.columns,
+        vec![
+            AutoFilterColumn {
+                col: 0,
+                values: Some(vec!["alpha".into()]),
+                show_blanks: false,
+                unsupported: None,
+            },
+            AutoFilterColumn {
+                col: 1,
+                values: None,
+                show_blanks: true,
+                unsupported: Some(CUSTOM_FILTERS.to_string()),
+            },
+            AutoFilterColumn {
+                col: 2,
+                values: None,
+                show_blanks: true,
+                unsupported: Some(TOP10.to_string()),
+            },
+            AutoFilterColumn {
+                col: 3,
+                values: None,
+                show_blanks: true,
+                unsupported: Some(DATE_GROUP.to_string()),
+            },
+        ]
+    );
+}
+
+/// Date-group items used to leave an empty allow-list behind, which re-hid
+/// every non-blank row the next time the filter was evaluated.
+#[test]
+fn date_group_criteria_never_hide_rows() {
+    let parsed = parse_workbook_with_package(&package(&mixed_filter_body(), &[], false)).unwrap();
+    let sheet = &parsed.workbook.sheets[0];
+    let filter = sheet.auto_filter.clone().unwrap();
+
+    let date_group = &filter.columns[3];
+    assert!(date_group.criteria().is_none());
+    assert_eq!(
+        sheet
+            .rows_failing_filter(Some(&filter))
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec![2],
+        "only the literal column may hide a row"
+    );
+}
+
+#[test]
+fn leaves_a_worksheet_with_unevaluatable_filters_byte_identical() {
+    let parts = package(&mixed_filter_body(), &[], false);
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+    let saved = serialize_workbook_with_package(&parsed.workbook, &parsed.package).unwrap();
+
+    assert_eq!(
+        part_bytes(&saved, "xl/worksheets/sheet1.xml"),
+        part_bytes(&parts, "xl/worksheets/sheet1.xml")
+    );
+}
+
+#[test]
+fn rewriting_one_filter_column_preserves_the_others_verbatim() {
+    let parsed = parse_workbook_with_package(&package(&mixed_filter_body(), &[], false)).unwrap();
+
+    let mut workbook = parsed.workbook.clone();
+    let filter = workbook.sheets[0].auto_filter.as_mut().unwrap();
+    filter.columns[0].values = Some(vec!["omega".into()]);
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+    let written = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+
+    assert!(
+        written.contains(
+            r#"<filterColumn colId="0"><filters><filter val="omega"/></filters></filterColumn>"#
+        ),
+        "{written}"
+    );
+    for (id, criteria) in [(1, CUSTOM_FILTERS), (2, TOP10), (3, DATE_GROUP)] {
+        assert!(
+            written.contains(&format!(
+                r#"<filterColumn colId="{id}">{criteria}</filterColumn>"#
+            )),
+            "column {id} lost its original criteria: {written}"
+        );
+    }
+    assert_eq!(
+        parse_workbook(&saved).unwrap().sheets[0].auto_filter,
+        workbook.sheets[0].auto_filter
+    );
+}
+
+#[test]
+fn editing_an_unevaluatable_column_replaces_only_that_column() {
+    let parsed = parse_workbook_with_package(&package(&mixed_filter_body(), &[], false)).unwrap();
+
+    let mut workbook = parsed.workbook.clone();
+    let filter = workbook.sheets[0].auto_filter.as_mut().unwrap();
+    filter.columns[1].values = Some(vec!["7".into()]);
+    filter.columns[1].show_blanks = false;
+    filter.columns[1].unsupported = None;
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+    let written = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+
+    assert!(!written.contains("customFilter"), "{written}");
+    assert!(
+        written.contains(
+            r#"<filterColumn colId="1"><filters><filter val="7"/></filters></filterColumn>"#
+        ),
+        "{written}"
+    );
+    assert!(
+        written.contains(&format!(
+            r#"<filterColumn colId="2">{TOP10}</filterColumn>"#
+        )) && written.contains(&format!(
+            r#"<filterColumn colId="3">{DATE_GROUP}</filterColumn>"#
+        )),
+        "{written}"
+    );
+}
+
+#[test]
+fn rejects_filter_criteria_past_the_length_cap() {
+    let criteria = format!(
+        r#"<customFilters>{}</customFilters>"#,
+        r#"<customFilter operator="equal" val="x"/>"#.repeat(1000)
+    );
+    let body = format!(
+        r#"<sheetData/><autoFilter ref="A1:B5"><filterColumn colId="0">{criteria}</filterColumn></autoFilter>"#
+    );
+
+    assert!(matches!(
+        parse_workbook(&package(&body, &[], false)),
+        Err(ParseError::Malformed(_))
+    ));
 }
 
 #[test]

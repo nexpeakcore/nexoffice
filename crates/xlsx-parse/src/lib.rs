@@ -55,6 +55,10 @@ pub const MAX_COMMENT_AUTHORS: usize = 65_536;
 /// upper bound on one comment author or text, matching excel's cell text cap.
 pub const MAX_COMMENT_TEXT_BYTES: usize = 32_767;
 
+/// upper bound on the source xml of one auto-filter column's criteria, kept
+/// verbatim when the engine cannot model them.
+pub const MAX_FILTER_CRITERIA_BYTES: usize = 32_767;
+
 /// upper bound on entries in any single style pool (fonts, fills, borders,
 /// cellXfs, numFmts).
 pub const MAX_STYLE_ENTRIES: usize = 65_536;

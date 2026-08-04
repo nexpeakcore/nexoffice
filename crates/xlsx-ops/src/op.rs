@@ -279,6 +279,7 @@ mod tests {
                     col: 0,
                     values: Some(vec!["x".into()]),
                     show_blanks: true,
+                    unsupported: None,
                 }],
             }),
         };
