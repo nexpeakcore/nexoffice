@@ -1,0 +1,161 @@
+name: Desktop Release
+
+# Build the NexOffice desktop installers on real macOS / Windows runners and
+# attach them to the workflow run. Uploading to the Azure Blob update feed
+# (container `nexoffice`) stays a manual step:
+#   cd desktop && bun run deploy mac|win   (needs AZURE_STORAGE_SAS_URL)
+#
+# Secrets (all optional — missing signing secrets produce unsigned builds):
+#   MACOS_CSC_LINK              Developer ID Application .p12, base64
+#   MACOS_CSC_KEY_PASSWORD      password for the .p12
+#   APPLE_ID                    Apple ID email for notarytool
+#   APPLE_TEAM_ID               developer team id
+#   APPLE_APP_SPECIFIC_PASSWORD app-specific password for notarytool
+#   WINDOWS_CSC_LINK            Authenticode .pfx, base64 (avoids SmartScreen warnings)
+#   WINDOWS_CSC_KEY_PASSWORD    password for the .pfx
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["desktop-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: macOS installers
+    runs-on: macos-latest
+    timeout-minutes: 90
+    # step-level `if` cannot read the secrets context, so gate on job env
+    env:
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.15.0 --locked
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # The generated wasm bindings are gitignored, and the desktop app
+      # consumes the workspace packages through their built dist/ outputs.
+      - name: Build wasm bundles
+        run: |
+          bun run build:xlsx-wasm
+          bun run build:docx-wasm
+
+      - name: Build workspace packages
+        run: |
+          bun run build:xlsx
+          bun run build:docx
+
+      - name: Build mac dmg + zip
+        working-directory: desktop
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
+          # electron-builder notarizes the app bundle automatically when the
+          # APPLE_* credentials are present in the environment.
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: bun run dist:mac
+
+      # electron-builder only notarizes the app bundle; the dmg itself needs
+      # its own sign + notarize + staple pass or Gatekeeper blocks the download.
+      # electron-builder's temporary keychain is gone once the build exits, so
+      # the certificate is imported again into a keychain owned by this step.
+      - name: Sign + notarize + staple dmg
+        if: env.APPLE_ID != ''
+        working-directory: desktop
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/nexoffice-dmg.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          printf '%s' "$CSC_LINK" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          node scripts/notarize-dmg.mjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-installers
+          retention-days: 14
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.blockmap
+            desktop/release/latest-mac.yml
+
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.15.0 --locked
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build wasm bundles
+        run: |
+          bun run build:xlsx-wasm
+          bun run build:docx-wasm
+
+      - name: Build workspace packages
+        run: |
+          bun run build:xlsx
+          bun run build:docx
+
+      - name: Build NSIS installer
+        working-directory: desktop
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        run: bun run dist:win
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          retention-days: 14
+          path: |
+            desktop/release/*.exe
+            desktop/release/*.blockmap
+            desktop/release/latest.yml

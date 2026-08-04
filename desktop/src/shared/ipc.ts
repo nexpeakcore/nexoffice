@@ -1,4 +1,6 @@
 export const IPC = {
+  locale: 'app:locale',
+  localeChanged: 'locale:changed',
   openFile: 'dialog:openFile',
   saveFile: 'dialog:saveFile',
   saveFileAs: 'dialog:saveFileAs',
@@ -14,6 +16,9 @@ export const IPC = {
   printReady: 'print:ready',
   printRender: 'print:render',
   printRendered: 'print:rendered',
+  updateEvent: 'update:event',
+  updateCheck: 'update:check',
+  updateInstall: 'update:install',
 } as const
 
 export const PRINT_PAGE_CAP = 100
@@ -63,6 +68,15 @@ export type PrintRenderResult =
   | { ok: false; error: string }
 
 export type WebEditAction = 'undo' | 'redo' | 'cut' | 'copy' | 'paste'
+
+export type UpdateEvent =
+  | { status: 'checking' }
+  | { status: 'available'; version: string }
+  | { status: 'progress'; percent: number; transferred: number; total: number; bytesPerSecond: number }
+  | { status: 'downloaded'; version: string }
+  | { status: 'none' }
+  | { status: 'dev' }
+  | { status: 'error'; message: string }
 
 export type MenuAction =
   | 'file:new'

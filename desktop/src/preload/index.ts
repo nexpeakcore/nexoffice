@@ -9,11 +9,21 @@ import {
   type PrintRenderResult,
   type SaveResult,
   type UnsavedChoice,
+  type UpdateEvent,
   type WebEditAction,
 } from '../shared/ipc.js'
+import type { LocaleCode } from '../i18n/index.js'
 
 const api = {
   platform: (): Promise<NodeJS.Platform> => ipcRenderer.invoke(IPC.platform),
+
+  getLocale: (): Promise<LocaleCode> => ipcRenderer.invoke(IPC.locale),
+
+  onLocaleChanged: (handler: (locale: LocaleCode) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, locale: LocaleCode) => handler(locale)
+    ipcRenderer.on(IPC.localeChanged, listener)
+    return () => ipcRenderer.removeListener(IPC.localeChanged, listener)
+  },
 
   openFile: (): Promise<OpenedDocument | null> => ipcRenderer.invoke(IPC.openFile),
 
@@ -63,6 +73,16 @@ const api = {
     const listener = (_event: Electron.IpcRendererEvent, document: OpenedDocument) => handler(document)
     ipcRenderer.on(IPC.readFile, listener)
     return () => ipcRenderer.removeListener(IPC.readFile, listener)
+  },
+
+  checkForUpdates: (): Promise<void> => ipcRenderer.invoke(IPC.updateCheck),
+
+  installUpdate: (): void => ipcRenderer.send(IPC.updateInstall),
+
+  onUpdateEvent: (handler: (event: UpdateEvent) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, update: UpdateEvent) => handler(update)
+    ipcRenderer.on(IPC.updateEvent, listener)
+    return () => ipcRenderer.removeListener(IPC.updateEvent, listener)
   },
 }
 

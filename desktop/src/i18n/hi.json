@@ -1,0 +1,168 @@
+{
+  "menu": {
+    "app": {
+      "checkForUpdates": "अपडेट जाँचें…",
+      "services": "सेवाएँ",
+      "hide": "NexOffice छिपाएँ",
+      "hideOthers": "अन्य छिपाएँ",
+      "unhide": "सभी दिखाएँ",
+      "quit": "NexOffice बंद करें"
+    },
+    "file": {
+      "label": "&फ़ाइल",
+      "new": "नया",
+      "open": "खोलें…",
+      "openRecent": "हाल की फ़ाइलें",
+      "noRecentFiles": "कोई हाल की फ़ाइल नहीं",
+      "clearRecent": "सूची साफ़ करें",
+      "save": "सहेजें",
+      "saveAs": "इस रूप में सहेजें…",
+      "exportPdf": "PDF के रूप में निर्यात करें…",
+      "closeWindow": "विंडो बंद करें",
+      "exit": "बाहर निकलें"
+    },
+    "edit": {
+      "label": "&संपादन",
+      "undo": "पूर्ववत करें",
+      "redo": "फिर से करें",
+      "cut": "काटें",
+      "copy": "कॉपी करें",
+      "paste": "चिपकाएँ",
+      "pasteAndMatchStyle": "चिपकाएँ और शैली मिलाएँ",
+      "delete": "हटाएँ",
+      "selectAll": "सभी चुनें",
+      "find": "खोजें…"
+    },
+    "view": {
+      "label": "&दृश्य",
+      "zoomIn": "ज़ूम इन",
+      "zoomOut": "ज़ूम आउट",
+      "actualSize": "वास्तविक आकार",
+      "wordCount": "शब्द गणना",
+      "spellCheck": "वर्तनी जाँच",
+      "freezeTopRow": "शीर्ष पंक्ति स्थिर करें",
+      "freezeFirstColumn": "पहला स्तंभ स्थिर करें",
+      "unfreeze": "स्थिरता हटाएँ",
+      "language": "भाषा",
+      "fullScreen": "पूर्ण स्क्रीन टॉगल करें"
+    },
+    "window": {
+      "label": "&विंडो",
+      "minimize": "छोटा करें",
+      "zoom": "ज़ूम",
+      "front": "सभी को सामने लाएँ"
+    },
+    "help": {
+      "label": "सहायता",
+      "documentation": "NexOffice दस्तावेज़ीकरण",
+      "checkForUpdates": "अपडेट जाँचें…",
+      "about": "NexOffice के बारे में"
+    }
+  },
+  "dialog": {
+    "filters": {
+      "officeDocuments": "Office दस्तावेज़",
+      "wordDocument": "Word दस्तावेज़",
+      "excelWorkbook": "Excel कार्यपुस्तिका",
+      "powerpointPresentation": "PowerPoint प्रस्तुति",
+      "pdfDocument": "PDF दस्तावेज़",
+      "allFiles": "सभी फ़ाइलें"
+    },
+    "fileNotFound": {
+      "message": "फ़ाइल नहीं मिली",
+      "detail": "{path}\n\nयह फ़ाइल अब मौजूद नहीं है और हाल की फ़ाइलों की सूची से हटा दी गई है।"
+    },
+    "about": {
+      "title": "NexOffice के बारे में",
+      "version": "संस्करण {version}"
+    },
+    "unsaved": {
+      "message": "क्या आप {name} में किए गए परिवर्तन सहेजना चाहते हैं?",
+      "detail": "यदि आप सहेजते नहीं हैं तो आपके परिवर्तन खो जाएँगे।",
+      "save": "सहेजें",
+      "dontSave": "न सहेजें",
+      "cancel": "रद्द करें"
+    },
+    "pdfTruncated": {
+      "message": "PDF निर्यात छोटा किया गया",
+      "detail": "दस्तावेज़ {cap}-पृष्ठ निर्यात सीमा से अधिक है; केवल पहले {pages} पृष्ठ निर्यात किए गए।"
+    },
+    "pdfFailed": {
+      "title": "PDF निर्यात विफल"
+    },
+    "openFailed": {
+      "title": "फ़ाइल नहीं खोली जा सकी"
+    }
+  },
+  "app": {
+    "edited": " — संपादित",
+    "kind": {
+      "docx": "दस्तावेज़",
+      "xlsx": "कार्यपुस्तिका",
+      "pptx": "प्रस्तुति"
+    },
+    "meta": {
+      "type": "प्रकार",
+      "size": "आकार",
+      "path": "पथ"
+    },
+    "presentationComingSoon": "प्रस्तुति संपादक जल्द आ रहा है।",
+    "empty": {
+      "subtitle": "आरंभ करने के लिए .docx, .xlsx या .pptx फ़ाइल खोलें।",
+      "openFile": "फ़ाइल खोलें"
+    }
+  },
+  "status": {
+    "ready": "तैयार",
+    "newDocument": "नया दस्तावेज़",
+    "opened": "{name} खोला गया",
+    "openFailed": "खोलना विफल: {message}",
+    "unsupported": "असमर्थित फ़ाइल प्रकार: {name}",
+    "saved": "{path} सहेजा गया",
+    "saveCanceled": "सहेजना रद्द किया गया",
+    "saveFailed": "सहेजना विफल: {message}",
+    "openFirst": "पहले कोई दस्तावेज़ खोलें",
+    "openWordFirst": "पहले कोई Word दस्तावेज़ खोलें",
+    "exportingPdf": "PDF निर्यात हो रहा है…",
+    "pdfCanceled": "PDF निर्यात रद्द किया गया",
+    "pdfFailed": "PDF निर्यात विफल: {message}",
+    "exported": "{path} निर्यात किया गया",
+    "exportedPagesOne": "{path} निर्यात किया गया (1 पृष्ठ)",
+    "exportedPagesMany": "{path} निर्यात किया गया ({pages} पृष्ठ)",
+    "truncatedSuffix": " — पृष्ठ सीमा पर छोटा किया गया",
+    "wordCount": "शब्द: {words} · वर्ण: {characters} · पृष्ठ {page}/{pages}",
+    "frozeTopRow": "शीर्ष पंक्ति स्थिर की गई",
+    "frozeFirstColumn": "पहला स्तंभ स्थिर किया गया",
+    "unfroze": "स्थिरता हटाई गई",
+    "notImplemented": "{action} अभी लागू नहीं है"
+  },
+  "footer": {
+    "stats": "{words} शब्द · {characters} वर्ण · पृष्ठ {page}/{pages}",
+    "misspelledOne": "1 गलत वर्तनी वाला शब्द",
+    "misspelledMany": "{count} गलत वर्तनी वाले शब्द",
+    "spellingOk": "वर्तनी सही है",
+    "loadingDictionary": "शब्दकोश लोड हो रहा है…",
+    "dictError": "शब्दकोश त्रुटि"
+  },
+  "spellPanel": {
+    "title": "वर्तनी जाँच",
+    "close": "बंद करें",
+    "none": "कोई गलत वर्तनी वाला शब्द नहीं मिला।",
+    "countOne": "1 गलत वर्तनी वाला शब्द",
+    "countMany": "{count} गलत वर्तनी वाले शब्द"
+  },
+  "update": {
+    "ready": "अपडेट {version} तैयार है",
+    "restart": "अपडेट के लिए पुनःआरंभ करें",
+    "checking": "अपडेट जाँचे जा रहे हैं…",
+    "downloading": "अपडेट {version} डाउनलोड हो रहा है…",
+    "downloadingPercent": "अपडेट डाउनलोड हो रहा है… {percent}%",
+    "upToDate": "NexOffice नवीनतम है",
+    "devDisabled": "डेव बिल्ड में अपडेट अक्षम हैं",
+    "failed": "अपडेट जाँच विफल: {message}"
+  },
+  "editor": {
+    "loading": "{name} लोड हो रहा है…",
+    "couldNotOpen": "{name} नहीं खोला जा सका"
+  }
+}

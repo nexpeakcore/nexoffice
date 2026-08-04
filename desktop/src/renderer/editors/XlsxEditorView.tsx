@@ -1,6 +1,10 @@
 import { forwardRef, useImperativeHandle, useRef, useState } from 'react'
 import { XlsxEditor, type XlsxEditorApi } from '@betteroffice/xlsx-react'
+import { en as xlsxEn, locales as xlsxLocales, type PartialLocaleStrings } from '@betteroffice/xlsx-i18n'
 import type { OpenedDocument } from '../../shared/ipc.js'
+import { useI18n } from '../i18n.js'
+
+const editorLocales = xlsxLocales as Record<string, PartialLocaleStrings>
 
 export interface XlsxEditorViewRef {
   save: () => Uint8Array | null
@@ -22,6 +26,7 @@ interface XlsxEditorViewProps {
 
 export const XlsxEditorView = forwardRef<XlsxEditorViewRef, XlsxEditorViewProps>(
   function XlsxEditorView({ document, onChange, onSaveRequest }, ref) {
+    const { locale, t } = useI18n()
     const [error] = useState<string | null>(null)
     const apiRef = useRef<XlsxEditorApi | null>(null)
     const onChangeRef = useRef(onChange)
@@ -55,7 +60,9 @@ export const XlsxEditorView = forwardRef<XlsxEditorViewRef, XlsxEditorViewProps>
       return (
         <div className="flex h-full items-center justify-center p-8">
           <div className="max-w-md text-center">
-            <h2 className="text-sm font-semibold text-red-700">Could not open {document.name}</h2>
+            <h2 className="text-sm font-semibold text-red-700">
+              {t('editor.couldNotOpen', { name: document.name })}
+            </h2>
             <p className="mt-2 text-sm text-neutral-600">{error}</p>
           </div>
         </div>
@@ -66,6 +73,7 @@ export const XlsxEditorView = forwardRef<XlsxEditorViewRef, XlsxEditorViewProps>
       <XlsxEditor
         file={document.data}
         fileName={document.name}
+        i18n={editorLocales[locale] ?? xlsxEn}
         onSave={(bytes: Uint8Array) => onSaveRequestRef.current?.(bytes)}
         onEdit={() => onChangeRef.current?.()}
         onReady={(api: XlsxEditorApi) => {

@@ -1,0 +1,168 @@
+{
+  "menu": {
+    "app": {
+      "checkForUpdates": "Rechercher des mises à jour…",
+      "services": "Services",
+      "hide": "Masquer NexOffice",
+      "hideOthers": "Masquer les autres",
+      "unhide": "Tout afficher",
+      "quit": "Quitter NexOffice"
+    },
+    "file": {
+      "label": "&Fichier",
+      "new": "Nouveau",
+      "open": "Ouvrir…",
+      "openRecent": "Ouvrir récent",
+      "noRecentFiles": "Aucun fichier récent",
+      "clearRecent": "Effacer la liste",
+      "save": "Enregistrer",
+      "saveAs": "Enregistrer sous…",
+      "exportPdf": "Exporter en PDF…",
+      "closeWindow": "Fermer la fenêtre",
+      "exit": "Quitter"
+    },
+    "edit": {
+      "label": "&Édition",
+      "undo": "Annuler",
+      "redo": "Rétablir",
+      "cut": "Couper",
+      "copy": "Copier",
+      "paste": "Coller",
+      "pasteAndMatchStyle": "Coller et adapter le style",
+      "delete": "Supprimer",
+      "selectAll": "Tout sélectionner",
+      "find": "Rechercher…"
+    },
+    "view": {
+      "label": "&Affichage",
+      "zoomIn": "Zoom avant",
+      "zoomOut": "Zoom arrière",
+      "actualSize": "Taille réelle",
+      "wordCount": "Nombre de mots",
+      "spellCheck": "Vérification orthographique",
+      "freezeTopRow": "Figer la première ligne",
+      "freezeFirstColumn": "Figer la première colonne",
+      "unfreeze": "Libérer les volets",
+      "language": "Langue",
+      "fullScreen": "Basculer en plein écran"
+    },
+    "window": {
+      "label": "Fe&nêtre",
+      "minimize": "Réduire",
+      "zoom": "Zoom",
+      "front": "Tout ramener au premier plan"
+    },
+    "help": {
+      "label": "Aide",
+      "documentation": "Documentation NexOffice",
+      "checkForUpdates": "Rechercher des mises à jour…",
+      "about": "À propos de NexOffice"
+    }
+  },
+  "dialog": {
+    "filters": {
+      "officeDocuments": "Documents Office",
+      "wordDocument": "Document Word",
+      "excelWorkbook": "Classeur Excel",
+      "powerpointPresentation": "Présentation PowerPoint",
+      "pdfDocument": "Document PDF",
+      "allFiles": "Tous les fichiers"
+    },
+    "fileNotFound": {
+      "message": "Fichier introuvable",
+      "detail": "{path}\n\nLe fichier n'existe plus et a été retiré de la liste des fichiers récents."
+    },
+    "about": {
+      "title": "À propos de NexOffice",
+      "version": "Version {version}"
+    },
+    "unsaved": {
+      "message": "Voulez-vous enregistrer les modifications apportées à {name} ?",
+      "detail": "Vos modifications seront perdues si vous ne les enregistrez pas.",
+      "save": "Enregistrer",
+      "dontSave": "Ne pas enregistrer",
+      "cancel": "Annuler"
+    },
+    "pdfTruncated": {
+      "message": "Export PDF tronqué",
+      "detail": "Le document dépasse la limite d'export de {cap} pages ; seules les {pages} premières pages ont été exportées."
+    },
+    "pdfFailed": {
+      "title": "Échec de l'export PDF"
+    },
+    "openFailed": {
+      "title": "Impossible d'ouvrir le fichier"
+    }
+  },
+  "app": {
+    "edited": " — Modifié",
+    "kind": {
+      "docx": "Document",
+      "xlsx": "Classeur",
+      "pptx": "Présentation"
+    },
+    "meta": {
+      "type": "Type",
+      "size": "Taille",
+      "path": "Chemin"
+    },
+    "presentationComingSoon": "L'éditeur de présentations arrive bientôt.",
+    "empty": {
+      "subtitle": "Ouvrez un fichier .docx, .xlsx ou .pptx pour commencer.",
+      "openFile": "Ouvrir un fichier"
+    }
+  },
+  "status": {
+    "ready": "Prêt",
+    "newDocument": "Nouveau document",
+    "opened": "{name} ouvert",
+    "openFailed": "Échec de l'ouverture : {message}",
+    "unsupported": "Type de fichier non pris en charge : {name}",
+    "saved": "{path} enregistré",
+    "saveCanceled": "Enregistrement annulé",
+    "saveFailed": "Échec de l'enregistrement : {message}",
+    "openFirst": "Ouvrez d'abord un document",
+    "openWordFirst": "Ouvrez d'abord un document Word",
+    "exportingPdf": "Export PDF en cours…",
+    "pdfCanceled": "Export PDF annulé",
+    "pdfFailed": "Échec de l'export PDF : {message}",
+    "exported": "{path} exporté",
+    "exportedPagesOne": "{path} exporté (1 page)",
+    "exportedPagesMany": "{path} exporté ({pages} pages)",
+    "truncatedSuffix": " — tronqué à la limite de pages",
+    "wordCount": "Mots : {words} · Caractères : {characters} · Page {page}/{pages}",
+    "frozeTopRow": "Première ligne figée",
+    "frozeFirstColumn": "Première colonne figée",
+    "unfroze": "Volets libérés",
+    "notImplemented": "{action} n'est pas encore implémenté"
+  },
+  "footer": {
+    "stats": "{words} mots · {characters} caractères · Page {page}/{pages}",
+    "misspelledOne": "1 mot mal orthographié",
+    "misspelledMany": "{count} mots mal orthographiés",
+    "spellingOk": "Orthographe OK",
+    "loadingDictionary": "Chargement du dictionnaire…",
+    "dictError": "Erreur de dictionnaire"
+  },
+  "spellPanel": {
+    "title": "Vérification orthographique",
+    "close": "Fermer",
+    "none": "Aucun mot mal orthographié trouvé.",
+    "countOne": "1 mot mal orthographié",
+    "countMany": "{count} mots mal orthographiés"
+  },
+  "update": {
+    "ready": "Mise à jour {version} prête",
+    "restart": "Redémarrer pour mettre à jour",
+    "checking": "Recherche de mises à jour…",
+    "downloading": "Téléchargement de la mise à jour {version}…",
+    "downloadingPercent": "Téléchargement de la mise à jour… {percent}%",
+    "upToDate": "NexOffice est à jour",
+    "devDisabled": "Les mises à jour sont désactivées dans les versions de développement",
+    "failed": "Échec de la recherche de mises à jour : {message}"
+  },
+  "editor": {
+    "loading": "Chargement de {name}…",
+    "couldNotOpen": "Impossible d'ouvrir {name}"
+  }
+}

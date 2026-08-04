@@ -1,0 +1,168 @@
+{
+  "menu": {
+    "app": {
+      "checkForUpdates": "检查更新…",
+      "services": "服务",
+      "hide": "隐藏 NexOffice",
+      "hideOthers": "隐藏其他",
+      "unhide": "全部显示",
+      "quit": "退出 NexOffice"
+    },
+    "file": {
+      "label": "文件(&F)",
+      "new": "新建",
+      "open": "打开…",
+      "openRecent": "打开最近的文件",
+      "noRecentFiles": "没有最近的文件",
+      "clearRecent": "清除列表",
+      "save": "保存",
+      "saveAs": "另存为…",
+      "exportPdf": "导出为 PDF…",
+      "closeWindow": "关闭窗口",
+      "exit": "退出"
+    },
+    "edit": {
+      "label": "编辑(&E)",
+      "undo": "撤销",
+      "redo": "重做",
+      "cut": "剪切",
+      "copy": "复制",
+      "paste": "粘贴",
+      "pasteAndMatchStyle": "粘贴并匹配样式",
+      "delete": "删除",
+      "selectAll": "全选",
+      "find": "查找…"
+    },
+    "view": {
+      "label": "视图(&V)",
+      "zoomIn": "放大",
+      "zoomOut": "缩小",
+      "actualSize": "实际大小",
+      "wordCount": "字数统计",
+      "spellCheck": "拼写检查",
+      "freezeTopRow": "冻结首行",
+      "freezeFirstColumn": "冻结首列",
+      "unfreeze": "取消冻结",
+      "language": "语言",
+      "fullScreen": "切换全屏"
+    },
+    "window": {
+      "label": "窗口(&W)",
+      "minimize": "最小化",
+      "zoom": "缩放",
+      "front": "前置全部窗口"
+    },
+    "help": {
+      "label": "帮助",
+      "documentation": "NexOffice 文档",
+      "checkForUpdates": "检查更新…",
+      "about": "关于 NexOffice"
+    }
+  },
+  "dialog": {
+    "filters": {
+      "officeDocuments": "Office 文档",
+      "wordDocument": "Word 文档",
+      "excelWorkbook": "Excel 工作簿",
+      "powerpointPresentation": "PowerPoint 演示文稿",
+      "pdfDocument": "PDF 文档",
+      "allFiles": "所有文件"
+    },
+    "fileNotFound": {
+      "message": "找不到文件",
+      "detail": "{path}\n\n该文件已不存在，并已从最近文件列表中移除。"
+    },
+    "about": {
+      "title": "关于 NexOffice",
+      "version": "版本 {version}"
+    },
+    "unsaved": {
+      "message": "是否保存对 {name} 所做的更改？",
+      "detail": "如果不保存，您的更改将丢失。",
+      "save": "保存",
+      "dontSave": "不保存",
+      "cancel": "取消"
+    },
+    "pdfTruncated": {
+      "message": "PDF 导出被截断",
+      "detail": "文档超过 {cap} 页的导出限制；仅导出了前 {pages} 页。"
+    },
+    "pdfFailed": {
+      "title": "PDF 导出失败"
+    },
+    "openFailed": {
+      "title": "无法打开文件"
+    }
+  },
+  "app": {
+    "edited": " — 已编辑",
+    "kind": {
+      "docx": "文档",
+      "xlsx": "工作簿",
+      "pptx": "演示文稿"
+    },
+    "meta": {
+      "type": "类型",
+      "size": "大小",
+      "path": "路径"
+    },
+    "presentationComingSoon": "演示文稿编辑器即将推出。",
+    "empty": {
+      "subtitle": "打开 .docx、.xlsx 或 .pptx 文件即可开始。",
+      "openFile": "打开文件"
+    }
+  },
+  "status": {
+    "ready": "就绪",
+    "newDocument": "新建文档",
+    "opened": "已打开 {name}",
+    "openFailed": "打开失败：{message}",
+    "unsupported": "不支持的文件类型：{name}",
+    "saved": "已保存 {path}",
+    "saveCanceled": "已取消保存",
+    "saveFailed": "保存失败：{message}",
+    "openFirst": "请先打开一个文档",
+    "openWordFirst": "请先打开一个 Word 文档",
+    "exportingPdf": "正在导出 PDF…",
+    "pdfCanceled": "已取消 PDF 导出",
+    "pdfFailed": "PDF 导出失败：{message}",
+    "exported": "已导出 {path}",
+    "exportedPagesOne": "已导出 {path}（1 页）",
+    "exportedPagesMany": "已导出 {path}（{pages} 页）",
+    "truncatedSuffix": " — 已在页数限制处截断",
+    "wordCount": "字数：{words} · 字符：{characters} · 第 {page}/{pages} 页",
+    "frozeTopRow": "已冻结首行",
+    "frozeFirstColumn": "已冻结首列",
+    "unfroze": "已取消冻结",
+    "notImplemented": "{action} 尚未实现"
+  },
+  "footer": {
+    "stats": "{words} 字 · {characters} 字符 · 第 {page}/{pages} 页",
+    "misspelledOne": "1 个拼写错误的单词",
+    "misspelledMany": "{count} 个拼写错误的单词",
+    "spellingOk": "拼写正确",
+    "loadingDictionary": "正在加载词典…",
+    "dictError": "词典错误"
+  },
+  "spellPanel": {
+    "title": "拼写检查",
+    "close": "关闭",
+    "none": "未发现拼写错误的单词。",
+    "countOne": "1 个拼写错误的单词",
+    "countMany": "{count} 个拼写错误的单词"
+  },
+  "update": {
+    "ready": "更新 {version} 已就绪",
+    "restart": "重启以更新",
+    "checking": "正在检查更新…",
+    "downloading": "正在下载更新 {version}…",
+    "downloadingPercent": "正在下载更新… {percent}%",
+    "upToDate": "NexOffice 已是最新版本",
+    "devDisabled": "开发版本已禁用更新",
+    "failed": "检查更新失败：{message}"
+  },
+  "editor": {
+    "loading": "正在加载 {name}…",
+    "couldNotOpen": "无法打开 {name}"
+  }
+}

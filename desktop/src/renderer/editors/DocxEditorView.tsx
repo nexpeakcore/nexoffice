@@ -7,7 +7,11 @@ import {
   resolveMetricCompatFace,
   resolveScriptFallbackFace,
 } from '@betteroffice/docx-fonts'
+import { en as docxEn, locales as docxLocales, type PartialLocaleStrings } from '@betteroffice/docx-i18n'
 import type { OpenedDocument } from '../../shared/ipc.js'
+import { useI18n } from '../i18n.js'
+
+const editorLocales = docxLocales as Record<string, PartialLocaleStrings>
 
 export interface DocxEditorViewRef {
   save: () => Promise<ArrayBuffer | null>
@@ -56,6 +60,7 @@ const TEXT_REFRESH_DELAY_MS = 500
 
 export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>(
   function DocxEditorView({ document, onChange }, ref) {
+    const { locale, t } = useI18n()
     const editorRef = useRef<DocxEditorRef>(null)
     const measurementFontProvider = useMemo<BundledFontProvider>(
       () => ({
@@ -163,7 +168,9 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
       return (
         <div className="flex h-full items-center justify-center p-8">
           <div className="max-w-md text-center">
-            <h2 className="text-sm font-semibold text-red-700">Could not open {document.name}</h2>
+            <h2 className="text-sm font-semibold text-red-700">
+              {t('editor.couldNotOpen', { name: document.name })}
+            </h2>
             <p className="mt-2 text-sm text-neutral-600">{error}</p>
           </div>
         </div>
@@ -175,11 +182,12 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
         ref={editorRef}
         documentBuffer={document.data}
         measurementFontProvider={measurementFontProvider}
+        i18n={editorLocales[locale] ?? docxEn}
         showFileOpen={false}
         className="h-full w-full"
         loadingIndicator={
           <div className="flex h-full items-center justify-center">
-            <span className="text-sm text-neutral-500">Loading {document.name}…</span>
+            <span className="text-sm text-neutral-500">{t('editor.loading', { name: document.name })}</span>
           </div>
         }
         onError={(err) => setError(err.message)}
