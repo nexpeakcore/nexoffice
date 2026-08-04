@@ -2526,6 +2526,7 @@ fn worksheet_xml_with_template(
                 &mut merged,
                 &sheet_directory,
                 package,
+                template,
                 used_paths,
                 &mut output_extras,
             )? {
@@ -2590,12 +2591,15 @@ enum CommentPartsPlan {
 /// Rebinds the sheet's comments and VML relationships to regenerated parts,
 /// reusing the source ids and paths when they exist. When the sheet no longer
 /// has comments, the comments part drops; the VML part drops too unless it
-/// still holds non-note shapes.
+/// still holds non-note shapes. Only the VML the `<legacyDrawing>` names is
+/// touched: a sheet's `<legacyDrawingHF>` owns a second `vmlDrawing`
+/// relationship whose part carries the header and footer artwork.
 fn plan_sheet_comments(
     sheet: &Sheet,
     relationships: &mut Vec<Relationship>,
     sheet_directory: &str,
     package: &PreservedPackage,
+    template: &XmlTemplate,
     used_paths: &mut HashSet<String>,
     output: &mut WorksheetOutput,
 ) -> Result<CommentPartsPlan, ParseError> {
@@ -2603,12 +2607,27 @@ fn plan_sheet_comments(
         .iter()
         .find(|relationship| relationship.has_type("comments"))
         .cloned();
-    let source_vml = relationships
-        .iter()
-        .find(|relationship| relationship.has_type("vmlDrawing"))
-        .cloned();
+    let notes_vml_id = legacy_drawing_relationship_id(template)?;
+    let source_vml = notes_vml_id.as_deref().and_then(|id| {
+        relationships
+            .iter()
+            .find(|relationship| {
+                relationship.has_type("vmlDrawing") && relationship.id() == Some(id)
+            })
+            .cloned()
+    });
+    let dropped_vml_id = source_vml
+        .as_ref()
+        .and_then(Relationship::id)
+        .map(str::to_owned);
     relationships.retain(|relationship| {
-        !relationship.has_type("comments") && !relationship.has_type("vmlDrawing")
+        if relationship.has_type("comments") {
+            return false;
+        }
+        match dropped_vml_id.as_deref() {
+            Some(id) => !(relationship.has_type("vmlDrawing") && relationship.id() == Some(id)),
+            None => true,
+        }
     });
     let source_comments_path = source_comments
         .as_ref()
@@ -2677,6 +2696,24 @@ fn plan_sheet_comments(
         &relationship_type(package, "vmlDrawing", REL_VML),
     ));
     Ok(CommentPartsPlan::Notes(plan))
+}
+
+/// The relationship id the worksheet's `<legacyDrawing>` points at, which is
+/// the only VML a comment rewrite may claim.
+fn legacy_drawing_relationship_id(template: &XmlTemplate) -> Result<Option<String>, ParseError> {
+    let Some(child) = template.child("legacyDrawing") else {
+        return Ok(None);
+    };
+    let mut reader = xml_reader(&child.bytes);
+    let mut buf = Vec::new();
+    let mut depth = 0;
+    loop {
+        match next_event(&mut reader, &mut buf, &mut depth)? {
+            Event::Start(e) => return xml_attr(&e, b"id"),
+            Event::Eof => return Ok(None),
+            _ => {}
+        }
+    }
 }
 
 /// Whether a source VML part contains shapes a comment rewrite must keep.

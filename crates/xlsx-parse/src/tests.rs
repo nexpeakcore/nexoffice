@@ -2301,3 +2301,222 @@ fn clearing_every_comment_drops_the_parts_rels_and_content_types() {
             .is_empty()
     );
 }
+
+/// The relationship id a saved worksheet's `<legacyDrawing>` points at, which
+/// a regenerated element may carry a namespace declaration ahead of.
+fn legacy_drawing_id(sheet: &str) -> Option<String> {
+    sheet
+        .split_once("<legacyDrawing ")
+        .and_then(|(_, rest)| rest.split_once('>'))
+        .and_then(|(element, _)| element.split_once(r#"id=""#))
+        .map(|(_, rest)| rest.split_once('"').unwrap().0.to_owned())
+}
+
+/// Header and footer artwork lives in a second VML part, reached through
+/// `<legacyDrawingHF>` rather than the `<legacyDrawing>` the comment writer
+/// regenerates.
+fn header_footer_vml() -> Vec<u8> {
+    concat!(
+        r#"<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">"#,
+        r#"<o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="2"/></o:shapelayout>"#,
+        r#"<v:shapetype id="_x0000_t75" coordsize="21600,21600" o:spt="75" path="m@4@5l@4@11@9@11@9@5xe"/>"#,
+        r##"<v:shape id="CH" o:spid="_x0000_s2049" type="#_x0000_t75" style="position:absolute"><v:imagedata o:relid="rIdImage" o:title="logo"/></v:shape>"##,
+        r##"<v:shape id="LF" o:spid="_x0000_s2050" type="#_x0000_t75" style="position:absolute"><v:imagedata o:relid="rIdImage" o:title="logo"/></v:shape>"##,
+        r#"</xml>"#,
+    )
+    .as_bytes()
+    .to_vec()
+}
+
+/// A sheet carrying both VML kinds: notes behind `<legacyDrawing>` and header
+/// and footer images behind `<legacyDrawingHF>`.
+fn commented_package_with_header_footer_vml() -> Vec<(String, Vec<u8>)> {
+    let mut parts = commented_package();
+    replace_part(
+        &mut parts,
+        "xl/worksheets/sheet1.xml",
+        concat!(
+            r#"<worksheet><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData>"#,
+            r#"<legacyDrawing r:id="rIdVml"/><legacyDrawingHF r:id="rIdHf"/></worksheet>"#,
+        )
+        .as_bytes()
+        .to_vec(),
+    );
+    replace_part(
+        &mut parts,
+        "xl/worksheets/_rels/sheet1.xml.rels",
+        concat!(
+            r#"<Relationships>"#,
+            r#"<Relationship Id="rIdComments" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/>"#,
+            r#"<Relationship Id="rIdVml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing1.vml"/>"#,
+            r#"<Relationship Id="rIdHf" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing2.vml"/>"#,
+            r#"</Relationships>"#,
+        )
+        .as_bytes()
+        .to_vec(),
+    );
+    parts.push((
+        "xl/drawings/vmlDrawing2.vml".to_owned(),
+        header_footer_vml(),
+    ));
+    parts.push((
+        "xl/drawings/_rels/vmlDrawing2.vml.rels".to_owned(),
+        br#"<Relationships><Relationship Id="rIdImage" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/></Relationships>"#.to_vec(),
+    ));
+    parts.push(("xl/media/image1.png".to_owned(), b"\x89PNG\r\n".to_vec()));
+    parts
+}
+
+#[test]
+fn editing_a_comment_leaves_the_header_footer_vml_untouched() {
+    let parts = commented_package_with_header_footer_vml();
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+
+    let mut workbook = parsed.workbook.clone();
+    workbook.sheets[0].set_comment(
+        CellRef::parse_a1("A1").unwrap(),
+        Some(note("Ada", "rewritten")),
+    );
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+
+    assert_eq!(
+        part_bytes(&saved, "xl/drawings/vmlDrawing2.vml"),
+        part_bytes(&parts, "xl/drawings/vmlDrawing2.vml"),
+        "the header and footer vml is not the comments vml"
+    );
+    assert_eq!(
+        part_bytes(&saved, "xl/drawings/_rels/vmlDrawing2.vml.rels"),
+        part_bytes(&parts, "xl/drawings/_rels/vmlDrawing2.vml.rels")
+    );
+    part_bytes(&saved, "xl/media/image1.png");
+
+    let comments = String::from_utf8(part_bytes(&saved, "xl/comments1.xml")).unwrap();
+    assert!(comments.contains("rewritten"), "{comments}");
+    let notes = String::from_utf8(part_bytes(&saved, "xl/drawings/vmlDrawing1.vml")).unwrap();
+    assert!(
+        notes.contains(r#"<x:ClientData ObjectType="Note">"#),
+        "{notes}"
+    );
+    assert_eq!(notes.matches("<v:shape ").count(), 2, "{notes}");
+    assert!(!notes.contains(r#"o:relid="rIdImage""#), "{notes}");
+
+    let sheet = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert_eq!(
+        legacy_drawing_id(&sheet).as_deref(),
+        Some("rIdVml"),
+        "{sheet}"
+    );
+    assert!(
+        sheet.contains(r#"<legacyDrawingHF r:id="rIdHf"/>"#),
+        "{sheet}"
+    );
+    let rels =
+        String::from_utf8(part_bytes(&saved, "xl/worksheets/_rels/sheet1.xml.rels")).unwrap();
+    assert!(
+        rels.contains(r#"Id="rIdHf""#) && rels.contains("../drawings/vmlDrawing2.vml"),
+        "{rels}"
+    );
+    assert!(rels.contains(r#"Id="rIdVml""#), "{rels}");
+    assert!(rels.contains(r#"Id="rIdComments""#), "{rels}");
+}
+
+#[test]
+fn dropping_the_last_comment_keeps_the_header_footer_vml() {
+    let parts = commented_package_with_header_footer_vml();
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+
+    let mut workbook = parsed.workbook.clone();
+    workbook.sheets[0].comments.clear();
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+
+    assert_eq!(
+        part_bytes(&saved, "xl/drawings/vmlDrawing2.vml"),
+        part_bytes(&parts, "xl/drawings/vmlDrawing2.vml")
+    );
+    assert!(!saved.iter().any(|(name, _)| name == "xl/comments1.xml"));
+    assert!(
+        !saved
+            .iter()
+            .any(|(name, _)| name == "xl/drawings/vmlDrawing1.vml")
+    );
+
+    let sheet = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(!sheet.contains("<legacyDrawing "), "{sheet}");
+    assert!(!sheet.contains(r#"<legacyDrawing/>"#), "{sheet}");
+    assert!(
+        sheet.contains(r#"<legacyDrawingHF r:id="rIdHf"/>"#),
+        "{sheet}"
+    );
+    let rels =
+        String::from_utf8(part_bytes(&saved, "xl/worksheets/_rels/sheet1.xml.rels")).unwrap();
+    assert!(
+        rels.contains(r#"Id="rIdHf""#) && rels.contains("../drawings/vmlDrawing2.vml"),
+        "{rels}"
+    );
+    assert!(!rels.contains(r#"Id="rIdVml""#), "{rels}");
+    assert!(!rels.contains(r#"Id="rIdComments""#), "{rels}");
+}
+
+#[test]
+fn a_first_comment_allocates_a_vml_part_beside_the_header_footer_one() {
+    let mut parts = package(
+        concat!(
+            r#"<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData>"#,
+            r#"<legacyDrawingHF r:id="rIdHf"/>"#,
+        ),
+        &[],
+        false,
+    );
+    parts.push((
+        "xl/worksheets/_rels/sheet1.xml.rels".to_owned(),
+        br#"<Relationships><Relationship Id="rIdHf" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing1.vml"/></Relationships>"#.to_vec(),
+    ));
+    parts.push((
+        "xl/drawings/vmlDrawing1.vml".to_owned(),
+        header_footer_vml(),
+    ));
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+
+    let mut workbook = parsed.workbook.clone();
+    workbook.sheets[0].set_comment(
+        CellRef::parse_a1("B2").unwrap(),
+        Some(note("Ada", "fresh note")),
+    );
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+
+    assert_eq!(
+        part_bytes(&saved, "xl/drawings/vmlDrawing1.vml"),
+        part_bytes(&parts, "xl/drawings/vmlDrawing1.vml"),
+        "the header and footer vml keeps its path and bytes"
+    );
+    let notes = String::from_utf8(part_bytes(&saved, "xl/drawings/vmlDrawing2.vml")).unwrap();
+    assert!(
+        notes.contains(r#"<x:ClientData ObjectType="Note">"#),
+        "{notes}"
+    );
+
+    let sheet = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(
+        sheet.contains(r#"<legacyDrawingHF r:id="rIdHf"/>"#),
+        "{sheet}"
+    );
+    let legacy_id = legacy_drawing_id(&sheet).expect("worksheet must reference the notes drawing");
+    assert_ne!(legacy_id, "rIdHf");
+    let rels =
+        String::from_utf8(part_bytes(&saved, "xl/worksheets/_rels/sheet1.xml.rels")).unwrap();
+    assert!(
+        rels.contains(r#"Id="rIdHf" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing1.vml""#),
+        "{rels}"
+    );
+    assert!(
+        rels.contains(&format!(
+            r#"Id="{legacy_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing2.vml""#
+        )),
+        "{rels}"
+    );
+
+    assert_eq!(
+        parse_workbook(&saved).unwrap().sheets[0].comments,
+        workbook.sheets[0].comments
+    );
+}
