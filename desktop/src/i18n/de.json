@@ -96,17 +96,6 @@
   },
   "app": {
     "edited": " — Bearbeitet",
-    "kind": {
-      "docx": "Dokument",
-      "xlsx": "Arbeitsmappe",
-      "pptx": "Präsentation"
-    },
-    "meta": {
-      "type": "Typ",
-      "size": "Größe",
-      "path": "Pfad"
-    },
-    "presentationComingSoon": "Der Präsentationseditor folgt in Kürze.",
     "empty": {
       "subtitle": "Öffnen Sie eine .docx-, .xlsx- oder .pptx-Datei, um zu beginnen.",
       "openFile": "Datei öffnen"
@@ -121,6 +110,7 @@
     "saved": "{path} gespeichert",
     "saveCanceled": "Speichern abgebrochen",
     "saveFailed": "Speichern fehlgeschlagen: {message}",
+    "presentationSaveUnsupported": "Präsentationen können noch nicht gespeichert werden — Änderungen bleiben in dieser Sitzung",
     "openFirst": "Öffnen Sie zuerst ein Dokument",
     "openWordFirst": "Öffnen Sie zuerst ein Word-Dokument",
     "exportingPdf": "PDF wird exportiert…",
@@ -141,7 +131,8 @@
     "misspelledMany": "{count} falsch geschriebene Wörter",
     "spellingOk": "Rechtschreibung OK",
     "loadingDictionary": "Wörterbuch wird geladen…",
-    "dictError": "Wörterbuchfehler"
+    "dictError": "Wörterbuchfehler",
+    "presentationSaveUnsupported": "Präsentationsänderungen können noch nicht gespeichert werden"
   },
   "spellPanel": {
     "title": "Rechtschreibprüfung",

@@ -96,17 +96,6 @@
   },
   "app": {
     "edited": " — Edytowano",
-    "kind": {
-      "docx": "Dokument",
-      "xlsx": "Skoroszyt",
-      "pptx": "Prezentacja"
-    },
-    "meta": {
-      "type": "Typ",
-      "size": "Rozmiar",
-      "path": "Ścieżka"
-    },
-    "presentationComingSoon": "Edytor prezentacji już wkrótce.",
     "empty": {
       "subtitle": "Otwórz plik .docx, .xlsx lub .pptx, aby rozpocząć.",
       "openFile": "Otwórz plik"
@@ -121,6 +110,7 @@
     "saved": "Zapisano {path}",
     "saveCanceled": "Zapisywanie anulowane",
     "saveFailed": "Zapisywanie nie powiodło się: {message}",
+    "presentationSaveUnsupported": "Zapisywanie prezentacji nie jest jeszcze obsługiwane — zmiany pozostają w tej sesji",
     "openFirst": "Najpierw otwórz dokument",
     "openWordFirst": "Najpierw otwórz dokument Word",
     "exportingPdf": "Eksportowanie PDF…",
@@ -141,7 +131,8 @@
     "misspelledMany": "Błędnie napisane słowa: {count}",
     "spellingOk": "Pisownia OK",
     "loadingDictionary": "Ładowanie słownika…",
-    "dictError": "Błąd słownika"
+    "dictError": "Błąd słownika",
+    "presentationSaveUnsupported": "Zmian w prezentacji nie można jeszcze zapisać"
   },
   "spellPanel": {
     "title": "Sprawdzanie pisowni",

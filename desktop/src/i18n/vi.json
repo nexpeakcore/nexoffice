@@ -96,17 +96,6 @@
   },
   "app": {
     "edited": " — Đã chỉnh sửa",
-    "kind": {
-      "docx": "Tài liệu",
-      "xlsx": "Sổ làm việc",
-      "pptx": "Bản trình chiếu"
-    },
-    "meta": {
-      "type": "Loại",
-      "size": "Kích thước",
-      "path": "Đường dẫn"
-    },
-    "presentationComingSoon": "Trình soạn bản trình chiếu sẽ sớm ra mắt.",
     "empty": {
       "subtitle": "Mở tệp .docx, .xlsx hoặc .pptx để bắt đầu.",
       "openFile": "Mở tệp"
@@ -121,6 +110,7 @@
     "saved": "Đã lưu {path}",
     "saveCanceled": "Đã hủy lưu",
     "saveFailed": "Lưu thất bại: {message}",
+    "presentationSaveUnsupported": "Chưa hỗ trợ lưu bản trình bày — các chỉnh sửa chỉ tồn tại trong phiên này",
     "openFirst": "Hãy mở một tài liệu trước",
     "openWordFirst": "Hãy mở một tài liệu Word trước",
     "exportingPdf": "Đang xuất PDF…",
@@ -141,7 +131,8 @@
     "misspelledMany": "{count} từ sai chính tả",
     "spellingOk": "Chính tả đúng",
     "loadingDictionary": "Đang tải từ điển…",
-    "dictError": "Lỗi từ điển"
+    "dictError": "Lỗi từ điển",
+    "presentationSaveUnsupported": "Chưa thể lưu các chỉnh sửa bản trình bày"
   },
   "spellPanel": {
     "title": "Kiểm tra chính tả",

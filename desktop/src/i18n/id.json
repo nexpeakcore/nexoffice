@@ -96,17 +96,6 @@
   },
   "app": {
     "edited": " — Disunting",
-    "kind": {
-      "docx": "Dokumen",
-      "xlsx": "Buku Kerja",
-      "pptx": "Presentasi"
-    },
-    "meta": {
-      "type": "Jenis",
-      "size": "Ukuran",
-      "path": "Jalur"
-    },
-    "presentationComingSoon": "Editor presentasi segera hadir.",
     "empty": {
       "subtitle": "Buka berkas .docx, .xlsx, atau .pptx untuk memulai.",
       "openFile": "Buka Berkas"
@@ -121,6 +110,7 @@
     "saved": "{path} disimpan",
     "saveCanceled": "Penyimpanan dibatalkan",
     "saveFailed": "Gagal menyimpan: {message}",
+    "presentationSaveUnsupported": "Menyimpan presentasi belum didukung — suntingan hanya bertahan di sesi ini",
     "openFirst": "Buka dokumen terlebih dahulu",
     "openWordFirst": "Buka dokumen Word terlebih dahulu",
     "exportingPdf": "Mengekspor PDF…",
@@ -141,7 +131,8 @@
     "misspelledMany": "{count} kata salah eja",
     "spellingOk": "Ejaan benar",
     "loadingDictionary": "Memuat kamus…",
-    "dictError": "Kesalahan kamus"
+    "dictError": "Kesalahan kamus",
+    "presentationSaveUnsupported": "Suntingan presentasi belum dapat disimpan"
   },
   "spellPanel": {
     "title": "Periksa Ejaan",

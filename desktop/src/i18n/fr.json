@@ -96,17 +96,6 @@
   },
   "app": {
     "edited": " — Modifié",
-    "kind": {
-      "docx": "Document",
-      "xlsx": "Classeur",
-      "pptx": "Présentation"
-    },
-    "meta": {
-      "type": "Type",
-      "size": "Taille",
-      "path": "Chemin"
-    },
-    "presentationComingSoon": "L'éditeur de présentations arrive bientôt.",
     "empty": {
       "subtitle": "Ouvrez un fichier .docx, .xlsx ou .pptx pour commencer.",
       "openFile": "Ouvrir un fichier"
@@ -121,6 +110,7 @@
     "saved": "{path} enregistré",
     "saveCanceled": "Enregistrement annulé",
     "saveFailed": "Échec de l'enregistrement : {message}",
+    "presentationSaveUnsupported": "L'enregistrement des présentations n'est pas encore pris en charge — les modifications restent dans cette session",
     "openFirst": "Ouvrez d'abord un document",
     "openWordFirst": "Ouvrez d'abord un document Word",
     "exportingPdf": "Export PDF en cours…",
@@ -141,7 +131,8 @@
     "misspelledMany": "{count} mots mal orthographiés",
     "spellingOk": "Orthographe OK",
     "loadingDictionary": "Chargement du dictionnaire…",
-    "dictError": "Erreur de dictionnaire"
+    "dictError": "Erreur de dictionnaire",
+    "presentationSaveUnsupported": "Les modifications de présentation ne peuvent pas encore être enregistrées"
   },
   "spellPanel": {
     "title": "Vérification orthographique",

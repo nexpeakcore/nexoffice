@@ -96,17 +96,6 @@
   },
   "app": {
     "edited": " — Düzenlendi",
-    "kind": {
-      "docx": "Belge",
-      "xlsx": "Çalışma Kitabı",
-      "pptx": "Sunu"
-    },
-    "meta": {
-      "type": "Tür",
-      "size": "Boyut",
-      "path": "Yol"
-    },
-    "presentationComingSoon": "Sunu düzenleyici yakında geliyor.",
     "empty": {
       "subtitle": "Başlamak için bir .docx, .xlsx veya .pptx dosyası açın.",
       "openFile": "Dosya Aç"
@@ -121,6 +110,7 @@
     "saved": "{path} kaydedildi",
     "saveCanceled": "Kaydetme iptal edildi",
     "saveFailed": "Kaydetme başarısız: {message}",
+    "presentationSaveUnsupported": "Sunuları kaydetme henüz desteklenmiyor — düzenlemeler bu oturumda kalır",
     "openFirst": "Önce bir belge açın",
     "openWordFirst": "Önce bir Word belgesi açın",
     "exportingPdf": "PDF dışa aktarılıyor…",
@@ -141,7 +131,8 @@
     "misspelledMany": "{count} yazım hatalı sözcük",
     "spellingOk": "Yazım doğru",
     "loadingDictionary": "Sözlük yükleniyor…",
-    "dictError": "Sözlük hatası"
+    "dictError": "Sözlük hatası",
+    "presentationSaveUnsupported": "Sunu düzenlemeleri henüz kaydedilemiyor"
   },
   "spellPanel": {
     "title": "Yazım Denetimi",

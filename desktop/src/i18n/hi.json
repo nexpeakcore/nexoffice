@@ -96,17 +96,6 @@
   },
   "app": {
     "edited": " — संपादित",
-    "kind": {
-      "docx": "दस्तावेज़",
-      "xlsx": "कार्यपुस्तिका",
-      "pptx": "प्रस्तुति"
-    },
-    "meta": {
-      "type": "प्रकार",
-      "size": "आकार",
-      "path": "पथ"
-    },
-    "presentationComingSoon": "प्रस्तुति संपादक जल्द आ रहा है।",
     "empty": {
       "subtitle": "आरंभ करने के लिए .docx, .xlsx या .pptx फ़ाइल खोलें।",
       "openFile": "फ़ाइल खोलें"
@@ -121,6 +110,7 @@
     "saved": "{path} सहेजा गया",
     "saveCanceled": "सहेजना रद्द किया गया",
     "saveFailed": "सहेजना विफल: {message}",
+    "presentationSaveUnsupported": "प्रस्तुतियाँ सहेजना अभी समर्थित नहीं है — संपादन इसी सत्र तक सीमित हैं",
     "openFirst": "पहले कोई दस्तावेज़ खोलें",
     "openWordFirst": "पहले कोई Word दस्तावेज़ खोलें",
     "exportingPdf": "PDF निर्यात हो रहा है…",
@@ -141,7 +131,8 @@
     "misspelledMany": "{count} गलत वर्तनी वाले शब्द",
     "spellingOk": "वर्तनी सही है",
     "loadingDictionary": "शब्दकोश लोड हो रहा है…",
-    "dictError": "शब्दकोश त्रुटि"
+    "dictError": "शब्दकोश त्रुटि",
+    "presentationSaveUnsupported": "प्रस्तुति के संपादन अभी सहेजे नहीं जा सकते"
   },
   "spellPanel": {
     "title": "वर्तनी जाँच",

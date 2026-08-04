@@ -78,9 +78,34 @@ export interface PptxTextSelection {
   focus: number;
 }
 
+/**
+ * The imperative surface handed to {@link PptxEditorProps.onReady}: the open
+ * presentation handle, a `refresh` to re-lay-out after an external caller edits
+ * through the same handle, and the editor's own history, clipboard, selection,
+ * and zoom actions so a host shell (menus, command palettes) can drive them
+ * against the live selection.
+ */
 export interface PptxEditorApi {
   handle: PresentationHandle;
   refresh: () => void;
+  /** Undo the last edit through the editor's history pipeline. */
+  undo: () => void;
+  /** Redo the last undone edit through the editor's history pipeline. */
+  redo: () => void;
+  /** Copy the selected text of the active story to the system clipboard. */
+  copySelection: () => Promise<void>;
+  /** Copy the selected text to the clipboard, then delete it. */
+  cutSelection: () => Promise<void>;
+  /** Replace the selected text with the clipboard's plain text. */
+  pasteSelection: () => Promise<void>;
+  /** Delete the selected text (Delete key equivalent). */
+  deleteSelection: () => void;
+  /** Select the active story's whole text (Cmd/Ctrl+A equivalent). */
+  selectAll: () => void;
+  /** The current zoom factor (1 = 100%), resolved when fitting to the stage. */
+  getZoom: () => number;
+  /** Set the zoom factor, clamped to the toolbar's 50%–200% range. */
+  setZoom: (zoom: number) => void;
 }
 
 export interface PptxEditorCollaborationOptions {
@@ -186,6 +211,9 @@ interface RecentCanvasClick {
   count: number;
 }
 
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 2;
+
 const initialStyle: EffectiveTextStyle = {
   bold: false,
   italic: false,
@@ -234,6 +262,19 @@ function PptxEditorContent({
   const pointerGestureRef = useRef<PointerGesture | null>(null);
   const recentClickRef = useRef<RecentCanvasClick | null>(null);
   const imageCacheRef = useRef(new Map<string, Promise<CanvasImageSource | null>>());
+  // `onReady` fires once per open, so the API it hands out reads the current
+  // render's closures through this ref instead of capturing that first render.
+  const editorActionsRef = useRef<{
+    undo: () => void;
+    redo: () => void;
+    copySelection: () => Promise<void>;
+    cutSelection: () => Promise<void>;
+    pasteSelection: () => Promise<void>;
+    deleteSelection: () => void;
+    selectAll: () => void;
+    getZoom: () => number;
+    setZoom: (zoom: number) => void;
+  } | null>(null);
   const stableFonts = useStableFontFaces(fonts);
   const [model, setModel] = useState<EditorModel | null>(null);
   const [selection, setSelection] = useState<PptxTextSelection | null>(null);
@@ -367,7 +408,22 @@ function PptxEditorContent({
           refreshAt(0);
           setLoading(false);
           setCollaborationReplica(handle);
-          onReadyRef.current?.({ handle, refresh });
+          onReadyRef.current?.({
+            handle,
+            refresh,
+            undo: () => editorActionsRef.current?.undo(),
+            redo: () => editorActionsRef.current?.redo(),
+            copySelection: () =>
+              editorActionsRef.current?.copySelection() ?? Promise.resolve(),
+            cutSelection: () =>
+              editorActionsRef.current?.cutSelection() ?? Promise.resolve(),
+            pasteSelection: () =>
+              editorActionsRef.current?.pasteSelection() ?? Promise.resolve(),
+            deleteSelection: () => editorActionsRef.current?.deleteSelection(),
+            selectAll: () => editorActionsRef.current?.selectAll(),
+            getZoom: () => editorActionsRef.current?.getZoom() ?? 1,
+            setZoom: (next: number) => editorActionsRef.current?.setZoom(next),
+          });
         } catch (value) {
           setLoading(false);
           reportError(value);
@@ -1274,6 +1330,103 @@ function PptxEditorContent({
     } catch (value) {
       reportError(value);
     }
+  };
+
+  const selectedTextRange = selection
+    ? {
+        start: Math.min(selection.anchor, selection.focus),
+        end: Math.max(selection.anchor, selection.focus),
+      }
+    : null;
+
+  const deleteSelectedText = () => {
+    const handle = handleRef.current;
+    if (!handle || !selection || !selectedTextRange) return;
+    const { start, end } = selectedTextRange;
+    if (start === end) return;
+    try {
+      handle.deleteText(selection.storyId, start, end);
+      commit({ ...selection, anchor: start, focus: start });
+    } catch (value) {
+      reportError(value);
+    }
+  };
+
+  const selectAllText = () => {
+    const handle = handleRef.current;
+    const shapeId = selection?.shapeId ?? shapeSelection?.shapeId;
+    const storyId = selection?.storyId ?? selectedShapeStoryId;
+    if (!handle || !shapeId || !storyId) return;
+    try {
+      const length = storyText(handle.story(storyId)).length;
+      setShapeSelection(null);
+      setSelection({ shapeId, storyId, anchor: 0, focus: length });
+    } catch (value) {
+      reportError(value);
+    }
+  };
+
+  const copySelectedText = async () => {
+    const handle = handleRef.current;
+    if (!handle || !selection || !selectedTextRange) return;
+    const { start, end } = selectedTextRange;
+    if (start === end) return;
+    let text: string;
+    try {
+      text = storyText(handle.story(selection.storyId)).slice(start, end);
+    } catch (value) {
+      reportError(value);
+      return;
+    }
+    if (text) await navigator.clipboard.writeText(text).catch(() => undefined);
+  };
+
+  const cutSelectedText = async () => {
+    await copySelectedText();
+    deleteSelectedText();
+  };
+
+  const pasteText = async () => {
+    const handle = handleRef.current;
+    if (!handle || !selection || !selectedTextRange) return;
+    let clipboard: string;
+    try {
+      clipboard = await navigator.clipboard.readText();
+    } catch {
+      return;
+    }
+    if (!clipboard) return;
+    const { start, end } = selectedTextRange;
+    try {
+      if (start !== end) handle.deleteText(selection.storyId, start, end);
+      let index = start;
+      const lines = clipboard.split(/\r\n|\r|\n/);
+      for (const [lineIndex, line] of lines.entries()) {
+        if (lineIndex > 0) {
+          handle.insertParagraphBreak(selection.storyId, index);
+          index += 1;
+        }
+        if (line) {
+          handle.insertText(selection.storyId, index, line, textStyle);
+          index += line.length;
+        }
+      }
+      commit({ ...selection, anchor: index, focus: index });
+    } catch (value) {
+      reportError(value);
+    }
+  };
+
+  editorActionsRef.current = {
+    undo: () => history('undo'),
+    redo: () => history('redo'),
+    copySelection: copySelectedText,
+    cutSelection: cutSelectedText,
+    pasteSelection: pasteText,
+    deleteSelection: deleteSelectedText,
+    selectAll: selectAllText,
+    getZoom: () => scale,
+    setZoom: (next: number) => setZoom(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next))),
   };
 
   const slideCount = model?.snapshot.slides.length ?? 0;

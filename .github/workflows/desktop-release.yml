@@ -59,11 +59,13 @@ jobs:
         run: |
           bun run build:xlsx-wasm
           bun run build:docx-wasm
+          bun run build:pptx-wasm
 
       - name: Build workspace packages
         run: |
           bun run build:xlsx
           bun run build:docx
+          bun run build:pptx
 
       - name: Build mac dmg + zip
         working-directory: desktop
@@ -138,11 +140,13 @@ jobs:
         run: |
           bun run build:xlsx-wasm
           bun run build:docx-wasm
+          bun run build:pptx-wasm
 
       - name: Build workspace packages
         run: |
           bun run build:xlsx
           bun run build:docx
+          bun run build:pptx
 
       - name: Build NSIS installer
         working-directory: desktop

@@ -96,17 +96,6 @@
   },
   "app": {
     "edited": " — Editado",
-    "kind": {
-      "docx": "Documento",
-      "xlsx": "Pasta de trabalho",
-      "pptx": "Apresentação"
-    },
-    "meta": {
-      "type": "Tipo",
-      "size": "Tamanho",
-      "path": "Caminho"
-    },
-    "presentationComingSoon": "O editor de apresentações chega em breve.",
     "empty": {
       "subtitle": "Abra um arquivo .docx, .xlsx ou .pptx para começar.",
       "openFile": "Abrir arquivo"
@@ -121,6 +110,7 @@
     "saved": "{path} salvo",
     "saveCanceled": "Salvamento cancelado",
     "saveFailed": "Falha ao salvar: {message}",
+    "presentationSaveUnsupported": "Salvar apresentações ainda não é compatível — as edições ficam nesta sessão",
     "openFirst": "Abra um documento primeiro",
     "openWordFirst": "Abra um documento do Word primeiro",
     "exportingPdf": "Exportando PDF…",
@@ -141,7 +131,8 @@
     "misspelledMany": "{count} palavras com erro de ortografia",
     "spellingOk": "Ortografia OK",
     "loadingDictionary": "Carregando dicionário…",
-    "dictError": "Erro no dicionário"
+    "dictError": "Erro no dicionário",
+    "presentationSaveUnsupported": "Ainda não é possível salvar edições de apresentação"
   },
   "spellPanel": {
     "title": "Verificação ortográfica",

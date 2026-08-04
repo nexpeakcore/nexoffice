@@ -3,6 +3,7 @@ import type { DocumentKind, MenuAction, OpenedDocument, WebEditAction } from '..
 import { SpellCheckPanel } from './components/SpellCheckPanel.js'
 import { UpdateChip } from './components/UpdateChip.js'
 import { DocxEditorView, type DocxEditorViewRef } from './editors/DocxEditorView.js'
+import { PptxEditorView, type PptxEditorViewRef } from './editors/PptxEditorView.js'
 import { XlsxEditorView, type XlsxEditorViewRef } from './editors/XlsxEditorView.js'
 import { spellCheckService, type Misspelling } from './services/spellcheck.js'
 import { useI18n } from './i18n.js'
@@ -26,10 +27,13 @@ interface StatusMessage {
   suffixKey?: string
 }
 
-const KIND_LABEL_KEY: Record<DocumentKind, string> = {
-  docx: 'app.kind.docx',
-  xlsx: 'app.kind.xlsx',
-  pptx: 'app.kind.pptx',
+// The pptx engine keeps edits in its CRDT and never projects them back into
+// PresentationML, so there is no serializer to write an edited deck with.
+// Saving the bytes it opened with would clear a dirty flag over a file that
+// still holds the original content, so a presentation is never dirty, never
+// saved, and says so in the footer instead.
+function canSave(kind: DocumentKind): boolean {
+  return kind !== 'pptx'
 }
 
 const ZOOM_MIN = 0.5
@@ -48,6 +52,7 @@ export function App() {
   const [docStats, setDocStats] = useState({ words: 0, characters: 0, page: 1, pages: 1 })
   const [editRevision, setEditRevision] = useState(0)
   const xlsxRef = useRef<XlsxEditorViewRef>(null)
+  const pptxRef = useRef<PptxEditorViewRef>(null)
   const documentRef = useRef<DocumentState | null>(null)
   const closingRef = useRef(false)
   const editGenerationRef = useRef(0)
@@ -65,6 +70,7 @@ export function App() {
   }, [documentKind])
 
   const isDocx = document?.kind === 'docx'
+  const isPptx = document?.kind === 'pptx'
 
   useEffect(() => {
     if (!isDocx) return
@@ -126,8 +132,8 @@ export function App() {
       const bytes = xlsxRef.current?.save()
       if (bytes) return bytes
     }
-    // No editor yet (still loading, or a kind with no editor) means no edits
-    // yet either, so the bytes the document opened with are still current.
+    // No editor yet (still loading, or a kind whose engine cannot serialize)
+    // means the bytes the document opened with are the only ones there are.
     return current.seed
   }, [])
 
@@ -202,6 +208,10 @@ export function App() {
     (forceDialog: boolean, bytesOverride?: Uint8Array): Promise<boolean> => {
       const target = documentRef.current
       if (!target) return Promise.resolve(false)
+      if (!canSave(target.kind)) {
+        setStatus({ key: 'status.presentationSaveUnsupported' })
+        return Promise.resolve(false)
+      }
       const generationAtRequest = editGenerationRef.current
       const queued = saveQueueRef.current.then(
         () => performSave(target, forceDialog, bytesOverride, generationAtRequest),
@@ -284,7 +294,7 @@ export function App() {
   // Edit-menu commands go to the office editor that owns the interaction; a
   // focused plain DOM field (formula bar, dialogs) keeps native behavior via
   // the main process, matching what the previous Electron role items did.
-  const editActionTarget = useCallback((): 'docx' | 'xlsx' | 'dom' | null => {
+  const editActionTarget = useCallback((): 'docx' | 'xlsx' | 'pptx' | 'dom' | null => {
     const kind = documentRef.current?.kind ?? null
     if (kind === 'docx' && docxRef.current?.isEditorFocused()) return 'docx'
     const active = window.document.activeElement
@@ -297,6 +307,7 @@ export function App() {
     }
     if (kind === 'xlsx') return 'xlsx'
     if (kind === 'docx') return 'docx'
+    if (kind === 'pptx') return 'pptx'
     return null
   }, [])
 
@@ -307,7 +318,14 @@ export function App() {
         window.nexoffice.webEditAction(verb)
         return
       }
-      const editor = target === 'xlsx' ? xlsxRef.current : target === 'docx' ? docxRef.current : null
+      const editor =
+        target === 'xlsx'
+          ? xlsxRef.current
+          : target === 'docx'
+            ? docxRef.current
+            : target === 'pptx'
+              ? pptxRef.current
+              : null
       if (!editor) return
       if (verb === 'undo') editor.undo()
       else if (verb === 'redo') editor.redo()
@@ -322,7 +340,14 @@ export function App() {
 
   const applyZoom = useCallback((step: number | null) => {
     const kind = documentRef.current?.kind
-    const editor = kind === 'docx' ? docxRef.current : kind === 'xlsx' ? xlsxRef.current : null
+    const editor =
+      kind === 'docx'
+        ? docxRef.current
+        : kind === 'xlsx'
+          ? xlsxRef.current
+          : kind === 'pptx'
+            ? pptxRef.current
+            : null
     if (!editor) return
     const next =
       step === null
@@ -483,20 +508,7 @@ export function App() {
                 onSaveRequest={(bytes) => void saveDocument(false, bytes)}
               />
             ) : (
-              <section className="flex w-full items-center justify-center p-8">
-                <div className="w-full max-w-3xl rounded-lg border border-neutral-200 bg-white p-8 shadow-sm">
-                  <h1 className="text-lg font-semibold text-neutral-900">{document.name}</h1>
-                  <dl className="mt-4 grid grid-cols-[8rem_1fr] gap-y-2 text-sm text-neutral-600">
-                    <dt>{t('app.meta.type')}</dt>
-                    <dd>{t(KIND_LABEL_KEY[document.kind])}</dd>
-                    <dt>{t('app.meta.size')}</dt>
-                    <dd>{(document.seed.byteLength / 1024).toFixed(1)} KB</dd>
-                    <dt>{t('app.meta.path')}</dt>
-                    <dd className="truncate">{document.path}</dd>
-                  </dl>
-                  <p className="mt-6 text-sm text-neutral-500">{t('app.presentationComingSoon')}</p>
-                </div>
-              </section>
+              <PptxEditorView ref={pptxRef} document={document} />
             )
           ) : (
             <section className="flex w-full items-center justify-center">
@@ -526,6 +538,9 @@ export function App() {
 
       <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-neutral-200 bg-white px-3 text-xs text-neutral-500">
         <span>{`${t(status.key, status.vars)}${status.suffixKey ? t(status.suffixKey) : ''}`}</span>
+        {isPptx && (
+          <span className="text-amber-600">{t('footer.presentationSaveUnsupported')}</span>
+        )}
         {isDocx && (
           <>
             <span className="hidden text-neutral-400 sm:inline">

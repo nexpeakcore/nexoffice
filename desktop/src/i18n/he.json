@@ -96,17 +96,6 @@
   },
   "app": {
     "edited": " — נערך",
-    "kind": {
-      "docx": "מסמך",
-      "xlsx": "חוברת עבודה",
-      "pptx": "מצגת"
-    },
-    "meta": {
-      "type": "סוג",
-      "size": "גודל",
-      "path": "נתיב"
-    },
-    "presentationComingSoon": "עורך המצגות יגיע בקרוב.",
     "empty": {
       "subtitle": "פתח קובץ ‎.docx‏, ‎.xlsx או ‎.pptx כדי להתחיל.",
       "openFile": "פתח קובץ"
@@ -121,6 +110,7 @@
     "saved": "{path} נשמר",
     "saveCanceled": "השמירה בוטלה",
     "saveFailed": "השמירה נכשלה: {message}",
+    "presentationSaveUnsupported": "שמירת מצגות אינה נתמכת עדיין — העריכות נשארות בהפעלה זו",
     "openFirst": "פתח מסמך תחילה",
     "openWordFirst": "פתח מסמך Word תחילה",
     "exportingPdf": "מייצא PDF…",
@@ -141,7 +131,8 @@
     "misspelledMany": "{count} מילים עם שגיאות כתיב",
     "spellingOk": "האיות תקין",
     "loadingDictionary": "טוען מילון…",
-    "dictError": "שגיאת מילון"
+    "dictError": "שגיאת מילון",
+    "presentationSaveUnsupported": "עדיין לא ניתן לשמור שינויים במצגת"
   },
   "spellPanel": {
     "title": "בדיקת איות",

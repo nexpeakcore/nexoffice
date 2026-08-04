@@ -96,17 +96,6 @@
   },
   "app": {
     "edited": " — 已编辑",
-    "kind": {
-      "docx": "文档",
-      "xlsx": "工作簿",
-      "pptx": "演示文稿"
-    },
-    "meta": {
-      "type": "类型",
-      "size": "大小",
-      "path": "路径"
-    },
-    "presentationComingSoon": "演示文稿编辑器即将推出。",
     "empty": {
       "subtitle": "打开 .docx、.xlsx 或 .pptx 文件即可开始。",
       "openFile": "打开文件"
@@ -121,6 +110,7 @@
     "saved": "已保存 {path}",
     "saveCanceled": "已取消保存",
     "saveFailed": "保存失败：{message}",
+    "presentationSaveUnsupported": "尚不支持保存演示文稿 — 编辑仅保留在本次会话中",
     "openFirst": "请先打开一个文档",
     "openWordFirst": "请先打开一个 Word 文档",
     "exportingPdf": "正在导出 PDF…",
@@ -141,7 +131,8 @@
     "misspelledMany": "{count} 个拼写错误的单词",
     "spellingOk": "拼写正确",
     "loadingDictionary": "正在加载词典…",
-    "dictError": "词典错误"
+    "dictError": "词典错误",
+    "presentationSaveUnsupported": "演示文稿的编辑尚无法保存"
   },
   "spellPanel": {
     "title": "拼写检查",
