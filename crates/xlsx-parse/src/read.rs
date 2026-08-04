@@ -557,7 +557,7 @@ fn comments_part<'a>(
 /// entry per commented cell. `<t>` and rich `<r>` runs both flatten to text.
 /// authors, comment elements, and string lengths are all capped while
 /// streaming, so a crafted part is rejected before it accumulates.
-fn parse_comments(data: &[u8]) -> Result<BTreeMap<(RowId, ColId), Comment>, ParseError> {
+pub(crate) fn parse_comments(data: &[u8]) -> Result<BTreeMap<(RowId, ColId), Comment>, ParseError> {
     let mut reader = reader(data);
     let mut buf = Vec::new();
     let mut depth = 0;

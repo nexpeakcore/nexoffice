@@ -2264,6 +2264,96 @@ fn adding_comments_to_a_plain_sheet_wires_parts_rels_and_content_types() {
     );
 }
 
+const PLAIN_COMMENT_ELEMENT: &str =
+    r#"<comment ref="A1" authorId="0"><text><t>plain note</t></text></comment>"#;
+const RICH_COMMENT_ELEMENT: &str = r#"<comment ref="C3" authorId="1"><text><r><rPr><b/></rPr><t>Rich </t></r><r><t>runs</t></r></text></comment>"#;
+
+/// Edits the commented fixture through a preserved package and hands back the
+/// saved comments part, after checking the notes still read back as modeled.
+fn edited_comments_part(edit: impl FnOnce(&mut Workbook)) -> String {
+    let parts = commented_package();
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+    let mut workbook = parsed.workbook.clone();
+    edit(&mut workbook);
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+    assert_eq!(
+        parse_workbook(&saved).unwrap().sheets[0].comments,
+        workbook.sheets[0].comments
+    );
+    String::from_utf8(part_bytes(&saved, "xl/comments1.xml")).unwrap()
+}
+
+#[test]
+fn editing_one_comment_keeps_the_other_source_elements_verbatim() {
+    let comments = edited_comments_part(|workbook| {
+        workbook.sheets[0].set_comment(
+            CellRef::parse_a1("A1").unwrap(),
+            Some(note("Ada", "rewritten")),
+        );
+    });
+
+    assert!(comments.contains(RICH_COMMENT_ELEMENT), "{comments}");
+    assert!(comments.contains("rewritten"), "{comments}");
+    assert!(!comments.contains("plain note"), "{comments}");
+    assert_eq!(comments.matches("<comment ").count(), 2, "{comments}");
+    assert!(
+        comments.contains("<author>Ada</author><author>Grace</author>"),
+        "{comments}"
+    );
+}
+
+#[test]
+fn editing_a_rich_comment_flattens_only_that_comment() {
+    let comments = edited_comments_part(|workbook| {
+        workbook.sheets[0].set_comment(
+            CellRef::parse_a1("C3").unwrap(),
+            Some(note("Grace", "flattened")),
+        );
+    });
+
+    assert!(comments.contains(PLAIN_COMMENT_ELEMENT), "{comments}");
+    assert!(
+        comments.contains(r#"<comment ref="C3" authorId="1">"#),
+        "{comments}"
+    );
+    assert!(comments.contains("flattened"), "{comments}");
+    assert!(!comments.contains("<rPr>"), "{comments}");
+    assert_eq!(comments.matches("<comment ").count(), 2, "{comments}");
+}
+
+#[test]
+fn adding_a_comment_keeps_both_source_elements_and_extends_the_authors() {
+    let comments = edited_comments_part(|workbook| {
+        workbook.sheets[0].set_comment(
+            CellRef::parse_a1("B2").unwrap(),
+            Some(note("Linus", "added")),
+        );
+    });
+
+    assert!(comments.contains(PLAIN_COMMENT_ELEMENT), "{comments}");
+    assert!(comments.contains(RICH_COMMENT_ELEMENT), "{comments}");
+    assert!(
+        comments.contains(r#"<comment ref="B2" authorId="2">"#),
+        "{comments}"
+    );
+    assert!(
+        comments.contains("<author>Ada</author><author>Grace</author><author>Linus</author>"),
+        "{comments}"
+    );
+    assert_eq!(comments.matches("<comment ").count(), 3, "{comments}");
+}
+
+#[test]
+fn deleting_a_comment_keeps_the_survivor_formatted() {
+    let comments = edited_comments_part(|workbook| {
+        workbook.sheets[0].set_comment(CellRef::parse_a1("A1").unwrap(), None);
+    });
+
+    assert!(comments.contains(RICH_COMMENT_ELEMENT), "{comments}");
+    assert!(!comments.contains("plain note"), "{comments}");
+    assert_eq!(comments.matches("<comment ").count(), 1, "{comments}");
+}
+
 fn replace_part(parts: &mut [(String, Vec<u8>)], name: &str, bytes: Vec<u8>) {
     parts
         .iter_mut()

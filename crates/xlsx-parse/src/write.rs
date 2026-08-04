@@ -18,9 +18,9 @@ use crate::package::{
     XmlChild, XmlTemplate, attributes_from_fragment, parse_relationships, relationship_part_path,
     remove_attribute, set_attribute,
 };
-use crate::read::SharedStringCells;
+use crate::read::{SharedStringCells, parse_comments};
 use crate::xml::{
-    attr as xml_attr, local_name as xml_local_name, next_event, reader as xml_reader,
+    attr as xml_attr, collect_text, local_name as xml_local_name, next_event, reader as xml_reader,
     resolve_part_path, xml_err,
 };
 
@@ -962,27 +962,16 @@ fn comments_xml(sheet: &Sheet, main_namespace: &str) -> Result<Vec<u8>, ParseErr
         w.create_element("comments")
             .with_attribute(("xmlns", main_namespace))
             .write_inner_content(|w| {
-                w.create_element("authors").write_inner_content(|w| {
-                    for author in &authors {
-                        w.create_element("author")
-                            .write_text_content(BytesText::new(author))?;
-                    }
-                    Ok(())
-                })?;
+                write_comment_authors(w, authors.iter().copied())?;
                 w.create_element("commentList").write_inner_content(|w| {
                     for (&(row, col), comment) in &sheet.comments {
-                        let reference = CellRef::new(row, col).to_a1();
-                        let author_id = author_ids[comment.author.as_str()].to_string();
-                        w.create_element("comment")
-                            .with_attribute(("ref", reference.as_str()))
-                            .with_attribute(("authorId", author_id.as_str()))
-                            .write_inner_content(|w| {
-                                w.create_element("text").write_inner_content(|w| {
-                                    write_text_el(w, &comment.text)?;
-                                    Ok(())
-                                })?;
-                                Ok(())
-                            })?;
+                        write_comment_element(
+                            w,
+                            row,
+                            col,
+                            author_ids[comment.author.as_str()],
+                            &comment.text,
+                        )?;
                     }
                     Ok(())
                 })?;
@@ -990,6 +979,171 @@ fn comments_xml(sheet: &Sheet, main_namespace: &str) -> Result<Vec<u8>, ParseErr
             })?;
         Ok(())
     })
+}
+
+fn write_comment_authors<'a>(
+    w: &mut Writer<Vec<u8>>,
+    authors: impl Iterator<Item = &'a str>,
+) -> io::Result<()> {
+    w.create_element("authors").write_inner_content(|w| {
+        for author in authors {
+            w.create_element("author")
+                .write_text_content(BytesText::new(author))?;
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn write_comment_element(
+    w: &mut Writer<Vec<u8>>,
+    row: RowId,
+    col: ColId,
+    author_id: usize,
+    text: &str,
+) -> io::Result<()> {
+    let reference = CellRef::new(row, col).to_a1();
+    let author_id = author_id.to_string();
+    w.create_element("comment")
+        .with_attribute(("ref", reference.as_str()))
+        .with_attribute(("authorId", author_id.as_str()))
+        .write_inner_content(|w| {
+            w.create_element("text").write_inner_content(|w| {
+                write_text_el(w, text)?;
+                Ok(())
+            })?;
+            Ok(())
+        })?;
+    Ok(())
+}
+
+/// Regenerates a comments part on top of its source: a comment the model still
+/// reads back identically keeps its source element verbatim, so rich runs,
+/// `rPr` formatting and phonetic properties survive an edit to a neighbouring
+/// note. Added comments, and comments whose author or text changed, are written
+/// as plain text — the model carries no runs. Without a readable source the
+/// whole part is regenerated.
+fn comments_xml_with_source(
+    sheet: &Sheet,
+    main_namespace: &str,
+    source: Option<&[u8]>,
+) -> Result<Vec<u8>, ParseError> {
+    let Some((template, source_comments)) = source.and_then(|bytes| {
+        let template = XmlTemplate::capture(bytes).ok()?;
+        let comments = parse_comments(bytes).ok()?;
+        Some((template, comments))
+    }) else {
+        return comments_xml(sheet, main_namespace);
+    };
+    let Some(list_child) = template.child("commentList") else {
+        return comments_xml(sheet, main_namespace);
+    };
+    let list = XmlTemplate::capture(&list_child.bytes)?;
+    let mut source_elements: HashMap<(RowId, ColId), &XmlChild> = HashMap::new();
+    for child in list.children_named("comment") {
+        if let Some(at) = comment_element_ref(&child.bytes)? {
+            source_elements.insert(at, child);
+        }
+    }
+
+    let source_authors = match template.child("authors") {
+        Some(child) => comment_authors(&child.bytes)?,
+        None => Vec::new(),
+    };
+    let mut authors = source_authors;
+    let mut author_ids: HashMap<&str, usize> = HashMap::new();
+    for (index, author) in authors.iter().enumerate() {
+        author_ids.entry(author.as_str()).or_insert(index);
+    }
+    let mut appended: Vec<&str> = Vec::new();
+    for comment in sheet.comments.values() {
+        let author = comment.author.as_str();
+        if !author_ids.contains_key(author) && !appended.contains(&author) {
+            author_ids.insert(author, authors.len() + appended.len());
+            appended.push(author);
+        }
+    }
+
+    let mut elements = Vec::with_capacity(sheet.comments.len());
+    for (&at, comment) in &sheet.comments {
+        let preserved = source_elements
+            .get(&at)
+            .filter(|_| source_comments.get(&at) == Some(comment));
+        match preserved {
+            Some(child) => elements.push(child.bytes.clone()),
+            None => {
+                let element = fragment(|w| {
+                    write_comment_element(
+                        w,
+                        at.0,
+                        at.1,
+                        author_ids[comment.author.as_str()],
+                        &comment.text,
+                    )
+                })?;
+                elements.push(list.qualify_fragment(&element)?);
+            }
+        }
+    }
+    let comment_list = list.render_repeated("comment", &elements, &[])?;
+
+    let mut replacements: Vec<(&'static str, Option<Vec<u8>>)> =
+        vec![("commentList", Some(comment_list))];
+    if !appended.is_empty() || template.child("authors").is_none() {
+        authors.extend(appended.into_iter().map(str::to_owned));
+        let rendered = fragment(|w| write_comment_authors(w, authors.iter().map(String::as_str)))?;
+        replacements.push(("authors", Some(rendered)));
+    }
+    template.render(replacements, comments_child_rank)
+}
+
+/// `<comments>` holds `<authors>` then `<commentList>`; anything else keeps its
+/// source position.
+fn comments_child_rank(name: &str) -> usize {
+    match name {
+        "authors" => 0,
+        "commentList" => 1,
+        _ => usize::MAX,
+    }
+}
+
+fn comment_element_ref(bytes: &[u8]) -> Result<Option<(RowId, ColId)>, ParseError> {
+    let mut reader = xml_reader(bytes);
+    let mut buf = Vec::new();
+    let mut depth = 0;
+    loop {
+        match next_event(&mut reader, &mut buf, &mut depth)? {
+            Event::Start(e) | Event::Empty(e) => {
+                let Some(reference) = xml_attr(&e, b"ref")? else {
+                    return Ok(None);
+                };
+                return Ok(CellRef::parse_a1(&reference)
+                    .ok()
+                    .map(|at| (at.row, at.col)));
+            }
+            Event::Eof => return Ok(None),
+            _ => {}
+        }
+    }
+}
+
+fn comment_authors(bytes: &[u8]) -> Result<Vec<String>, ParseError> {
+    let template = XmlTemplate::capture(bytes)?;
+    let mut authors = Vec::new();
+    for child in template.children_named("author") {
+        let mut reader = xml_reader(&child.bytes);
+        let mut buf = Vec::new();
+        let mut depth = 0;
+        let author = loop {
+            match next_event(&mut reader, &mut buf, &mut depth)? {
+                Event::Start(_) => break collect_text(&mut reader, &mut buf, &mut depth)?,
+                Event::Empty(_) | Event::Eof => break String::new(),
+                _ => {}
+            }
+        };
+        authors.push(author);
+    }
+    Ok(authors)
 }
 
 /// The first VML shape id excel assigns in a fresh drawing; generated note
@@ -2532,9 +2686,14 @@ fn worksheet_xml_with_template(
             )? {
                 CommentPartsPlan::Notes(plan) => {
                     let namespace = template.root_namespace().unwrap_or(NS_MAIN);
-                    output_extras
-                        .comment_parts
-                        .push((plan.comments_path.clone(), comments_xml(sheet, namespace)?));
+                    output_extras.comment_parts.push((
+                        plan.comments_path.clone(),
+                        comments_xml_with_source(
+                            sheet,
+                            namespace,
+                            package.part_bytes(&plan.comments_path),
+                        )?,
+                    ));
                     output_extras.comment_parts.push((
                         plan.vml_path.clone(),
                         vml_drawing_xml_with_source(sheet, package.part_bytes(&plan.vml_path))?,
