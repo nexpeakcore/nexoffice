@@ -1017,6 +1017,23 @@ fn write_comment_element(
     Ok(())
 }
 
+/// A saved comments part, plus the source `<comment>` element every modeled
+/// note claimed. The VML pass reuses those claims so a relocated note's shape
+/// travels with its element instead of being regenerated.
+struct CommentsPart {
+    bytes: Vec<u8>,
+    claims: HashMap<(RowId, ColId), (RowId, ColId)>,
+}
+
+impl CommentsPart {
+    fn regenerated(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            claims: HashMap::new(),
+        }
+    }
+}
+
 /// Regenerates a comments part on top of its source: a comment the model still
 /// reads back identically keeps its source element verbatim, so rich runs,
 /// `rPr` formatting and phonetic properties survive an edit to a neighbouring
@@ -1029,16 +1046,22 @@ fn comments_xml_with_source(
     sheet: &Sheet,
     main_namespace: &str,
     source: Option<&[u8]>,
-) -> Result<Vec<u8>, ParseError> {
+) -> Result<CommentsPart, ParseError> {
     let Some((template, source_comments)) = source.and_then(|bytes| {
         let template = XmlTemplate::capture(bytes).ok()?;
         let comments = parse_comments(bytes).ok()?;
         Some((template, comments))
     }) else {
-        return comments_xml(sheet, main_namespace);
+        return Ok(CommentsPart::regenerated(comments_xml(
+            sheet,
+            main_namespace,
+        )?));
     };
     let Some(list_child) = template.child("commentList") else {
-        return comments_xml(sheet, main_namespace);
+        return Ok(CommentsPart::regenerated(comments_xml(
+            sheet,
+            main_namespace,
+        )?));
     };
     let list = XmlTemplate::capture(&list_child.bytes)?;
     let mut source_elements: HashMap<(RowId, ColId), &XmlChild> = HashMap::new();
@@ -1120,7 +1143,15 @@ fn comments_xml_with_source(
         let rendered = fragment(|w| write_comment_authors(w, authors.iter().map(String::as_str)))?;
         replacements.push(("authors", Some(rendered)));
     }
-    template.render(replacements, comments_child_rank)
+    Ok(CommentsPart {
+        bytes: template.render(replacements, comments_child_rank)?,
+        claims: sheet
+            .comments
+            .keys()
+            .zip(claims)
+            .filter_map(|(&at, claim)| claim.map(|from| (at, from)))
+            .collect(),
+    })
 }
 
 /// `<comments>` holds `<authors>` then `<commentList>`; anything else keeps its
@@ -1244,51 +1275,92 @@ fn vml_drawing_xml(sheet: &Sheet) -> Result<Vec<u8>, ParseError> {
 
 /// Regenerates a notes VML part on top of its source: non-note shapes (form
 /// controls and friends), shapetypes, and any other source elements are kept
-/// verbatim, while note shapes are rebuilt from the model's comments. Without
-/// a readable source this is a plain regeneration.
+/// verbatim, and so is the note shape of every comment the model still carries
+/// — box size and position, fill and stroke, visibility and the rest of its
+/// `x:ClientData` survive an edit to a neighbouring note. A note the comments
+/// pass matched at a new `ref` keeps its own shape too, with only the
+/// `x:ClientData` `Row` and `Column` rewritten; `claims` carries that mapping so
+/// both parts move the same note. Comments with no source shape are generated,
+/// with ids past every source shape's. Without a readable source this is a
+/// plain regeneration.
 fn vml_drawing_xml_with_source(
     sheet: &Sheet,
     source: Option<&[u8]>,
+    claims: &HashMap<(RowId, ColId), (RowId, ColId)>,
 ) -> Result<Vec<u8>, ParseError> {
     let Some(template) = source.and_then(|bytes| XmlTemplate::capture(bytes).ok()) else {
         return vml_drawing_xml(sheet);
     };
-    let mut retained: Vec<&XmlChild> = Vec::new();
+    let mut note_shapes: HashSet<usize> = HashSet::new();
+    let mut source_notes: HashMap<(RowId, ColId), usize> = HashMap::new();
     let mut has_shapelayout = false;
     let mut has_note_shapetype = false;
     let mut next_shape_id = VML_FIRST_SHAPE_ID;
-    for child in &template.children {
+    for (index, child) in template.children.iter().enumerate() {
         match child.local_name.as_str() {
             "shape" => {
-                if !vml_shape_is_retained(&child.bytes)? {
-                    continue;
-                }
                 if let Some(id) = vml_shape_numeric_id(&child.bytes)? {
                     next_shape_id = next_shape_id.max(id.saturating_add(1));
                 }
-                retained.push(child);
+                if vml_shape_is_retained(&child.bytes)? {
+                    continue;
+                }
+                note_shapes.insert(index);
+                if let Some(at) = vml_note_anchor(&child.bytes)? {
+                    source_notes.entry(at).or_insert(index);
+                }
             }
             "shapetype" => {
                 has_note_shapetype |=
                     vml_element_id(&child.bytes)?.as_deref() == Some("_x0000_t202");
-                retained.push(child);
             }
-            "shapelayout" => {
-                has_shapelayout = true;
-                retained.push(child);
-            }
-            _ => retained.push(child),
+            "shapelayout" => has_shapelayout = true,
+            _ => {}
         }
     }
+
+    let mut taken: HashSet<(RowId, ColId)> = HashSet::new();
+    let mut kept: BTreeMap<(RowId, ColId), (RowId, ColId)> = BTreeMap::new();
+    for at in sheet.comments.keys() {
+        if let Some(&from) = claims.get(at)
+            && source_notes.contains_key(&from)
+            && taken.insert(from)
+        {
+            kept.insert(*at, from);
+        }
+    }
+    for at in sheet.comments.keys() {
+        if !kept.contains_key(at) && source_notes.contains_key(at) && taken.insert(*at) {
+            kept.insert(*at, *at);
+        }
+    }
+    let mut retained_notes: HashMap<usize, Option<Vec<u8>>> = HashMap::new();
+    for (&at, &from) in &kept {
+        let index = source_notes[&from];
+        let reanchored = (from != at)
+            .then(|| vml_shape_at(&template.children[index].bytes, at))
+            .transpose()?;
+        retained_notes.insert(index, reanchored);
+    }
+
     let missing_namespaces: Vec<(&str, String)> = VML_NAMESPACES
         .iter()
         .filter(|(prefix, _, namespace)| !template.declares_namespace(prefix, namespace))
         .map(|(_, declaration, namespace)| (*declaration, (*namespace).to_owned()))
         .collect();
     let mut output = template.prefix_with_attributes(&missing_namespaces)?;
-    for child in retained {
+    for (index, child) in template.children.iter().enumerate() {
+        let bytes = if note_shapes.contains(&index) {
+            match retained_notes.get(&index) {
+                Some(Some(reanchored)) => reanchored.as_slice(),
+                Some(None) => child.bytes.as_slice(),
+                None => continue,
+            }
+        } else {
+            child.bytes.as_slice()
+        };
         output.extend_from_slice(&child.before);
-        output.extend_from_slice(&child.bytes);
+        output.extend_from_slice(bytes);
     }
     let generated = fragment(|w| {
         if sheet.comments.is_empty() {
@@ -1300,8 +1372,13 @@ fn vml_drawing_xml_with_source(
         if !has_note_shapetype {
             write_vml_note_shapetype(w)?;
         }
-        for (index, (&(row, col), _)) in sheet.comments.iter().enumerate() {
-            write_comment_shape(w, next_shape_id + index as u64, row, col)?;
+        let mut shape_id = next_shape_id;
+        for &(row, col) in sheet.comments.keys() {
+            if kept.contains_key(&(row, col)) {
+                continue;
+            }
+            write_comment_shape(w, shape_id, row, col)?;
+            shape_id += 1;
         }
         Ok(())
     })?;
@@ -1311,9 +1388,90 @@ fn vml_drawing_xml_with_source(
     Ok(output)
 }
 
+/// The cell a source note shape is anchored to, as the 0-based `Row` and
+/// `Column` its `x:ClientData` carries.
+fn vml_note_anchor(bytes: &[u8]) -> Result<Option<(RowId, ColId)>, ParseError> {
+    let mut reader = xml_reader(bytes);
+    let mut buf = Vec::new();
+    let mut depth = 0;
+    let mut in_note = false;
+    let mut row: Option<RowId> = None;
+    let mut col: Option<ColId> = None;
+    loop {
+        match next_event(&mut reader, &mut buf, &mut depth)? {
+            Event::Start(e) => match xml_local_name(&e).as_slice() {
+                b"ClientData" => {
+                    in_note = xml_attr(&e, b"ObjectType")?.as_deref() == Some("Note");
+                }
+                b"Row" if in_note => {
+                    row = collect_text(&mut reader, &mut buf, &mut depth)?
+                        .trim()
+                        .parse()
+                        .ok();
+                }
+                b"Column" if in_note => {
+                    col = collect_text(&mut reader, &mut buf, &mut depth)?
+                        .trim()
+                        .parse()
+                        .ok();
+                }
+                _ => {}
+            },
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(row.zip(col))
+}
+
+/// Re-emits a source note shape at `at`: only the `Row` and `Column` text of
+/// its `x:ClientData` is rewritten, so the style, size, fill, textbox and every
+/// other client-data child are copied through byte for byte.
+fn vml_shape_at(bytes: &[u8], at: (RowId, ColId)) -> Result<Vec<u8>, ParseError> {
+    let mut reader = quick_xml::Reader::from_reader(bytes);
+    let mut open: Vec<Vec<u8>> = Vec::new();
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    loop {
+        let start = reader.buffer_position() as usize;
+        match reader.read_event().map_err(xml_err)? {
+            Event::Start(e) => {
+                if open.len() >= crate::MAX_DEPTH {
+                    return Err(ParseError::DepthExceeded);
+                }
+                open.push(xml_local_name(&e));
+            }
+            Event::End(_) => {
+                open.pop();
+            }
+            Event::Text(_) => {
+                let in_note = open.iter().any(|name| name == b"ClientData");
+                let value = match open.last().map(Vec::as_slice) {
+                    Some(b"Row") if in_note => Some(at.0.to_string()),
+                    Some(b"Column") if in_note => Some(at.1.to_string()),
+                    _ => None,
+                };
+                if let Some(value) = value {
+                    edits.push((start, reader.buffer_position() as usize, value));
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut cursor = 0;
+    for (start, end, value) in edits {
+        output.extend_from_slice(&bytes[cursor..start]);
+        output.extend_from_slice(value.as_bytes());
+        cursor = end;
+    }
+    output.extend_from_slice(&bytes[cursor..]);
+    Ok(output)
+}
+
 /// A source shape survives a note rewrite when its client data types it as
 /// something other than a note; note shapes (and shapes without a typed
-/// `ClientData`) are regenerated from the model.
+/// `ClientData`) are matched against the model's comments instead.
 fn vml_shape_is_retained(bytes: &[u8]) -> Result<bool, ParseError> {
     let mut reader = xml_reader(bytes);
     let mut buf = Vec::new();
@@ -2751,17 +2909,21 @@ fn worksheet_xml_with_template(
             )? {
                 CommentPartsPlan::Notes(plan) => {
                     let namespace = template.root_namespace().unwrap_or(NS_MAIN);
-                    output_extras.comment_parts.push((
-                        plan.comments_path.clone(),
-                        comments_xml_with_source(
-                            sheet,
-                            namespace,
-                            package.part_bytes(&plan.comments_path),
-                        )?,
-                    ));
+                    let comments = comments_xml_with_source(
+                        sheet,
+                        namespace,
+                        package.part_bytes(&plan.comments_path),
+                    )?;
+                    output_extras
+                        .comment_parts
+                        .push((plan.comments_path.clone(), comments.bytes));
                     output_extras.comment_parts.push((
                         plan.vml_path.clone(),
-                        vml_drawing_xml_with_source(sheet, package.part_bytes(&plan.vml_path))?,
+                        vml_drawing_xml_with_source(
+                            sheet,
+                            package.part_bytes(&plan.vml_path),
+                            &comments.claims,
+                        )?,
                     ));
                     output_extras.wrote_vml = true;
                     replacements.push((
@@ -2779,7 +2941,11 @@ fn worksheet_xml_with_template(
                 } => {
                     output_extras.comment_parts.push((
                         vml_path.clone(),
-                        vml_drawing_xml_with_source(sheet, package.part_bytes(&vml_path))?,
+                        vml_drawing_xml_with_source(
+                            sheet,
+                            package.part_bytes(&vml_path),
+                            &HashMap::new(),
+                        )?,
                     ));
                     output_extras.wrote_vml = true;
                     replacements.push((

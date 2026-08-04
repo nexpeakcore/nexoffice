@@ -2091,12 +2091,46 @@ fn commented_package() -> Vec<(String, Vec<u8>)> {
         .as_bytes()
         .to_vec(),
     ));
-    parts.push((
-        "xl/drawings/vmlDrawing1.vml".to_owned(),
-        br#"<xml xmlns:v="urn:schemas-microsoft-com:vml"><v:shape id="_x0000_s1025"/></xml>"#
-            .to_vec(),
-    ));
+    parts.push(("xl/drawings/vmlDrawing1.vml".to_owned(), notes_vml()));
     parts
+}
+
+/// The note shape of the `A1` comment, styled the way a user who resized,
+/// recoloured and pinned the box open leaves it.
+const NOTE_SHAPE_A1: &str = concat!(
+    r##"<v:shape id="_x0000_s1025" o:spid="_x0000_s1025" type="#_x0000_t202" "##,
+    r#"style="position:absolute;margin-left:12pt;margin-top:3pt;width:180pt;height:90pt;z-index:2" "#,
+    r##"fillcolor="#dff0d8" strokecolor="#3c763d">"##,
+    r#"<v:textbox style="mso-direction-alt:auto"><div style="text-align:right"/></v:textbox>"#,
+    r#"<x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/>"#,
+    r#"<x:Anchor>1, 7, 0, 4, 4, 55, 5, 12</x:Anchor><x:AutoFill>False</x:AutoFill><x:Visible/>"#,
+    r#"<x:Row>0</x:Row><x:Column>0</x:Column></x:ClientData></v:shape>"#,
+);
+
+/// The note shape of the `C3` comment, styled differently again.
+const NOTE_SHAPE_C3: &str = concat!(
+    r##"<v:shape id="_x0000_s1026" o:spid="_x0000_s1026" type="#_x0000_t202" "##,
+    r#"style="position:absolute;margin-left:200pt;margin-top:40pt;width:72pt;height:36pt;z-index:3;visibility:hidden" "#,
+    r##"fillcolor="#f2dede" strokecolor="#a94442" o:insetmode="auto">"##,
+    r#"<v:shadow on="t" color="black" obscured="t"/>"#,
+    r#"<v:textbox style="mso-direction-alt:auto"><div style="text-align:center"/></v:textbox>"#,
+    r#"<x:ClientData ObjectType="Note"><x:MoveWithCells/>"#,
+    r#"<x:Anchor>3, 15, 2, 10, 6, 31, 6, 2</x:Anchor><x:AutoFill>False</x:AutoFill>"#,
+    r#"<x:Row>2</x:Row><x:Column>2</x:Column></x:ClientData></v:shape>"#,
+);
+
+fn notes_vml() -> Vec<u8> {
+    format!(
+        concat!(
+            r#"<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">"#,
+            r#"<o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout>"#,
+            r#"<v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe"><v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/></v:shapetype>"#,
+            "{a1}{c3}</xml>",
+        ),
+        a1 = NOTE_SHAPE_A1,
+        c3 = NOTE_SHAPE_C3,
+    )
+    .into_bytes()
 }
 
 #[test]
@@ -2526,16 +2560,105 @@ fn edited_comments_keep_non_note_vml_shapes_and_shapetypes() {
     assert_eq!(vml.matches("<o:shapelayout").count(), 1, "{vml}");
     assert_eq!(vml.matches(r#"ObjectType="Note""#).count(), 2, "{vml}");
     assert!(
-        !vml.contains(r#"id="_x0000_s1025""#),
-        "note shapes are regenerated with ids past the retained ones: {vml}"
+        vml.contains(r##"<v:shape id="_x0000_s1025" type="#_x0000_t202">"##),
+        "the note still at A1 keeps its source shape: {vml}"
     );
-    assert!(vml.contains(r#"id="_x0000_s1031""#), "{vml}");
-    assert!(vml.contains(r#"id="_x0000_s1032""#), "{vml}");
+    assert!(
+        vml.contains(r#"id="_x0000_s1031""#),
+        "the note with no source shape is generated past every source id: {vml}"
+    );
+    assert!(!vml.contains(r#"id="_x0000_s1032""#), "{vml}");
 
     assert_eq!(
         parse_workbook(&saved).unwrap().sheets[0].comments,
         workbook.sheets[0].comments
     );
+}
+
+/// Edits the commented fixture through a preserved package and hands back the
+/// saved notes VML, after checking the notes still read back as modeled.
+fn edited_notes_vml(edit: impl FnOnce(&mut Workbook)) -> String {
+    let parts = commented_package();
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+    let mut workbook = parsed.workbook.clone();
+    edit(&mut workbook);
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+    assert_eq!(
+        parse_workbook(&saved).unwrap().sheets[0].comments,
+        workbook.sheets[0].comments
+    );
+    String::from_utf8(part_bytes(&saved, "xl/drawings/vmlDrawing1.vml")).unwrap()
+}
+
+#[test]
+fn editing_one_comment_keeps_every_note_shape_verbatim() {
+    let vml = edited_notes_vml(|workbook| {
+        workbook.sheets[0].set_comment(
+            CellRef::parse_a1("A1").unwrap(),
+            Some(note("Ada", "rewritten")),
+        );
+    });
+
+    assert!(vml.contains(NOTE_SHAPE_A1), "{vml}");
+    assert!(vml.contains(NOTE_SHAPE_C3), "{vml}");
+    assert_eq!(vml.matches("<v:shape ").count(), 2, "{vml}");
+    assert_eq!(vml.matches("<o:shapelayout").count(), 1, "{vml}");
+    assert_eq!(
+        vml.matches(r#"<v:shapetype id="_x0000_t202""#).count(),
+        1,
+        "{vml}"
+    );
+}
+
+#[test]
+fn adding_a_comment_keeps_the_existing_note_shapes_and_generates_one_id() {
+    let vml = edited_notes_vml(|workbook| {
+        workbook.sheets[0].set_comment(
+            CellRef::parse_a1("B2").unwrap(),
+            Some(note("Linus", "added")),
+        );
+    });
+
+    assert!(vml.contains(NOTE_SHAPE_A1), "{vml}");
+    assert!(vml.contains(NOTE_SHAPE_C3), "{vml}");
+    assert_eq!(vml.matches("<v:shape ").count(), 3, "{vml}");
+    assert!(
+        vml.contains(r#"id="_x0000_s1027""#),
+        "the generated shape id clears every retained one: {vml}"
+    );
+    assert_eq!(vml.matches(r#"id="_x0000_s1027""#).count(), 1, "{vml}");
+    assert_eq!(vml.matches("<x:Row>1</x:Row>").count(), 1, "{vml}");
+}
+
+#[test]
+fn deleting_a_comment_keeps_the_surviving_note_shape_verbatim() {
+    let vml = edited_notes_vml(|workbook| {
+        workbook.sheets[0].set_comment(CellRef::parse_a1("A1").unwrap(), None);
+    });
+
+    assert!(vml.contains(NOTE_SHAPE_C3), "{vml}");
+    assert!(!vml.contains(r#"id="_x0000_s1025""#), "{vml}");
+    assert_eq!(vml.matches("<v:shape ").count(), 1, "{vml}");
+}
+
+#[test]
+fn a_relocated_comment_keeps_its_note_shape_with_only_the_anchor_moved() {
+    let vml = edited_notes_vml(|workbook| {
+        let sheet = &mut workbook.sheets[0];
+        let moved = sheet.set_comment(CellRef::parse_a1("C3").unwrap(), None);
+        sheet.set_comment(CellRef::parse_a1("B4").unwrap(), moved);
+    });
+
+    assert!(vml.contains(NOTE_SHAPE_A1), "{vml}");
+    assert!(
+        vml.contains(
+            &NOTE_SHAPE_C3
+                .replace("<x:Row>2</x:Row>", "<x:Row>3</x:Row>")
+                .replace("<x:Column>2</x:Column>", "<x:Column>1</x:Column>")
+        ),
+        "{vml}"
+    );
+    assert_eq!(vml.matches("<v:shape ").count(), 2, "{vml}");
 }
 
 #[test]
