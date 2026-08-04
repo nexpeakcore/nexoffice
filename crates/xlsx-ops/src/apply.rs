@@ -490,12 +490,14 @@ fn find_sort_merge_conflict(s: &Sheet, range: CellRange) -> Option<CellRange> {
         })
 }
 
-/// the pieces of a row move's inverse: the reversed permutation plus `SetCell`
-/// ops restoring the exact pre-move text of every rewritten formula.
+/// the pieces of a row move's inverse: the reversed permutation, `SetCell`
+/// ops restoring the exact pre-move text of every rewritten formula, and
+/// restore ops for the hidden-row set when the move changed it.
 #[derive(Default)]
 struct RowMoveOutcome {
     inverse_moves: Vec<(RowId, RowId)>,
     formula_restores: Vec<Op>,
+    filter_restores: Vec<Op>,
 }
 
 impl RowMoveOutcome {
@@ -509,6 +511,7 @@ impl RowMoveOutcome {
             moves: self.inverse_moves,
         }];
         inverse.extend(self.formula_restores);
+        inverse.extend(self.filter_restores);
         inverse
     }
 }
@@ -530,6 +533,9 @@ fn move_row_cells(
     if let Some(hyperlink) = find_row_move_hyperlink_conflict(s, range, moves) {
         return Err(OpError::HyperlinkConflict { sheet, hyperlink });
     }
+    let old_filter = s.auto_filter.clone();
+    let old_hidden = s.hidden_rows.clone();
+    let pre_move_failing = filter_failing_rows(s, old_filter.as_ref());
     let cols = range.start.col..range.end.col.saturating_add(1);
     let mut writes = Vec::with_capacity(moves.len());
     let mut formula_restores = Vec::new();
@@ -574,10 +580,54 @@ fn move_row_cells(
     }
     move_row_comments(s, range, moves);
     move_row_hyperlinks(s, range, moves);
+    move_row_hidden(s, moves, &pre_move_failing);
     Ok(RowMoveOutcome {
         inverse_moves: moves.iter().map(|&(from, to)| (to, from)).collect(),
         formula_restores,
+        filter_restores: filter_restore_ops(s, sheet, old_filter, old_hidden),
     })
+}
+
+/// permute hidden-row flags alongside their rows under the same simultaneous
+/// semantics as `move_row_cells`. when the moves touch an active filter's
+/// rows, only the manual hides (hidden minus the pre-move filter-failing set)
+/// travel with their rows; the filter is then re-evaluated against the moved
+/// contents and its failing rows re-hidden.
+fn move_row_hidden(s: &mut Sheet, moves: &[(RowId, RowId)], pre_move_failing: &BTreeSet<RowId>) {
+    let filter_touched = s.auto_filter.as_ref().is_some_and(|filter| {
+        let rows = filter.range.start.row..=filter.range.end.row;
+        moves
+            .iter()
+            .any(|&(from, to)| rows.contains(&from) || rows.contains(&to))
+    });
+    if filter_touched {
+        let manual: BTreeSet<RowId> = s
+            .hidden_rows
+            .difference(pre_move_failing)
+            .copied()
+            .collect();
+        let mut hidden = permute_row_set(&manual, moves);
+        hidden.extend(filter_failing_rows(s, s.auto_filter.as_ref()));
+        s.hidden_rows = hidden;
+    } else {
+        s.hidden_rows = permute_row_set(&s.hidden_rows, moves);
+    }
+}
+
+/// apply a simultaneous row permutation to a set of row flags: every
+/// destination row's flag is overwritten by its source's, and flags on
+/// unmoved rows stay put.
+fn permute_row_set(set: &BTreeSet<RowId>, moves: &[(RowId, RowId)]) -> BTreeSet<RowId> {
+    let mut out = set.clone();
+    for &(_, to) in moves {
+        out.remove(&to);
+    }
+    for &(from, to) in moves {
+        if set.contains(&from) {
+            out.insert(to);
+        }
+    }
+    out
 }
 
 /// a hyperlink follows a row move only when it spans a single row, lies inside
@@ -2812,6 +2862,139 @@ mod tests {
         assert_eq!(wb, state_one);
         apply_ops(&mut wb, &inv_first.0).unwrap();
         assert_eq!(wb, state_zero);
+    }
+
+    fn filtered_sortable_sheet(wb: &mut Workbook, filter_values: &[&str]) {
+        let s = wb.sheet_mut(SheetId(0)).unwrap();
+        s.set_cell(r("A1"), text_cell("Name"));
+        for (row, name, score) in [
+            (1, "drop", 3.0),
+            (2, "keep", 1.0),
+            (3, "drop", 2.0),
+            (4, "keep", 4.0),
+        ] {
+            s.set_cell(CellRef::new(row, 0), text_cell(name));
+            s.set_cell(
+                CellRef::new(row, 1),
+                Cell {
+                    value: CellValue::Number { value: score },
+                    ..Cell::default()
+                },
+            );
+        }
+        s.auto_filter = Some(AutoFilter {
+            range: rng("A1:B5"),
+            columns: vec![AutoFilterColumn {
+                col: 0,
+                values: Some(filter_values.iter().map(|v| (*v).to_string()).collect()),
+                show_blanks: false,
+            }],
+        });
+    }
+
+    fn sort_by_score() -> Op {
+        Op::SortRange {
+            sheet: SheetId(0),
+            range: rng("A2:B5"),
+            key_col: 1,
+            ascending: true,
+        }
+    }
+
+    #[test]
+    fn sort_range_keeps_filter_hidden_rows_attached_to_their_records() {
+        let mut wb = wb_one_sheet();
+        filtered_sortable_sheet(&mut wb, &["keep"]);
+        wb.sheets[0].hidden_rows = [1, 3].into_iter().collect();
+        let before = wb.clone();
+
+        let inv = apply(&mut wb, &sort_by_score()).unwrap();
+        let sheet = &wb.sheets[0];
+        assert_eq!(sheet.cell(r("A2")).unwrap().value, text_cell("keep").value);
+        assert_eq!(sheet.cell(r("A3")).unwrap().value, text_cell("drop").value);
+        assert_eq!(sheet.cell(r("A4")).unwrap().value, text_cell("drop").value);
+        assert_eq!(sheet.cell(r("A5")).unwrap().value, text_cell("keep").value);
+        assert!(!sheet.is_row_hidden(0), "header row must stay visible");
+        assert!(!sheet.is_row_hidden(1), "passing record moved here");
+        assert!(sheet.is_row_hidden(2), "failing record moved here");
+        assert!(sheet.is_row_hidden(3), "failing record moved here");
+        assert!(!sheet.is_row_hidden(4));
+
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
+    }
+
+    #[test]
+    fn sort_range_moves_manual_hides_with_their_rows_and_they_survive_filter_clear() {
+        let mut wb = wb_one_sheet();
+        filtered_sortable_sheet(&mut wb, &["keep"]);
+        wb.sheets[0].hidden_rows = [1, 3].into_iter().collect();
+        let state_zero = wb.clone();
+
+        let inv_manual = apply(
+            &mut wb,
+            &Op::SetHiddenRows {
+                sheet: SheetId(0),
+                hidden: vec![1, 2, 3],
+            },
+        )
+        .unwrap();
+        let state_manual = wb.clone();
+
+        let inv_sort = apply(&mut wb, &sort_by_score()).unwrap();
+        let sheet = &wb.sheets[0];
+        assert!(
+            sheet.is_row_hidden(1),
+            "the manually hidden passing record travels here"
+        );
+        assert!(sheet.is_row_hidden(2), "failing record moved here");
+        assert!(sheet.is_row_hidden(3), "failing record moved here");
+        assert!(!sheet.is_row_hidden(4), "passing record stays visible");
+        let state_sorted = wb.clone();
+
+        let inv_clear = apply(
+            &mut wb,
+            &Op::SetAutoFilter {
+                sheet: SheetId(0),
+                filter: None,
+            },
+        )
+        .unwrap();
+        let sheet = &wb.sheets[0];
+        assert!(
+            sheet.is_row_hidden(1),
+            "the manual hide survives the filter clear at its moved row"
+        );
+        assert!(!sheet.is_row_hidden(2), "filter hide lifted");
+        assert!(!sheet.is_row_hidden(3), "filter hide lifted");
+        assert!(!sheet.is_row_hidden(4));
+
+        apply_ops(&mut wb, &inv_clear.0).unwrap();
+        assert_eq!(wb, state_sorted);
+        apply_ops(&mut wb, &inv_sort.0).unwrap();
+        assert_eq!(wb, state_manual);
+        apply_ops(&mut wb, &inv_manual.0).unwrap();
+        assert_eq!(wb, state_zero);
+    }
+
+    #[test]
+    fn sort_range_moves_hidden_flags_with_rows_when_no_filter_is_active() {
+        let mut wb = wb_one_sheet();
+        descending_key_column(&mut wb);
+        wb.sheets[0].hidden_rows = [1].into_iter().collect();
+        let before = wb.clone();
+
+        let inv = apply(&mut wb, &sort_asc("A1:A3")).unwrap();
+        let sheet = &wb.sheets[0];
+        assert!(
+            sheet.is_row_hidden(0),
+            "the hidden 1.0 row travels to the top"
+        );
+        assert!(!sheet.is_row_hidden(1));
+        assert!(!sheet.is_row_hidden(2));
+
+        apply_ops(&mut wb, &inv.0).unwrap();
+        assert_eq!(wb, before);
     }
 
     #[test]
