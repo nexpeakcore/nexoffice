@@ -1,7 +1,6 @@
 import { forwardRef, useImperativeHandle, useRef, useState } from 'react'
 import { XlsxEditor, type XlsxEditorApi } from '@betteroffice/xlsx-react'
 import { en as xlsxEn, locales as xlsxLocales, type PartialLocaleStrings } from '@betteroffice/xlsx-i18n'
-import type { OpenedDocument } from '../../shared/ipc.js'
 import { useI18n } from '../i18n.js'
 
 const editorLocales = xlsxLocales as Record<string, PartialLocaleStrings>
@@ -22,8 +21,16 @@ export interface XlsxEditorViewRef {
   unfreeze: () => void
 }
 
+interface EditorDocument {
+  name: string
+  // XlsxEditor disposes the workbook and reopens whenever this buffer's
+  // identity changes, so it must stay the bytes captured at open — never bytes
+  // a later save serialized, which would discard edits made since.
+  seed: Uint8Array
+}
+
 interface XlsxEditorViewProps {
-  document: OpenedDocument
+  document: EditorDocument
   onChange?: () => void
   onSaveRequest?: (bytes: Uint8Array) => void
 }
@@ -79,7 +86,7 @@ export const XlsxEditorView = forwardRef<XlsxEditorViewRef, XlsxEditorViewProps>
 
     return (
       <XlsxEditor
-        file={document.data}
+        file={document.seed}
         fileName={document.name}
         i18n={editorLocales[locale] ?? xlsxEn}
         onSave={(bytes: Uint8Array) => onSaveRequestRef.current?.(bytes)}

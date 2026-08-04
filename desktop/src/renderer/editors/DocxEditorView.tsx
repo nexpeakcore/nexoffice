@@ -8,7 +8,6 @@ import {
   resolveScriptFallbackFace,
 } from '@betteroffice/docx-fonts'
 import { en as docxEn, locales as docxLocales, type PartialLocaleStrings } from '@betteroffice/docx-i18n'
-import type { OpenedDocument } from '../../shared/ipc.js'
 import { useI18n } from '../i18n.js'
 
 const editorLocales = docxLocales as Record<string, PartialLocaleStrings>
@@ -30,8 +29,16 @@ export interface DocxEditorViewRef {
   setZoom: (zoom: number) => void
 }
 
+interface EditorDocument {
+  name: string
+  // DocxEditor reloads the document (dropping the live CRDT session) whenever
+  // this buffer's identity changes, so it must stay the bytes captured at open
+  // — never bytes a later save serialized, which would discard edits made since.
+  seed: Uint8Array
+}
+
 interface DocxEditorViewProps {
-  document: OpenedDocument
+  document: EditorDocument
   onChange?: () => void
 }
 
@@ -124,7 +131,7 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
         if (refreshTimer) clearTimeout(refreshTimer)
         unsubscribe?.()
       }
-    }, [document.path, document.data, refreshText])
+    }, [document.seed, refreshText])
 
     useImperativeHandle(ref, () => ({
       save: async () => (await editorRef.current?.save()) ?? null,
@@ -199,7 +206,7 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
     return (
       <DocxEditor
         ref={editorRef}
-        documentBuffer={document.data}
+        documentBuffer={document.seed}
         measurementFontProvider={measurementFontProvider}
         i18n={editorLocales[locale] ?? docxEn}
         showFileOpen={false}

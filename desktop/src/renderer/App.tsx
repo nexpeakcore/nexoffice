@@ -7,10 +7,17 @@ import { XlsxEditorView, type XlsxEditorViewRef } from './editors/XlsxEditorView
 import { spellCheckService, type Misspelling } from './services/spellcheck.js'
 import { useI18n } from './i18n.js'
 
-interface DocumentState extends Omit<OpenedDocument, 'kind'> {
+// `seed` replaces `OpenedDocument.data`: the bytes the editor mounted on. Its
+// identity must stay stable for the life of the open document — both editors
+// reload (disposing the live workbook/CRDT) whenever the buffer they were
+// handed changes, so handing back the bytes a save serialized would throw away
+// every edit made while that save was in flight. Saved bytes are not tracked:
+// what is on disk lives on disk, and dirtiness is tracked by generation.
+interface DocumentState extends Omit<OpenedDocument, 'kind' | 'data'> {
   kind: DocumentKind
   dirty: boolean
   id: number
+  seed: Uint8Array
 }
 
 interface StatusMessage {
@@ -119,7 +126,9 @@ export function App() {
       const bytes = xlsxRef.current?.save()
       if (bytes) return bytes
     }
-    return current.data
+    // No editor yet (still loading, or a kind with no editor) means no edits
+    // yet either, so the bytes the document opened with are still current.
+    return current.seed
   }, [])
 
   const performSave = useCallback(
@@ -161,12 +170,15 @@ export function App() {
         }
         savedGenerationRef.current = Math.max(savedGenerationRef.current, generation)
         const dirty = editGenerationRef.current !== savedGenerationRef.current
+        // Only the path, name and dirty flag move: `seed` stays the bytes the
+        // editor mounted on, so a completed save never reloads the live editor
+        // with the older snapshot it just wrote.
         // Queued saves read documentRef before React commits the state update,
         // so the new path/name must be visible synchronously.
-        documentRef.current = { ...documentRef.current, path: savedPath, name: savedName, data, dirty }
+        documentRef.current = { ...documentRef.current, path: savedPath, name: savedName, dirty }
         setDocument((prev) =>
           prev && prev.id === target.id
-            ? { ...prev, path: savedPath, name: savedName, data, dirty }
+            ? { ...prev, path: savedPath, name: savedName, dirty }
             : prev,
         )
         setStatus({ key: 'status.saved', vars: { path: savedPath } })
@@ -226,7 +238,8 @@ export function App() {
     }
     savedGenerationRef.current = editGenerationRef.current
     documentIdRef.current += 1
-    const next: DocumentState = { ...opened, kind, dirty: false, id: documentIdRef.current }
+    const { data, ...rest } = opened
+    const next: DocumentState = { ...rest, kind, seed: data, dirty: false, id: documentIdRef.current }
     // In-flight save completions compare against documentRef, so the switch
     // must be visible before React commits the state update.
     documentRef.current = next
@@ -477,7 +490,7 @@ export function App() {
                     <dt>{t('app.meta.type')}</dt>
                     <dd>{t(KIND_LABEL_KEY[document.kind])}</dd>
                     <dt>{t('app.meta.size')}</dt>
-                    <dd>{(document.data.byteLength / 1024).toFixed(1)} KB</dd>
+                    <dd>{(document.seed.byteLength / 1024).toFixed(1)} KB</dd>
                     <dt>{t('app.meta.path')}</dt>
                     <dd className="truncate">{document.path}</dd>
                   </dl>
