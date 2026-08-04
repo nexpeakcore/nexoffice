@@ -38,6 +38,8 @@ export function App() {
   const xlsxRef = useRef<XlsxEditorViewRef>(null)
   const documentRef = useRef<DocumentState | null>(null)
   const closingRef = useRef(false)
+  const editGenerationRef = useRef(0)
+  const savedGenerationRef = useRef(0)
 
   useEffect(() => {
     documentRef.current = document
@@ -92,6 +94,7 @@ export function App() {
   // steady typing causes no App re-render per keystroke.
   const editRevisionTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const markEdited = useCallback(() => {
+    editGenerationRef.current += 1
     setDocument((prev) => (prev && !prev.dirty ? { ...prev, dirty: true } : prev))
     if (editRevisionTimer.current) clearTimeout(editRevisionTimer.current)
     editRevisionTimer.current = setTimeout(() => {
@@ -114,6 +117,7 @@ export function App() {
     async (forceDialog: boolean, bytesOverride?: Uint8Array): Promise<boolean> => {
       const current = documentRef.current
       if (!current) return false
+      const generation = editGenerationRef.current
       try {
         const data = bytesOverride ?? (await getCurrentBytes(current))
         const save = forceDialog ? window.nexoffice.saveFileAs : window.nexoffice.saveFile
@@ -122,10 +126,19 @@ export function App() {
           setStatus({ key: 'status.saveCanceled' })
           return false
         }
+        savedGenerationRef.current = Math.max(savedGenerationRef.current, generation)
         const savedPath = result.path
         const savedName = savedPath.split(/[\\/]/).pop() ?? current.name
         setDocument((prev) =>
-          prev ? { ...prev, path: savedPath, name: savedName, data, dirty: false } : prev,
+          prev
+            ? {
+                ...prev,
+                path: savedPath,
+                name: savedName,
+                data,
+                dirty: editGenerationRef.current !== savedGenerationRef.current,
+              }
+            : prev,
         )
         setStatus({ key: 'status.saved', vars: { path: savedPath } })
         return true
@@ -140,14 +153,22 @@ export function App() {
     [getCurrentBytes],
   )
 
+  const hasUnsavedEdits = useCallback(
+    () => documentRef.current !== null && editGenerationRef.current !== savedGenerationRef.current,
+    [],
+  )
+
   const ensureSaved = useCallback(async (): Promise<boolean> => {
-    const current = documentRef.current
-    if (!current?.dirty) return true
-    const choice = await window.nexoffice.confirmUnsaved(current.name)
-    if (choice === 'cancel') return false
-    if (choice === 'discard') return true
-    return saveDocument(false)
-  }, [saveDocument])
+    while (hasUnsavedEdits()) {
+      const current = documentRef.current
+      if (!current) return true
+      const choice = await window.nexoffice.confirmUnsaved(current.name)
+      if (choice === 'cancel') return false
+      if (choice === 'discard') return true
+      if (!(await saveDocument(false))) return false
+    }
+    return true
+  }, [hasUnsavedEdits, saveDocument])
 
   const applyOpenedDocument = useCallback((opened: OpenedDocument) => {
     const kind = opened.kind
@@ -155,6 +176,7 @@ export function App() {
       setStatus({ key: 'status.unsupported', vars: { name: opened.name } })
       return
     }
+    savedGenerationRef.current = editGenerationRef.current
     setDocument({ ...opened, kind, dirty: false })
     setStatus({ key: 'status.opened', vars: { name: opened.name } })
   }, [])
@@ -236,6 +258,7 @@ export function App() {
         case 'file:new':
           void ensureSaved().then((proceed) => {
             if (!proceed) return
+            savedGenerationRef.current = editGenerationRef.current
             setDocument(null)
             setStatus({ key: 'status.newDocument' })
           })

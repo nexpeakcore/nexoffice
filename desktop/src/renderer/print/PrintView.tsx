@@ -47,15 +47,8 @@ function DocxCapture({
           width: parseFloat(canvas.style.width) || canvas.width,
           height: parseFloat(canvas.style.height) || canvas.height,
         }))
-        const first = pages[0]
-        if (!first) throw new Error('No document pages were rendered')
-        onCaptured({
-          pages,
-          pageWidth: Math.round(first.width),
-          pageHeight: Math.round(first.height),
-          padding: 0,
-          truncated,
-        })
+        if (pages.length === 0) throw new Error('No document pages were rendered')
+        onCaptured({ pages, padding: 0, truncated })
       } catch (error) {
         onError(error)
       }
@@ -110,8 +103,38 @@ function DocxCapture({
   )
 }
 
+interface PageBlock {
+  page: PageImage
+  boxWidth: number
+  boxHeight: number
+  pageName: string
+}
+
+function buildPageBlocks(set: PageSet): { blocks: PageBlock[]; pageRules: string } {
+  const namesBySize = new Map<string, string>()
+  const blocks = set.pages.map((page) => {
+    const boxWidth = Math.round(page.width + set.padding * 2)
+    const boxHeight = Math.round(page.height + set.padding * 2)
+    const sizeKey = `${boxWidth}x${boxHeight}`
+    let pageName = namesBySize.get(sizeKey)
+    if (!pageName) {
+      pageName = `sheet-${namesBySize.size}`
+      namesBySize.set(sizeKey, pageName)
+    }
+    return { page, boxWidth, boxHeight, pageName }
+  })
+  const pageRules = Array.from(namesBySize.entries())
+    .map(([sizeKey, pageName]) => {
+      const [width, height] = sizeKey.split('x')
+      return `@page ${pageName} { size: ${width}px ${height}px; margin: 0; }`
+    })
+    .join('\n')
+  return { blocks, pageRules }
+}
+
 function PrintPages({ set }: { set: PageSet }) {
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const { blocks, pageRules } = buildPageBlocks(set)
 
   useEffect(() => {
     let cancelled = false
@@ -137,26 +160,27 @@ function PrintPages({ set }: { set: PageSet }) {
   return (
     <div ref={rootRef}>
       <style>{`
-        @page { size: ${set.pageWidth}px ${set.pageHeight}px; margin: 0; }
+        ${pageRules}
         html, body { margin: 0; padding: 0; background: #ffffff; }
       `}</style>
-      {set.pages.map((page, index) => (
+      {blocks.map((block, index) => (
         <div
           key={index}
           style={{
-            width: set.pageWidth,
-            height: set.pageHeight,
+            width: block.boxWidth,
+            height: block.boxHeight,
             padding: set.padding,
             overflow: 'hidden',
             boxSizing: 'border-box',
             background: '#ffffff',
-            breakAfter: index < set.pages.length - 1 ? 'page' : 'auto',
+            page: block.pageName,
+            breakAfter: index < blocks.length - 1 ? 'page' : 'auto',
           }}
         >
           <img
-            src={page.dataUrl}
+            src={block.page.dataUrl}
             alt=""
-            style={{ width: page.width, height: page.height, display: 'block' }}
+            style={{ width: block.page.width, height: block.page.height, display: 'block' }}
           />
         </div>
       ))}

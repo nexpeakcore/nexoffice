@@ -6,8 +6,6 @@ export interface PageImage {
 
 export interface PageSet {
   pages: PageImage[]
-  pageWidth: number
-  pageHeight: number
   padding: number
   truncated: boolean
 }
