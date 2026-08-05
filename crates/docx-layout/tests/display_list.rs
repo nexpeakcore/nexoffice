@@ -1128,8 +1128,9 @@ fn image_alt_text_threads_and_caps() {
             { "block": { "kind": "paragraph", "id": 1, "pmStart": 1, "pmEnd": 3, "runs": [
                   { "kind": "image", "src": "rId9", "width": 40.0, "height": 20.0,
                     "alt": "Chart of quarterly revenue", "pmStart": 1, "pmEnd": 2 } ] },
+              // an image run spans one UTF-16 unit on the line that carries it
               "measure": { "kind": "paragraph", "totalHeight": 24.0,
-                  "lines": [{ "headRun": 0, "headChar": 0, "tailRun": 0, "tailChar": 0,
+                  "lines": [{ "headRun": 0, "headChar": 0, "tailRun": 0, "tailChar": 1,
                               "width": 40.0, "ascent": 12.0, "descent": 4.0, "lineHeight": 24.0 }] } },
             { "block": { "kind": "image", "id": 2, "src": "rId10", "alt": long_alt },
               "measure": { "kind": "image", "width": 60.0, "height": 30.0 } },

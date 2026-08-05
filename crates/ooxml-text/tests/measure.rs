@@ -657,6 +657,24 @@ fn tab_clamps_to_line_edge_and_wraps_when_full() {
         (240.0 - 22.0 * W0) + W0,
         "wrapped tab keeps pre-wrap width",
     );
+
+    // A leading tab reaching past the column with wide text behind it cannot
+    // clamp and has nowhere to wrap: it stays on the line it opens rather than
+    // leaving an empty row that also spans the tab (painters would then draw
+    // its leader twice).
+    let v = measure_with(
+        json!({
+            "kind": "paragraph",
+            "runs": [
+                { "kind": "tab" },
+                { "kind": "text", "text": "0000000000000000000000000000" }
+            ],
+            "attrs": { "tabs": [{ "val": "start", "pos": 12000.0, "leader": "dot" }] }
+        }),
+        200.0,
+    )
+    .unwrap();
+    assert_eq!(spans(&v)[0], (0, 0, 0, 1), "no empty row before the tab");
 }
 
 // 15. content-area coordinates: a hanging-indent first line starts left of
@@ -967,7 +985,7 @@ fn inline_image_grows_the_line_box() {
     );
 }
 
-// 23. oversize images wrap from empty lines and reserve fitted height
+// 23. oversize images wrap off filled lines only, and reserve fitted height
 #[test]
 fn inline_image_wrapping_and_column_fit() {
     // 22 zeros fill 195.77px; the 50px image wraps to its own line
@@ -986,28 +1004,42 @@ fn inline_image_wrapping_and_column_fit() {
         "wrapped image line",
     );
 
-    // A 400px image wraps from a 200px empty line and reserves half height.
+    // A 400px image in a 200px column has nowhere better to go: Word keeps it
+    // on the line it starts and lets it overflow, so no empty row precedes it
+    // (an empty row still spans this run, and painters would draw the picture
+    // on both rows).
     let v = measure(
         json!([{ "kind": "image", "width": 400.0, "height": 100.0 }]),
         200.0,
     )
     .unwrap();
-    assert_eq!(spans(&v), vec![(0, 0, 0, 0), (0, 0, 0, 1)]);
+    assert_eq!(spans(&v), vec![(0, 0, 0, 1)]);
     approx(
         v["lines"][0]["lineHeight"].as_f64().unwrap(),
-        16.0 * 1.15,
-        "empty leading row",
-    );
-    approx(
-        v["lines"][1]["lineHeight"].as_f64().unwrap(),
         50.0 + 2.0 * 3.2,
         "rendered (fitted) height reserved",
     );
     approx(
-        v["lines"][1]["width"].as_f64().unwrap(),
+        v["lines"][0]["width"].as_f64().unwrap(),
         400.0,
         "declared width kept",
     );
+
+    // Same for the reported shape: a picture wider than a hanging-indented,
+    // centered first line stays on that first line.
+    let v = measure_with(
+        json!({
+            "kind": "paragraph",
+            "runs": [{ "kind": "image", "width": 400.0, "height": 100.0 }],
+            "attrs": {
+                "alignment": "center",
+                "indent": { "left": 140.0, "right": 132.0, "hanging": 130.0 }
+            }
+        }),
+        686.0,
+    )
+    .unwrap();
+    assert_eq!(spans(&v), vec![(0, 0, 0, 1)]);
 }
 
 // 24. floating images skip line boxes but count after tabs
