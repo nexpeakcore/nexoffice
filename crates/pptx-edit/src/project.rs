@@ -6,8 +6,10 @@
 //!
 //! The projection is verified twice rather than assumed. Planning re-seeds a
 //! story from the rewritten text bodies and requires the result to equal the
-//! live deck exactly, so a change the plan did not account for — a formatting
-//! patch, a paragraph break, a run split — is refused. That check runs on the
+//! live deck exactly — bar the characters the edit added, which are read as
+//! belonging to the run they were typed into, see [`adopt_run_style`] — so a
+//! change the plan did not account for — a formatting patch, a paragraph break,
+//! a run split — is refused. That check runs on the
 //! model held in memory, so it alone would trust the byte splice to have landed
 //! on the `<a:t>` the plan named. The bytes are therefore zipped and parsed
 //! back, and the package that reads out of them must equal the package the plan
@@ -19,16 +21,16 @@ use std::ops::Range;
 
 use ooxml_drawingml::Theme;
 use pptx_parse::{
-    GraphicFrameData, ParagraphRewrite, PptxPackage, RunPiece, RunRef, ShapeNode, TextBody,
-    TextBodyLocation, TextParagraph, TextRun,
+    GraphicFrameData, ParagraphRewrite, PptxPackage, RunPiece, RunProperties, RunRef, ShapeNode,
+    TextBody, TextBodyLocation, TextParagraph, TextRun,
 };
 use yrs::{Map, TextRef, Transact, WriteTxn};
 
 use crate::deck::{seed_baseline, snapshot_doc, theme_for_layout};
-use crate::story::{seed_story, snapshot_story};
+use crate::story::{seed_story, snapshot_story, style_from_run_properties};
 use crate::{
     DeckSession, EditError, EditResult, ParagraphSnapshot, STORIES, ShapeSnapshot, SlideSnapshot,
-    StorySnapshot, TextRunSnapshot,
+    StorySnapshot, TextRunSnapshot, TextStyle,
 };
 
 /// Stands for a paragraph end while a group of paragraphs is diffed as one
@@ -361,6 +363,7 @@ fn project_body(
 
     let mut predicted = source.clone();
     predicted.paragraphs.clear();
+    let mut typed = current_story.clone();
     let mut rewrites = Vec::new();
     for group in &groups {
         let sources = &source.paragraphs[group.source.clone()];
@@ -380,6 +383,13 @@ fn project_body(
                 plan.charge(text, &origin)?;
             }
         }
+        if let Some(insertion) = &planned.insertion {
+            adopt_run_style(
+                &mut typed.paragraphs[group.current.clone()],
+                insertion,
+                &style_from_run_properties(&insertion.properties, context.theme),
+            );
+        }
         predicted.paragraphs.extend(planned.paragraphs);
         rewrites.push(ParagraphRewrite {
             shape_path: shape_path.to_vec(),
@@ -394,7 +404,7 @@ fn project_body(
         &predicted,
         &current_story.id,
         context.theme,
-    )?) != content(current_story)
+    )?) != content(&typed)
     {
         return Err(unprojectable(format!(
             "{place} changed in a way this writer cannot express, such as formatting, a bullet, or \
@@ -468,6 +478,28 @@ fn align_paragraphs(
 struct GroupPlan {
     paragraphs: Vec<TextParagraph>,
     pieces: Vec<Vec<RunPiece>>,
+    insertion: Option<Insertion>,
+}
+
+/// The characters a group's change adds, and the source run whose `<a:rPr>`
+/// will carry them.
+///
+/// Added text is written inside that run's `<a:r>`, so it reads back with the
+/// run's own style. See [`adopt_run_style`] for why the deck is compared as if
+/// it already had.
+///
+/// A diff of characters alone cannot always say which copy of a repeated
+/// character was typed: adding an `X` to `DOCX` before its last letter and
+/// after it produce the same string. `window` is therefore every position the
+/// added characters could occupy — the diff's own placement widened left for as
+/// long as sliding the addition one character left would read the same — and
+/// `length` is how many of them were added.
+struct Insertion {
+    /// Character offsets into the group's current text, paragraph marks
+    /// included, matching what [`current_characters`] lays out.
+    window: Range<usize>,
+    length: usize,
+    properties: RunProperties,
 }
 
 /// One position in the source text of a group.
@@ -527,7 +559,20 @@ fn plan_group(
         .filter_map(|slot| slot.mark)
         .collect();
     let anchor = locate_anchor(&slots, source, prefix, changed_end, &replacement)?;
-    build_group(source, first, &removed, anchor, &replacement)
+    let mut plan = build_group(source, first, &removed, anchor, &replacement)?;
+    plan.insertion = anchor
+        .filter(|_| !replacement.is_empty())
+        .map(|anchor| Insertion {
+            window: insertion_window(
+                &after,
+                prefix,
+                changed_end == prefix,
+                replacement.chars().count(),
+            ),
+            length: replacement.chars().count(),
+            properties: source[anchor.paragraph].runs[anchor.run].properties.clone(),
+        });
+    Ok(plan)
 }
 
 fn source_slots(source: &[TextParagraph]) -> Vec<Slot> {
@@ -551,6 +596,25 @@ fn source_slots(source: &[TextParagraph]) -> Vec<Slot> {
         }
     }
     slots
+}
+
+/// Every position the added characters could sit at, as offsets into the
+/// current text.
+///
+/// The diff places an addition as far right as it can, so the window only ever
+/// widens left, and only for an addition that removed nothing: where characters
+/// were also taken out, the text around the change pins it down.
+fn insertion_window(
+    after: &[char],
+    prefix: usize,
+    added_only: bool,
+    length: usize,
+) -> Range<usize> {
+    let mut start = prefix;
+    while added_only && start > 0 && after[start - 1] == after[start - 1 + length] {
+        start -= 1;
+    }
+    start..prefix + length
 }
 
 fn current_characters(current: &[ParagraphSnapshot]) -> Vec<char> {
@@ -695,6 +759,7 @@ fn build_group(
     let mut plan = GroupPlan {
         paragraphs: Vec::new(),
         pieces: Vec::new(),
+        insertion: None,
     };
     let mut pieces: Vec<RunPiece> = Vec::new();
     let mut runs: Vec<TextRun> = Vec::new();
@@ -859,6 +924,137 @@ fn content(story: &StorySnapshot) -> StorySnapshot {
         paragraph.runs = runs;
     }
     story
+}
+
+/// Reads the characters an edit added as the anchor run's own, where the style
+/// they were typed with says nothing that run's `<a:rPr>` denies.
+///
+/// A caret carries a whole style, not the half of one an `<a:rPr>` spells out:
+/// an editor materialises what the text under the caret resolves to and inserts
+/// with that, so text typed into a run that leaves `i` and `u` to be inherited
+/// arrives carrying `italic: Some(false)` and `underline: Some("none")`. Nothing
+/// about the run changed — the same characters, in the same run, resolve to the
+/// same appearance — but the deck now holds two runs where the file holds one,
+/// and comparing the two literally would refuse every keystroke of a normal
+/// deck.
+///
+/// A field the run does spell out is a different matter. Text typed as
+/// `bold: Some(false)` into a run whose `<a:rPr>` carries `b="1"` is a run
+/// split, and text typed with no value at all where the run has one would lose
+/// that value; both leave the characters as they are, so the comparison sees
+/// them and refuses. Formatting applied to text the edit did not add falls
+/// outside the insertion and is likewise untouched, which is what keeps a bold
+/// toggle over half a run a refusal rather than a silent no-op.
+///
+/// The cost is that where the run is silent, the value the caret carried is
+/// dropped and the character inherits instead — it takes the appearance of the
+/// run it was typed into rather than the one the editor guessed for it.
+fn adopt_run_style(paragraphs: &mut [ParagraphSnapshot], insertion: &Insertion, style: &TextStyle) {
+    let Some(range) = typed_range(&run_spans(paragraphs), insertion, style) else {
+        return;
+    };
+    let mut offset = 0;
+    for (index, paragraph) in paragraphs.iter_mut().enumerate() {
+        if index > 0 {
+            offset += 1;
+        }
+        let mut runs = Vec::new();
+        for run in std::mem::take(&mut paragraph.runs) {
+            let start = offset;
+            offset += run.text.chars().count();
+            let from = range.start.max(start);
+            let to = range.end.min(offset);
+            if from >= to {
+                runs.push(run);
+                continue;
+            }
+            let mut characters = run.text.chars();
+            let head: String = characters.by_ref().take(from - start).collect();
+            let typed: String = characters.by_ref().take(to - from).collect();
+            let tail: String = characters.collect();
+            for (text, style) in [(head, &run.style), (typed, style), (tail, &run.style)] {
+                if !text.is_empty() {
+                    runs.push(TextRunSnapshot {
+                        text,
+                        style: style.clone(),
+                    });
+                }
+            }
+        }
+        paragraph.runs = runs;
+    }
+}
+
+/// Which characters of [`Insertion::window`] are the ones that were typed.
+///
+/// They are the characters in the window that are not already the anchor run's
+/// own: one unbroken stretch of them, no longer than the edit added, and every
+/// one of them a style the anchor run's `<a:rPr>` does not contradict. Anything
+/// else — a stretch too long, two stretches with untouched text between them, a
+/// style the run denies — is a formatting change this reading cannot account
+/// for, and leaving it alone is what makes the comparison refuse it.
+fn typed_range(
+    spans: &[(Range<usize>, TextStyle)],
+    insertion: &Insertion,
+    style: &TextStyle,
+) -> Option<Range<usize>> {
+    let mut typed: Option<Range<usize>> = None;
+    for (span, run) in spans {
+        let from = span.start.max(insertion.window.start);
+        let to = span.end.min(insertion.window.end);
+        if from >= to || run == style {
+            continue;
+        }
+        if !specialises(run, style) {
+            return None;
+        }
+        match &mut typed {
+            None => typed = Some(from..to),
+            Some(open) if open.end == from => open.end = to,
+            Some(_) => return None,
+        }
+    }
+    typed.filter(|range| range.len() <= insertion.length)
+}
+
+/// Where each run of the current paragraphs sits, as character offsets counting
+/// one for each paragraph mark, the way [`current_characters`] lays them out.
+fn run_spans(paragraphs: &[ParagraphSnapshot]) -> Vec<(Range<usize>, TextStyle)> {
+    let mut spans = Vec::new();
+    let mut offset = 0;
+    for (index, paragraph) in paragraphs.iter().enumerate() {
+        if index > 0 {
+            offset += 1;
+        }
+        for run in &paragraph.runs {
+            let start = offset;
+            offset += run.text.chars().count();
+            spans.push((start..offset, run.style.clone()));
+        }
+    }
+    spans
+}
+
+/// Whether `run` carries every value `anchor` carries, and differs only by
+/// naming values `anchor` leaves to be inherited.
+///
+/// The six fields are the whole of [`TextStyle`], and each is compared: bold,
+/// italic and underline because a run split turns on them, the size, the colour
+/// and the font family because they are as much a formatting change as the
+/// other three. The colour is compared as the hex the deck resolved it to on
+/// the way in, so a run wearing a theme colour and one wearing that colour
+/// literally are the same run to this test.
+fn specialises(run: &TextStyle, anchor: &TextStyle) -> bool {
+    agrees(run.bold, anchor.bold)
+        && agrees(run.italic, anchor.italic)
+        && agrees(run.font_size_pt, anchor.font_size_pt)
+        && agrees(run.color.as_deref(), anchor.color.as_deref())
+        && agrees(run.font_family.as_deref(), anchor.font_family.as_deref())
+        && agrees(run.underline.as_deref(), anchor.underline.as_deref())
+}
+
+fn agrees<T: PartialEq>(run: Option<T>, anchor: Option<T>) -> bool {
+    anchor.is_none_or(|anchor| run == Some(anchor))
 }
 
 fn story_snapshot(

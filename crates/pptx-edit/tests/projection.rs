@@ -1,4 +1,7 @@
-use pptx_edit::{DeckSession, EditCtx, EditError, StorySnapshot, TextStyle, WriteLimits};
+use pptx_edit::{
+    DeckSession, EditCtx, EditError, ShapeSnapshot, StorySnapshot, TextStyle, TextStylePatch,
+    WriteLimits,
+};
 
 const FIXTURE: &[u8] = include_bytes!("../../../apps/demo/public/betteroffice-demo.pptx");
 
@@ -85,6 +88,80 @@ fn type_text(session: &DeckSession, story_id: &str, index: u32, text: &str) {
             text,
             &TextStyle::default(),
         )
+        .unwrap();
+}
+
+/// What the editor falls back to for a value nothing under the caret states:
+/// `initialStyle` in `packages/pptx-react/src/PptxEditor.tsx`.
+fn editor_fallback() -> TextStyle {
+    TextStyle {
+        bold: Some(false),
+        italic: Some(false),
+        font_size_pt: Some(24.0),
+        color: Some("#111827".to_owned()),
+        font_family: Some("Arial".to_owned()),
+        underline: Some("none".to_owned()),
+    }
+}
+
+/// The style the editor inserts typed text with.
+///
+/// A port of `effectiveStyleFromSelection` in
+/// `packages/pptx-react/src/textFormatting.ts` for a collapsed caret: the run
+/// the caret sits in, or the last run before it, resolved against
+/// [`editor_fallback`] so that every field arrives spelled out — including the
+/// `b`, `i` and `u` the run's own `<a:rPr>` usually leaves to be inherited.
+/// This, not the run's own style, is what a keystroke carries into the model.
+fn effective_style(story: &StorySnapshot, index: u32) -> TextStyle {
+    let fallback = editor_fallback();
+    let mut spans: Vec<(u32, u32, TextStyle)> = Vec::new();
+    let mut position = 0;
+    for (index, paragraph) in story.paragraphs.iter().enumerate() {
+        for run in &paragraph.runs {
+            let start = position;
+            position += run.text.encode_utf16().count() as u32;
+            if position > start {
+                spans.push((
+                    start,
+                    position,
+                    TextStyle {
+                        bold: run.style.bold.or(fallback.bold),
+                        italic: run.style.italic.or(fallback.italic),
+                        font_size_pt: run.style.font_size_pt.or(fallback.font_size_pt),
+                        color: run.style.color.clone().or_else(|| fallback.color.clone()),
+                        font_family: run
+                            .style
+                            .font_family
+                            .clone()
+                            .or_else(|| fallback.font_family.clone()),
+                        underline: run
+                            .style
+                            .underline
+                            .clone()
+                            .or_else(|| fallback.underline.clone()),
+                    },
+                ));
+            }
+        }
+        if index + 1 < story.paragraphs.len() {
+            position += 1;
+        }
+    }
+    spans
+        .iter()
+        .find(|(start, end, _)| index >= *start && index < *end)
+        .or_else(|| spans.iter().rev().find(|(_, end, _)| *end <= index))
+        .or_else(|| spans.first())
+        .map(|(_, _, style)| style.clone())
+        .unwrap_or(fallback)
+}
+
+/// Types `text` the way the editor does: at `index`, carrying the whole style
+/// the caret resolves to.
+fn type_as_the_editor_does(session: &DeckSession, story_id: &str, index: u32, text: &str) {
+    let style = effective_style(&session.story(story_id).unwrap(), index);
+    session
+        .insert_text(&EditCtx::local("test"), story_id, index, text, &style)
         .unwrap();
 }
 
@@ -930,5 +1007,245 @@ fn the_write_budgets_bound_the_runs_and_the_bytes_one_save_rewrites() {
             .plain_text(),
         "Xone\nYtwo",
         "an ordinary edit passes the default budgets untouched"
+    );
+}
+
+#[test]
+fn a_keystroke_into_a_run_with_no_run_properties_rewrites_only_its_text() {
+    let paragraphs = r#"<a:p><a:r><a:t>abcd</a:t></a:r></a:p>"#;
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    assert_eq!(
+        story.paragraphs[0].runs[0].style,
+        TextStyle::default(),
+        "the run states nothing, so every field of the caret's style is the editor's own"
+    );
+    type_as_the_editor_does(&session, &story.id, 2, "X");
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace("<a:t>abcd</a:t>", "<a:t>abXcd</a:t>"),
+        "a keystroke moves no byte outside the <a:t> it landed in"
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 301)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "abXcd"
+    );
+}
+
+#[test]
+fn a_keystroke_into_a_partly_stated_run_saves_at_its_start_middle_and_end() {
+    let paragraphs = r#"<a:p><a:r><a:rPr b="1" sz="1400"/><a:t>abcd</a:t></a:r></a:p>"#;
+    for (index, (caret, expected)) in [(0, "Xabcd"), (2, "abXcd"), (4, "abcdX")]
+        .into_iter()
+        .enumerate()
+    {
+        let session = session_with(paragraphs);
+        let story = first_story(&session);
+        let style = effective_style(&story, caret);
+        assert_eq!(
+            (style.bold, style.italic, style.underline.as_deref()),
+            (Some(true), Some(false), Some("none")),
+            "the caret keeps the b the run states and spells out the i and u it does not"
+        );
+        type_as_the_editor_does(&session, &story.id, caret, "X");
+
+        let bytes = session.save_bytes().unwrap();
+        assert_eq!(
+            part_text(&bytes, SLIDE_PART),
+            slide_xml(paragraphs).replace("<a:t>abcd</a:t>", &format!("<a:t>{expected}</a:t>")),
+            "the run keeps its own <a:rPr>, whatever the caret spelled out"
+        );
+        assert_eq!(
+            DeckSession::open(&bytes, 310 + index as u64)
+                .unwrap()
+                .story(&story.id)
+                .unwrap()
+                .plain_text(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn a_keystroke_leaves_the_other_runs_of_its_paragraph_byte_for_byte() {
+    let paragraphs = concat!(
+        r#"<a:p><a:r><a:rPr b="1"/><a:t>alpha</a:t></a:r>"#,
+        r#"<a:r><a:rPr i="1" sz="1200"/><a:t>beta</a:t></a:r>"#,
+        r#"<a:r><a:t>gamma</a:t></a:r></a:p>"#,
+    );
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    assert_eq!(story.plain_text(), "alphabetagamma");
+    type_as_the_editor_does(&session, &story.id, 7, "X");
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace("<a:t>beta</a:t>", "<a:t>beXta</a:t>"),
+        "only the run the caret sat in is rewritten"
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 320)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "alphabeXtagamma"
+    );
+}
+
+#[test]
+fn a_keystroke_repeating_the_letter_beside_it_still_lands_in_its_own_run() {
+    let paragraphs = concat!(
+        r#"<a:p><a:r><a:rPr b="1" sz="1000"/><a:t>DOCX</a:t></a:r>"#,
+        r#"<a:r><a:rPr b="1" sz="1000"/><a:t> tab</a:t></a:r></a:p>"#,
+    );
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    type_as_the_editor_does(&session, &story.id, 3, "X");
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace("<a:t>DOCX</a:t>", "<a:t>DOCXX</a:t>"),
+        "which of the two Xs was typed cannot be read off the text, and either reads the same"
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 330)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "DOCXX tab"
+    );
+}
+
+#[test]
+fn a_bold_toggle_over_part_of_a_run_is_still_refused_by_name() {
+    let session = session_with(r#"<a:p><a:r><a:t>abcd</a:t></a:r></a:p>"#);
+    let story = first_story(&session);
+    session
+        .format_text(
+            &EditCtx::local("test"),
+            &story.id,
+            2,
+            4,
+            &TextStylePatch {
+                bold: Some(true),
+                ..TextStylePatch::default()
+            },
+        )
+        .unwrap();
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("changed in a way this writer cannot express"),
+        "bolding half a run needs a run split, which this writer cannot make: {reason}"
+    );
+}
+
+#[test]
+fn a_bold_toggle_beside_a_keystroke_is_refused_rather_than_swallowed() {
+    let session = session_with(r#"<a:p><a:r><a:t>abcd</a:t></a:r></a:p>"#);
+    let story = first_story(&session);
+    type_as_the_editor_does(&session, &story.id, 2, "X");
+    session
+        .format_text(
+            &EditCtx::local("test"),
+            &story.id,
+            0,
+            2,
+            &TextStylePatch {
+                bold: Some(true),
+                ..TextStylePatch::default()
+            },
+        )
+        .unwrap();
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("changed in a way this writer cannot express"),
+        "a keystroke does not license the formatting change beside it: {reason}"
+    );
+}
+
+#[test]
+fn a_keystroke_contradicting_the_run_it_lands_in_is_refused_by_name() {
+    let paragraphs = r#"<a:p><a:r><a:rPr b="1"/><a:t>abcd</a:t></a:r></a:p>"#;
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    let mut style = effective_style(&story, 2);
+    style.bold = Some(false);
+    session
+        .insert_text(&EditCtx::local("test"), &story.id, 2, "X", &style)
+        .unwrap();
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("changed in a way this writer cannot express"),
+        "text typed unbolded into a bold run is a run split, not a keystroke: {reason}"
+    );
+}
+
+/// Every text story of the demo deck, groups and table cells included.
+fn demo_stories(session: &DeckSession) -> Vec<StorySnapshot> {
+    fn walk(shape: &ShapeSnapshot, stories: &mut Vec<StorySnapshot>) {
+        stories.extend(shape.text_stories.iter().cloned());
+        for child in &shape.children {
+            walk(child, stories);
+        }
+    }
+    let mut stories = Vec::new();
+    for slide in &session.snapshot().unwrap().slides {
+        for shape in &slide.shapes {
+            walk(shape, &mut stories);
+        }
+    }
+    stories
+}
+
+/// The case the suite used to miss: a keystroke as the editor makes it, in
+/// every text story of a real deck.
+///
+/// Typing with the run's own style saved before this test existed; typing with
+/// the style the editor actually sends refused in every one of these stories,
+/// because a real deck's runs state `b` and `sz` and leave `i` and `u` to be
+/// inherited.
+#[test]
+fn every_text_story_of_the_demo_deck_saves_after_a_keystroke() {
+    let package = pptx_parse::parse_pptx(FIXTURE).unwrap();
+    let session = DeckSession::from_package(package.clone(), 340).unwrap();
+    let stories = demo_stories(&session);
+    assert!(
+        stories.len() > 40,
+        "the demo deck holds a deck's worth of text"
+    );
+
+    let mut refused = Vec::new();
+    for (index, story) in stories.iter().enumerate() {
+        for caret in [0, 3, 5, 20, 50] {
+            let session =
+                DeckSession::from_package(package.clone(), 1_000 + index as u64 * 8 + caret)
+                    .unwrap();
+            let live = session.story(&story.id).unwrap();
+            if caret as u32 >= live.length {
+                continue;
+            }
+            type_as_the_editor_does(&session, &story.id, caret as u32, "X");
+            if let Err(error) = session.save_bytes() {
+                refused.push(format!("{} at {caret}: {error}", story.id));
+            }
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "a keystroke must be savable everywhere:\n{}",
+        refused.join("\n")
     );
 }

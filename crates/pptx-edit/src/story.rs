@@ -527,7 +527,10 @@ fn insert_option(attrs: &mut Attrs, key: &str, value: Option<Any>) {
     }
 }
 
-fn style_from_run_properties(properties: &RunProperties, theme: Option<&Theme>) -> TextStyle {
+pub(crate) fn style_from_run_properties(
+    properties: &RunProperties,
+    theme: Option<&Theme>,
+) -> TextStyle {
     TextStyle {
         bold: properties.bold,
         italic: properties.italic,
