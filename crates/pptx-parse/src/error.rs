@@ -20,4 +20,10 @@ pub enum PptxError {
     InvalidRelationship { source_part: String, target: String },
     #[error("{part} has no {target} to write text into")]
     MissingTextTarget { part: String, target: String },
+    #[error("{part} cannot hold the text of {target}: {reason}")]
+    UnwritableText {
+        part: String,
+        target: String,
+        reason: String,
+    },
 }

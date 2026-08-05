@@ -3,11 +3,15 @@
 //! Only run text is expressible in this slice. Everything the projection
 //! cannot write is refused by name, so a save never quietly drops an edit.
 //!
-//! The projection is verified rather than assumed: after deciding which runs
-//! to rewrite it re-seeds a story from the rewritten text bodies and requires
-//! the result to equal the live deck exactly. Any change the plan did not
-//! account for — a formatting patch, a paragraph break, a run split — makes
-//! that comparison fail and the save is refused.
+//! The projection is verified twice rather than assumed. Planning re-seeds a
+//! story from the rewritten text bodies and requires the result to equal the
+//! live deck exactly, so a change the plan did not account for — a formatting
+//! patch, a paragraph break, a run split — is refused. That check runs on the
+//! model held in memory, so it alone would trust the byte splice to have landed
+//! on the `<a:t>` the plan named. The bytes are therefore zipped and parsed
+//! back, and the package that reads out of them must equal the package the plan
+//! built. A splice that lands on the wrong run reads back as a different model
+//! and the save is refused.
 
 use std::collections::BTreeMap;
 
@@ -25,6 +29,35 @@ use crate::{
     StorySnapshot,
 };
 
+/// Ceilings on what one save is allowed to rewrite.
+///
+/// [`pptx_parse::ParseLimits`] bounds what a deck may cost to read. These bound
+/// what it may cost to write: a collaborative peer or a clipboard paste can put
+/// an arbitrarily long string into a run, and every save after that re-escapes
+/// it (up to five bytes out for each `&` in), re-zips the part and re-seeds a
+/// document to verify it. The defaults sit far above what a real slide holds —
+/// a slide's whole text is normally a couple of kilobytes — so honest content
+/// never meets them.
+#[derive(Clone, Debug)]
+pub struct WriteLimits {
+    /// Largest text one `<a:t>` may be rewritten to, in bytes.
+    pub max_run_text_bytes: usize,
+    /// Largest number of runs one save may rewrite.
+    pub max_run_edits: usize,
+    /// Largest total text one save may rewrite, in bytes.
+    pub max_total_edit_bytes: usize,
+}
+
+impl Default for WriteLimits {
+    fn default() -> Self {
+        Self {
+            max_run_text_bytes: 128 * 1024,
+            max_run_edits: 20_000,
+            max_total_edit_bytes: 8 * 1024 * 1024,
+        }
+    }
+}
+
 impl DeckSession {
     /// Projects the deck's text edits onto the parts the package was opened
     /// with, returning a package whose bytes are ready to re-zip.
@@ -34,6 +67,53 @@ impl DeckSession {
     /// changed. Returns [`EditError::Unprojectable`] when the deck holds a
     /// change this writer cannot express.
     pub fn project(&self) -> EditResult<PptxPackage> {
+        self.project_with_limits(&WriteLimits::default())
+    }
+
+    /// [`DeckSession::project`] under explicit write budgets.
+    pub fn project_with_limits(&self, limits: &WriteLimits) -> EditResult<PptxPackage> {
+        Ok(self.verified_projection(limits)?.0)
+    }
+
+    /// Projects the deck and returns the re-zipped file.
+    ///
+    /// Prefer this over zipping the result of [`DeckSession::project`]: the
+    /// bytes returned here are the ones the byte-level verification read back,
+    /// and producing them costs one zip rather than two.
+    pub fn save_bytes(&self) -> EditResult<Vec<u8>> {
+        self.save_bytes_with_limits(&WriteLimits::default())
+    }
+
+    /// [`DeckSession::save_bytes`] under explicit write budgets.
+    pub fn save_bytes_with_limits(&self, limits: &WriteLimits) -> EditResult<Vec<u8>> {
+        Ok(self.verified_projection(limits)?.1)
+    }
+
+    /// Plans the projection, writes it, and requires the written bytes to read
+    /// back as the package the plan built.
+    ///
+    /// A package with no rewritten part skips the read-back: nothing was
+    /// spliced, so there is no address to have got wrong.
+    fn verified_projection(&self, limits: &WriteLimits) -> EditResult<(PptxPackage, Vec<u8>)> {
+        let (package, rewrote_parts) = self.planned_projection(limits)?;
+        let bytes = pptx_parse::write_pptx(&package)
+            .map_err(|error| unprojectable(format!("the deck could not be re-zipped: {error}")))?;
+        if !rewrote_parts {
+            return Ok((package, bytes));
+        }
+        let read_back = pptx_parse::parse_pptx(&bytes).map_err(|error| {
+            unprojectable(format!("the rewritten deck did not read back: {error}"))
+        })?;
+        if read_back != package {
+            return Err(unprojectable(
+                "the rewritten part bytes read back as a different deck, so the text was written \
+                 somewhere other than the runs the edit named",
+            ));
+        }
+        Ok((package, bytes))
+    }
+
+    fn planned_projection(&self, limits: &WriteLimits) -> EditResult<(PptxPackage, bool)> {
         let mut package = (*self.package).clone();
         if package
             .part_bytes(&package.presentation.part_path)
@@ -54,7 +134,7 @@ impl DeckSession {
             return Err(unprojectable("slides were added or removed"));
         }
 
-        let mut plan = Plan::default();
+        let mut plan = Plan::new(limits);
         for (index, (baseline_slide, current_slide)) in
             baseline.slides.iter().zip(&current.slides).enumerate()
         {
@@ -86,6 +166,7 @@ impl DeckSession {
             }
         }
 
+        let rewrote_parts = !plan.edits.is_empty();
         for (part_path, edits) in &plan.edits {
             let bytes = package
                 .part_bytes(part_path)
@@ -104,7 +185,7 @@ impl DeckSession {
                 .ok_or_else(|| unprojectable("a rewritten text body left the shape tree"))?;
             *target = body.body;
         }
-        Ok(package)
+        Ok((package, rewrote_parts))
     }
 }
 
@@ -114,10 +195,50 @@ struct SlideContext<'a> {
     theme: Option<&'a Theme>,
 }
 
-#[derive(Default)]
-struct Plan {
+struct Plan<'a> {
+    limits: &'a WriteLimits,
     edits: BTreeMap<String, Vec<RunTextEdit>>,
     bodies: Vec<ProjectedBody>,
+    charged_edits: usize,
+    charged_bytes: usize,
+}
+
+impl<'a> Plan<'a> {
+    fn new(limits: &'a WriteLimits) -> Self {
+        Self {
+            limits,
+            edits: BTreeMap::new(),
+            bodies: Vec::new(),
+            charged_edits: 0,
+            charged_bytes: 0,
+        }
+    }
+
+    fn charge(&mut self, text: &str, origin: &str) -> EditResult<()> {
+        if text.len() > self.limits.max_run_text_bytes {
+            return Err(unprojectable(format!(
+                "{origin}: the edit writes {} bytes into one run, over the {} bytes one run may \
+                 hold in a save",
+                text.len(),
+                self.limits.max_run_text_bytes
+            )));
+        }
+        self.charged_edits += 1;
+        if self.charged_edits > self.limits.max_run_edits {
+            return Err(unprojectable(format!(
+                "the save rewrites more than the {} runs one save may rewrite",
+                self.limits.max_run_edits
+            )));
+        }
+        self.charged_bytes += text.len();
+        if self.charged_bytes > self.limits.max_total_edit_bytes {
+            return Err(unprojectable(format!(
+                "the save rewrites more than the {} bytes of text one save may write",
+                self.limits.max_total_edit_bytes
+            )));
+        }
+        Ok(())
+    }
 }
 
 struct ProjectedBody {
@@ -133,7 +254,7 @@ fn project_shape(
     baseline: &ShapeSnapshot,
     current: &ShapeSnapshot,
     shape_path: &mut Vec<usize>,
-    plan: &mut Plan,
+    plan: &mut Plan<'_>,
 ) -> EditResult<()> {
     require_same_shape(baseline, current)?;
     match source {
@@ -205,7 +326,7 @@ fn project_body(
     story_index: usize,
     location: TextBodyLocation,
     shape_path: &[usize],
-    plan: &mut Plan,
+    plan: &mut Plan<'_>,
 ) -> EditResult<()> {
     let (Some(baseline_story), Some(current_story)) = (
         baseline.text_stories.get(story_index),
@@ -234,14 +355,10 @@ fn project_body(
         if before == after {
             continue;
         }
-        let (run_index, text) =
-            locate_run_edit(&paragraph.runs, &before, &after).map_err(|reason| {
-                unprojectable(format!(
-                    "{} paragraph {}: {reason}",
-                    describe(context, current),
-                    index + 1
-                ))
-            })?;
+        let origin = format!("{} paragraph {}", describe(context, current), index + 1);
+        let (run_index, text) = locate_run_edit(&paragraph.runs, &before, &after)
+            .map_err(|reason| unprojectable(format!("{origin}: {reason}")))?;
+        plan.charge(&text, &origin)?;
         predicted.paragraphs[index].runs[run_index].text = text.clone();
         edits.push(RunTextEdit {
             shape_path: shape_path.to_vec(),
@@ -281,6 +398,13 @@ fn project_body(
 /// change; anything wider than one run — a run merge, a split, or an edit that
 /// straddles a field or a line break — has no faithful single-run rewrite and
 /// is refused.
+///
+/// An insertion sitting exactly on the trailing edge of an `<a:br>` or `<a:fld>`
+/// is the one case where the containing run is not the right target: the break
+/// or the field cannot hold text, but the run that follows it can, and the text
+/// lands where the caret was either way. The insertion is handed to that run;
+/// its style is then the following run's, which the story comparison in
+/// `project_body` refuses if that is not what the deck shows.
 fn locate_run_edit(runs: &[TextRun], before: &str, after: &str) -> Result<(usize, String), String> {
     if runs.is_empty() {
         return Err("the paragraph has no run to hold text".to_owned());
@@ -305,14 +429,26 @@ fn locate_run_edit(runs: &[TextRun], before: &str, after: &str) -> Result<(usize
     }
 
     let mut offset = 0;
+    let mut deferred = None;
     for (index, run) in runs.iter().enumerate() {
         let end = offset + run.text.chars().count();
         if offset <= prefix && changed_end <= end {
-            if run.line_break {
-                return Err(format!("the change lands on line break {}", index + 1));
-            }
-            if run.field_id.is_some() || run.field_type.is_some() {
-                return Err(format!("the change lands on field {}", index + 1));
+            let holder = if run.line_break {
+                Some(format!("line break {}", index + 1))
+            } else if run.field_id.is_some() || run.field_type.is_some() {
+                Some(format!("field {}", index + 1))
+            } else {
+                None
+            };
+            if let Some(holder) = holder {
+                if prefix == changed_end && changed_end == end {
+                    deferred = Some(format!(
+                        "the change lands past {holder}, which has no run after it to hold the text"
+                    ));
+                    offset = end;
+                    continue;
+                }
+                return Err(format!("the change lands on {holder}"));
             }
             let mut text: Vec<char> = run.text.chars().collect();
             text.splice(prefix - offset..changed_end - offset, replacement.chars());
@@ -320,7 +456,7 @@ fn locate_run_edit(runs: &[TextRun], before: &str, after: &str) -> Result<(usize
         }
         offset = end;
     }
-    Err("the change spans more than one run".to_owned())
+    Err(deferred.unwrap_or_else(|| "the change spans more than one run".to_owned()))
 }
 
 fn story_snapshot(

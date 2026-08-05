@@ -8,9 +8,10 @@
 use std::collections::BTreeMap;
 
 use quick_xml::Reader;
-use quick_xml::events::Event;
+use quick_xml::events::{BytesStart, Event};
 
 use crate::PptxError;
+use crate::xml::is_legal_xml_character;
 
 /// Which text body of a shape an edit addresses.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -42,7 +43,19 @@ type RunKey = (Vec<usize>, TextBodyLocation, usize, usize);
 /// Rewrites the named runs of a slide part, leaving every other byte in place.
 ///
 /// Fails when an edit names a run the part does not contain, so a projection
-/// can never be silently dropped.
+/// can never be silently dropped, and when the replacement text holds a
+/// character XML cannot represent.
+///
+/// # Splice bounds
+///
+/// Every splice is derived from [`Reader::buffer_position`] read immediately
+/// before an event (`opens_at`, the first byte of that event) and immediately
+/// after it (`ends_at`, one past its last byte). A `<a:t>` run's character data
+/// therefore spans the `ends_at` of its `Start` to the `opens_at` of its `End`,
+/// while an `<a:t/>` run spans its own `opens_at..ends_at`. quick-xml documents
+/// that position as consumed input rather than as element bounds, so both
+/// spans are checked against the source bytes before use — see
+/// [`check_element_span`] and [`check_character_data_span`].
 pub fn rewrite_slide_run_text(
     part: &str,
     bytes: &[u8],
@@ -76,10 +89,11 @@ pub fn rewrite_slide_run_text(
     let mut open_text: Option<(usize, RunKey, usize)> = None;
 
     loop {
-        let position = reader.buffer_position() as usize;
+        let opens_at = reader.buffer_position() as usize;
         let event = reader
             .read_event()
-            .map_err(|error| malformed(part, position, error.to_string()))?;
+            .map_err(|error| malformed(part, opens_at, error.to_string()))?;
+        let ends_at = reader.buffer_position() as usize;
         match event {
             Event::Start(start) => {
                 let name = local_name(start.name().into_inner()).to_vec();
@@ -88,33 +102,31 @@ pub fn rewrite_slide_run_text(
                     && let Some(key) = run_text_key(&frames, &shape_path)
                     && pending.contains_key(&key)
                 {
-                    open_text = Some((reader.buffer_position() as usize, key, frames.len()));
+                    open_text = Some((ends_at, key, frames.len()));
                 }
                 frames.push(frame);
             }
-            Event::Empty(start) => {
-                let name = local_name(start.name().into_inner()).to_vec();
+            Event::Empty(tag) => {
+                let name = local_name(tag.name().into_inner()).to_vec();
                 let frame = open_frame(&name, &mut frames, &mut shape_path);
                 if name == b"t"
                     && let Some(key) = run_text_key(&frames, &shape_path)
                     && let Some(text) = pending.remove(&key)
                 {
-                    splices.push((
-                        position,
-                        reader.buffer_position() as usize,
-                        empty_run_text(text),
-                    ));
+                    check_element_span(part, bytes, opens_at, ends_at)?;
+                    splices.push((opens_at, ends_at, empty_run_text(part, &key, &tag, text)?));
                 }
                 close_frame(frame, &mut shape_path);
             }
             Event::End(_) => {
                 let Some(frame) = frames.pop() else {
-                    return Err(malformed(part, position, "unexpected closing element"));
+                    return Err(malformed(part, opens_at, "unexpected closing element"));
                 };
                 if let Some((start, key, depth)) = open_text.take() {
                     if depth == frames.len() {
                         if let Some(text) = pending.remove(&key) {
-                            splices.push((start, position, escape_text(text)));
+                            check_character_data_span(part, bytes, start, opens_at)?;
+                            splices.push((start, opens_at, escape_text(part, &key, text)?));
                         }
                     } else {
                         open_text = Some((start, key, depth));
@@ -296,15 +308,98 @@ fn local_name(name: &[u8]) -> &[u8] {
     }
 }
 
-fn escape_text(text: &str) -> Vec<u8> {
-    quick_xml::escape::escape(text).into_owned().into_bytes()
+/// Encodes replacement text as `<a:t>` character data, refusing anything XML
+/// cannot represent.
+///
+/// A carriage return is written as a character reference because an XML parser
+/// normalises a literal one to a line feed, which would silently change the
+/// text the next time the deck is opened.
+fn escape_text(part: &str, key: &RunKey, text: &str) -> Result<Vec<u8>, PptxError> {
+    if let Some((index, character)) = text
+        .chars()
+        .enumerate()
+        .find(|(_, character)| !is_legal_xml_character(*character))
+    {
+        return Err(PptxError::UnwritableText {
+            part: part.to_owned(),
+            target: describe_key(key),
+            reason: format!(
+                "character {} of the run is U+{:04X}, which XML cannot store; delete that \
+                 character — retyping the run's text replaces it — and save again",
+                index + 1,
+                character as u32
+            ),
+        });
+    }
+    let escaped = quick_xml::escape::escape(text);
+    if escaped.contains('\r') {
+        return Ok(escaped.replace('\r', "&#13;").into_bytes());
+    }
+    Ok(escaped.into_owned().into_bytes())
 }
 
-fn empty_run_text(text: &str) -> Vec<u8> {
-    let mut output = b"<a:t>".to_vec();
-    output.extend_from_slice(&escape_text(text));
-    output.extend_from_slice(b"</a:t>");
-    output
+/// Rebuilds an empty `<a:t/>` around its replacement text.
+///
+/// The source tag's own bytes are re-emitted verbatim, so a part using a
+/// different namespace prefix or carrying attributes such as
+/// `xml:space="preserve"` keeps both.
+fn empty_run_text(
+    part: &str,
+    key: &RunKey,
+    tag: &BytesStart<'_>,
+    text: &str,
+) -> Result<Vec<u8>, PptxError> {
+    let escaped = escape_text(part, key, text)?;
+    let mut output = b"<".to_vec();
+    output.extend_from_slice(tag);
+    output.push(b'>');
+    output.extend_from_slice(&escaped);
+    output.extend_from_slice(b"</");
+    output.extend_from_slice(tag.name().into_inner());
+    output.push(b'>');
+    Ok(output)
+}
+
+/// Asserts that `start..end` covers exactly one self-closing element.
+///
+/// The splice bounds come from [`Reader::buffer_position`] before and after an
+/// event, which quick-xml documents as a byte count of consumed input rather
+/// than as element bounds. Checking the slice turns a change in that meaning
+/// into a loud refusal instead of a silently corrupted part.
+fn check_element_span(part: &str, bytes: &[u8], start: usize, end: usize) -> Result<(), PptxError> {
+    let span = bytes
+        .get(start..end)
+        .ok_or_else(|| malformed(part, start, "element bounds ran past the part"))?;
+    if !span.starts_with(b"<") || !span.ends_with(b"/>") {
+        return Err(malformed(
+            part,
+            start,
+            "element bounds did not cover a self-closing tag",
+        ));
+    }
+    Ok(())
+}
+
+/// Asserts that `start..end` covers exactly the character data of an element.
+///
+/// See [`check_element_span`] for why the bounds are checked at all.
+fn check_character_data_span(
+    part: &str,
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+) -> Result<(), PptxError> {
+    let span = bytes
+        .get(start..end)
+        .ok_or_else(|| malformed(part, start, "character data bounds ran past the part"))?;
+    if !bytes[..start].ends_with(b">") || !bytes[end..].starts_with(b"</") || span.contains(&b'<') {
+        return Err(malformed(
+            part,
+            start,
+            "character data bounds did not cover the inside of an element",
+        ));
+    }
+    Ok(())
 }
 
 fn describe(edit: &RunTextEdit) -> String {
@@ -436,5 +531,166 @@ mod tests {
             rewrite_slide_run_text("slide1.xml", SLIDE.as_bytes(), &[]).unwrap(),
             SLIDE.as_bytes()
         );
+    }
+
+    /// A part whose `<a:t>` runs use a non-`a` prefix, carry attributes, and
+    /// spell their tags with the whitespace XML permits.
+    const PREFIXED: &str = concat!(
+        r#"<pres:sld xmlns:dml="a" xmlns:pres="p"><pres:cSld><pres:spTree>"#,
+        r#"<pres:sp><pres:txBody><dml:p>"#,
+        r#"<dml:r><dml:t >first</dml:t ></dml:r>"#,
+        r#"<dml:r><dml:t xml:space="preserve" /></dml:r>"#,
+        r#"<dml:r><dml:t></dml:t></dml:r>"#,
+        r#"</dml:p></pres:txBody></pres:sp>"#,
+        r#"</pres:spTree></pres:cSld></pres:sld>"#,
+    );
+
+    fn every_prefix_resolves(xml: &str) -> bool {
+        use quick_xml::NsReader;
+        use quick_xml::name::ResolveResult;
+
+        let mut reader = NsReader::from_str(xml);
+        loop {
+            match reader.read_resolved_event() {
+                Err(_) => return false,
+                Ok((_, Event::Eof)) => return true,
+                Ok((ResolveResult::Unknown(_), _)) => return false,
+                Ok(_) => {}
+            }
+        }
+    }
+
+    #[test]
+    fn refuses_text_xml_cannot_represent() {
+        for text in [
+            "a\u{0}b",
+            "a\u{8}b",
+            "a\u{b}b",
+            "a\u{c}b",
+            "a\u{e}b",
+            "a\u{1f}b",
+            "a\u{fffe}b",
+            "a\u{ffff}b",
+        ] {
+            for target in [
+                edit(&[0], TextBodyLocation::Shape, 0, text),
+                edit(&[1, 1], TextBodyLocation::Shape, 0, text),
+                edit(
+                    &[2],
+                    TextBodyLocation::TableCell { row: 0, cell: 0 },
+                    0,
+                    text,
+                ),
+            ] {
+                let result = rewrite_slide_run_text("slide1.xml", SLIDE.as_bytes(), &[target]);
+                assert!(
+                    matches!(result, Err(PptxError::UnwritableText { .. })),
+                    "{text:?} was accepted: {result:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_refusal_names_the_run_and_the_character() {
+        let error = rewrite_slide_run_text(
+            "slide1.xml",
+            SLIDE.as_bytes(),
+            &[edit(&[0], TextBodyLocation::Shape, 0, "ab\u{7}c")],
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("character 3"), "{message}");
+        assert!(message.contains("U+0007"), "{message}");
+        assert!(message.contains("paragraph 0 run 0"), "{message}");
+        assert!(message.contains("retyping"), "{message}");
+    }
+
+    #[test]
+    fn writes_the_control_characters_xml_allows() {
+        let output = rewrite_slide_run_text(
+            "slide1.xml",
+            SLIDE.as_bytes(),
+            &[edit(&[0], TextBodyLocation::Shape, 0, "a\tb\nc\rd")],
+        )
+        .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("<a:t>a\tb\nc&#13;d</a:t>"), "{output}");
+        assert!(every_prefix_resolves(&output));
+    }
+
+    #[test]
+    fn an_empty_run_keeps_its_prefix_and_attributes() {
+        let output = rewrite_slide_run_text(
+            "slide2.xml",
+            PREFIXED.as_bytes(),
+            &[
+                edit(&[0], TextBodyLocation::Shape, 1, "preserved"),
+                edit(&[0], TextBodyLocation::Shape, 2, "closed"),
+            ],
+        )
+        .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(
+            output.contains(r#"<dml:t xml:space="preserve" >preserved</dml:t>"#),
+            "{output}"
+        );
+        assert!(output.contains("<dml:t>closed</dml:t>"), "{output}");
+        assert!(!output.contains("a:t"), "{output}");
+        assert!(every_prefix_resolves(&output), "{output}");
+    }
+
+    #[test]
+    fn splices_land_on_the_element_and_its_character_data() {
+        let output = rewrite_slide_run_text(
+            "slide2.xml",
+            PREFIXED.as_bytes(),
+            &[
+                edit(&[0], TextBodyLocation::Shape, 0, "ONE"),
+                edit(&[0], TextBodyLocation::Shape, 1, "TWO"),
+                edit(&[0], TextBodyLocation::Shape, 2, "THREE"),
+            ],
+        )
+        .unwrap();
+        let expected = PREFIXED
+            .replace("<dml:t >first</dml:t >", "<dml:t >ONE</dml:t >")
+            .replace(
+                r#"<dml:t xml:space="preserve" />"#,
+                r#"<dml:t xml:space="preserve" >TWO</dml:t>"#,
+            )
+            .replace("<dml:t></dml:t>", "<dml:t>THREE</dml:t>");
+        assert_eq!(String::from_utf8(output).unwrap(), expected);
+    }
+
+    #[test]
+    fn splice_bounds_that_drift_off_an_element_are_refused() {
+        let bytes = PREFIXED.as_bytes();
+        let data_start = PREFIXED.find("first").unwrap();
+        let data_end = data_start + "first".len();
+        assert!(check_character_data_span("s.xml", bytes, data_start, data_end).is_ok());
+        for (start, end) in [
+            (data_start - 1, data_end),
+            (data_start, data_end + 1),
+            (data_start, bytes.len() + 1),
+        ] {
+            assert!(
+                check_character_data_span("s.xml", bytes, start, end).is_err(),
+                "{start}..{end} was accepted as character data"
+            );
+        }
+
+        let tag_start = PREFIXED.find("<dml:t xml:space").unwrap();
+        let tag_end = PREFIXED[tag_start..].find("/>").unwrap() + tag_start + 2;
+        assert!(check_element_span("s.xml", bytes, tag_start, tag_end).is_ok());
+        for (start, end) in [
+            (tag_start + 1, tag_end),
+            (tag_start, tag_end - 1),
+            (tag_start, bytes.len() + 1),
+        ] {
+            assert!(
+                check_element_span("s.xml", bytes, start, end).is_err(),
+                "{start}..{end} was accepted as an element"
+            );
+        }
     }
 }

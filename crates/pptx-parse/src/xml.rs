@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use quick_xml::Reader;
@@ -440,11 +441,32 @@ fn malformed(reader: &Reader<&[u8]>, part: &str, message: impl Into<String>) -> 
     }
 }
 
-fn is_legal_xml_character(character: char) -> bool {
+/// The XML 1.0 `Char` production: no other character can appear in a
+/// well-formed document, escaped or not.
+///
+/// Tab, line feed and carriage return are the only characters below `U+0020`
+/// that qualify; `U+FFFE` and `U+FFFF` are excluded, and lone surrogates cannot
+/// occur in a Rust `str`.
+pub fn is_legal_xml_character(character: char) -> bool {
     matches!(character, '\u{9}' | '\u{a}' | '\u{d}')
         || ('\u{20}'..='\u{d7ff}').contains(&character)
         || ('\u{e000}'..='\u{fffd}').contains(&character)
         || ('\u{10000}'..='\u{10ffff}').contains(&character)
+}
+
+/// Drops every character XML 1.0 cannot represent.
+///
+/// Applied where text enters the model, so a paste or a keystroke can never
+/// seed a document with characters no PresentationML part could later hold.
+pub fn sanitize_xml_text(text: &str) -> Cow<'_, str> {
+    if text.chars().all(is_legal_xml_character) {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(
+        text.chars()
+            .filter(|c| is_legal_xml_character(*c))
+            .collect(),
+    )
 }
 
 #[cfg(test)]

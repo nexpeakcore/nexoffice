@@ -198,11 +198,12 @@ impl PptxDocument {
 
     /// Projects the deck's text edits onto the source parts and returns the
     /// re-zipped file. Rejects when the deck holds a change the writer cannot
-    /// express, naming what it cannot write.
+    /// express, when the written bytes do not read back as the deck they were
+    /// planned from, or when the edit is larger than [`crate::WriteLimits`] allows,
+    /// naming what it cannot write.
     #[wasm_bindgen(js_name = saveBytes)]
     pub fn save_bytes(&self) -> Result<Vec<u8>, JsValue> {
-        let package = self.session.project().map_err(js_error)?;
-        pptx_parse::write_pptx(&package).map_err(js_error)
+        self.session.save_bytes().map_err(js_error)
     }
 
     #[wasm_bindgen(js_name = mediaBytes)]
