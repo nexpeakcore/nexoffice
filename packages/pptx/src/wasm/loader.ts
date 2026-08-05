@@ -69,6 +69,19 @@ export interface PresentationHandle extends CollaborationReplica {
   removeShape(slideId: string, shapeId: string): ShapeReceipt;
   moveShape(slideId: string, shapeId: string, x: number, y: number): TransformReceipt;
   resizeShape(slideId: string, shapeId: string, width: number, height: number): TransformReceipt;
+  /**
+   * Projects the deck's text edits back onto the parts the file was opened
+   * with and returns the re-zipped PPTX. Slides no edit touched, and every
+   * non-slide part, keep their source bytes; an edited slide keeps every byte
+   * outside the `<a:t>` elements whose text changed.
+   *
+   * Only run text is written today. Throws, naming the change, when the deck
+   * holds anything else — a formatting patch, a new paragraph, a moved or
+   * added shape, a slide insert, remove or reorder — so a host can keep saving
+   * disabled instead of writing a file that has lost the edit. A replica
+   * opened from `initialUpdate` alone has no source bytes and always throws.
+   */
+  save(): Uint8Array;
   canUndo(): boolean;
   canRedo(): boolean;
   undo(): HistoryResult;
@@ -338,6 +351,9 @@ export function openPresentation(
         () => doc.resizeShapeJson(JSON.stringify({ slideId, shapeId, width, height })),
         true
       );
+    },
+    save(): Uint8Array {
+      return wasmCall(() => doc.saveBytes().slice());
     },
     canUndo(): boolean {
       return wasmCall(() => doc.canUndo());

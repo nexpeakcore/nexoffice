@@ -45,6 +45,29 @@ pub(crate) fn seed_doc(doc: &Doc, package: &PptxPackage, fingerprint: &str) -> E
         "packageJson",
         Any::Buffer(Arc::from(package_json)),
     );
+    seed_content(&mut txn, package)
+}
+
+/// Seeds a throwaway document with the package as parsed, with no meta blob.
+///
+/// The projection compares the live deck against this to tell edits apart from
+/// the state the file was opened in.
+pub(crate) fn seed_baseline(package: &PptxPackage) -> EditResult<Doc> {
+    let doc = crate::doc_with_client_id(crate::BOOTSTRAP_CLIENT_ID);
+    let mut txn = doc.transact_mut();
+    let meta = txn.get_or_insert_map(META);
+    meta.insert(&mut txn, "widthEmu", package.presentation.width_emu as f64);
+    meta.insert(
+        &mut txn,
+        "heightEmu",
+        package.presentation.height_emu as f64,
+    );
+    seed_content(&mut txn, package)?;
+    drop(txn);
+    Ok(doc)
+}
+
+fn seed_content(txn: &mut TransactionMut<'_>, package: &PptxPackage) -> EditResult<()> {
     let order = txn.get_or_insert_array(SLIDE_ORDER);
     let slides = txn.get_or_insert_map(SLIDES);
     let shapes = txn.get_or_insert_map(SHAPES);
@@ -54,28 +77,28 @@ pub(crate) fn seed_doc(doc: &Doc, package: &PptxPackage, fingerprint: &str) -> E
         let theme = slide_theme(package, slide);
         let reference = &package.presentation.slides[slide_index];
         let slide_id = format!("slide:{slide_index}:{}", reference.id);
-        order.push_back(&mut txn, slide_id.as_str());
-        let slide_map = slides.insert(&mut txn, slide_id.as_str(), MapPrelim::default());
-        slide_map.insert(&mut txn, "id", slide_id.as_str());
-        slide_map.insert(&mut txn, "sourcePartPath", slide.part_path.as_str());
+        order.push_back(txn, slide_id.as_str());
+        let slide_map = slides.insert(txn, slide_id.as_str(), MapPrelim::default());
+        slide_map.insert(txn, "id", slide_id.as_str());
+        slide_map.insert(txn, "sourcePartPath", slide.part_path.as_str());
         if let Some(layout) = &slide.layout_part_path {
-            slide_map.insert(&mut txn, "layoutPartPath", layout.as_str());
+            slide_map.insert(txn, "layoutPartPath", layout.as_str());
         }
         if let Some(name) = &slide.name {
-            slide_map.insert(&mut txn, "name", name.as_str());
+            slide_map.insert(txn, "name", name.as_str());
         }
-        let shape_order = slide_map.insert(&mut txn, "shapes", ArrayPrelim::default());
+        let shape_order = slide_map.insert(txn, "shapes", ArrayPrelim::default());
         for (shape_index, shape) in slide.shapes.iter().enumerate() {
             let shape_id = seed_shape(
                 &shapes,
                 &stories,
-                &mut txn,
+                txn,
                 &slide_id,
                 &shape_index.to_string(),
                 shape,
                 theme,
             )?;
-            shape_order.push_back(&mut txn, shape_id.as_str());
+            shape_order.push_back(txn, shape_id.as_str());
         }
     }
     Ok(())
@@ -182,7 +205,7 @@ fn slide_theme<'a>(package: &'a PptxPackage, slide: &Slide) -> Option<&'a Theme>
     theme_for_layout(package, slide.layout_part_path.as_deref())
 }
 
-fn theme_for_layout<'a>(
+pub(crate) fn theme_for_layout<'a>(
     package: &'a PptxPackage,
     layout_part_path: Option<&str>,
 ) -> Option<&'a Theme> {
@@ -642,7 +665,7 @@ fn package_from_meta<T: ReadTxn>(meta: &MapRef, txn: &T) -> EditResult<PptxPacka
     serde_json::from_slice(&bytes).map_err(|error| EditError::InvalidState(error.to_string()))
 }
 
-fn snapshot_doc(doc: &Doc, package: &PptxPackage) -> EditResult<DeckSnapshot> {
+pub(crate) fn snapshot_doc(doc: &Doc, package: &PptxPackage) -> EditResult<DeckSnapshot> {
     let txn = doc.transact();
     let meta = required_map(&txn, META)?;
     let order = required_order(&txn)?;

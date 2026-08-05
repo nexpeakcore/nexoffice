@@ -15,10 +15,12 @@ use yrs::{
 
 mod deck;
 mod model;
+mod project;
 mod story;
 mod undo;
 
 pub use model::*;
+pub use project::WriteLimits;
 pub use undo::DeckUndoManager;
 
 #[cfg(feature = "wasm")]

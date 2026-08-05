@@ -284,6 +284,8 @@ pub enum EditError {
     Observer(String),
     #[error("JSON boundary error: {0}")]
     Json(String),
+    #[error("this deck holds a change the PPTX writer cannot save yet: {0}")]
+    Unprojectable(String),
 }
 
 pub type EditResult<T> = Result<T, EditError>;

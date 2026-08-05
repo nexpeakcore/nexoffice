@@ -97,6 +97,12 @@ impl DeckSession {
         snapshot_story(&story, &txn, story_id)
     }
 
+    /// Inserts text at `index`, dropping any character XML cannot represent.
+    ///
+    /// A paste or an IME can carry control characters that no PresentationML
+    /// part could hold; they are removed here rather than at save time so the
+    /// deck never reaches a state that cannot be written back. The receipt
+    /// reports the text that was actually inserted.
     pub fn insert_text(
         &self,
         context: &crate::EditCtx,
@@ -105,6 +111,8 @@ impl DeckSession {
         text: &str,
         style: &TextStyle,
     ) -> EditResult<TextReceipt> {
+        let text = pptx_parse::sanitize_xml_text(text);
+        let text = text.as_ref();
         let mut txn = self.transact_for(context);
         let story = story_ref(&txn, story_id)?;
         let final_pilcrow = final_pilcrow_index(&story, &txn)?;
@@ -486,5 +494,86 @@ fn out_len(value: &Out) -> u32 {
     match value {
         Out::Any(Any::String(value)) => value.encode_utf16().count() as u32,
         _ => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{DeckSession, EditCtx, StorySnapshot, TextStyle};
+
+    const FIXTURE: &[u8] = include_bytes!("../../../apps/demo/public/betteroffice-demo.pptx");
+
+    fn first_story(session: &DeckSession) -> StorySnapshot {
+        session
+            .snapshot()
+            .unwrap()
+            .slides
+            .iter()
+            .flat_map(|slide| slide.shapes.iter())
+            .find_map(|shape| shape.text_stories.first().cloned())
+            .expect("the fixture has a text story")
+    }
+
+    #[test]
+    fn insert_text_drops_what_xml_cannot_hold_and_keeps_what_it_can() {
+        let session = DeckSession::open(FIXTURE, 91).unwrap();
+        let story = first_story(&session);
+        let receipt = session
+            .insert_text(
+                &EditCtx::local("test"),
+                &story.id,
+                0,
+                "A\u{0}B\u{8}C\u{b}D\u{c}E\u{1f}F\u{fffe}G\u{ffff}H\tI",
+                &TextStyle::default(),
+            )
+            .unwrap();
+
+        assert_eq!(receipt.text, "ABCDEFGH\tI");
+        assert_eq!(receipt.end - receipt.start, 10);
+        assert!(
+            session
+                .story(&story.id)
+                .unwrap()
+                .plain_text()
+                .starts_with("ABCDEFGH\tI"),
+            "the sanitised text is what landed in the story"
+        );
+    }
+
+    #[test]
+    fn a_deck_edited_with_control_characters_saves_as_well_formed_xml() {
+        let session = DeckSession::open(FIXTURE, 92).unwrap();
+        let story = first_story(&session);
+        let style = story.paragraphs[0].runs[0].style.clone();
+        session
+            .insert_text(
+                &EditCtx::local("test"),
+                &story.id,
+                0,
+                "start\u{0}\u{c}\u{1f}",
+                &style,
+            )
+            .unwrap();
+
+        let projected = session.project().unwrap();
+        let bytes = pptx_parse::write_pptx(&projected).unwrap();
+        let reopened = DeckSession::open(&bytes, 93).unwrap();
+        assert!(
+            reopened
+                .story(&story.id)
+                .unwrap()
+                .plain_text()
+                .starts_with("start")
+        );
+        for slide in &projected.slides {
+            let part = projected.part_bytes(&slide.part_path).unwrap();
+            assert!(
+                !part
+                    .iter()
+                    .any(|byte| *byte < 0x20 && !matches!(byte, b'\t' | b'\n' | b'\r')),
+                "{} holds a byte XML cannot represent",
+                slide.part_path
+            );
+        }
     }
 }
