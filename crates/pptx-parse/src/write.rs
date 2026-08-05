@@ -1,14 +1,30 @@
 //! Text projection into slide parts.
 //!
-//! The source XML is the template. Only the character data of the `<a:t>`
-//! elements an edit names is replaced; every other byte of the part — run
-//! properties, paragraph properties, bullets, fields, namespace prefixes,
-//! whitespace and unmodelled elements — is copied through untouched.
+//! The source XML is the template. A rewrite only ever re-emits bytes the part
+//! already holds: the character data of the `<a:t>` elements an edit names, and
+//! — where a paragraph is split, merged, or given a line break — copies of the
+//! `<a:p>` tag, the `<a:pPr>` and the `<a:rPr>` the source already spells.
+//! Every other byte of the part is copied through untouched.
+//!
+//! # Paragraph structure
+//!
+//! [`ParagraphRewrite`] describes what one contiguous group of source
+//! paragraphs becomes. One source paragraph and one output paragraph is a
+//! plain text edit; one source paragraph and two output paragraphs is a split;
+//! two source paragraphs and one output paragraph is a merge.
+//!
+//! Splitting inserts `</a:p>` and the source `<a:p>` open tag followed by a
+//! copy of the source `<a:pPr>`, so the new paragraph carries the level,
+//! alignment, bullet, indents and default run properties the split paragraph
+//! had. Nothing else is synthesised: an `<a:endParaRPr>` is never invented and
+//! never duplicated, so it stays at the end of the group, on the last output
+//! paragraph — which is where PowerPoint keeps it, and which makes a merge the
+//! exact inverse of a split.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use quick_xml::Reader;
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::Event;
 
 use crate::PptxError;
 use crate::xml::is_legal_xml_character;
@@ -22,71 +38,246 @@ pub enum TextBodyLocation {
     TableCell { row: usize, cell: usize },
 }
 
-/// Replacement character data for the `<a:t>` of one run.
+/// One run of one source paragraph.
 ///
-/// `shape_path` indexes the shape tree the way the parser walks it: each entry
-/// is the position of a `<p:sp>`/`<p:pic>`/`<p:graphicFrame>`/`<p:grpSp>` among
-/// its container's shape children, descending through groups. `run_index`
-/// counts `<a:r>`, `<a:fld>` and `<a:br>` children of the paragraph together,
-/// matching the parsed run list, but only an `<a:r>` may be edited.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RunTextEdit {
-    pub shape_path: Vec<usize>,
-    pub location: TextBodyLocation,
-    pub paragraph_index: usize,
-    pub run_index: usize,
-    pub text: String,
+/// `paragraph` counts `<a:p>` children of the text body, `run` counts `<a:r>`,
+/// `<a:fld>` and `<a:br>` children of that paragraph together, matching the
+/// parsed run list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RunRef {
+    pub paragraph: usize,
+    pub run: usize,
 }
 
-type RunKey = (Vec<usize>, TextBodyLocation, usize, usize);
+/// One piece of an output paragraph.
+///
+/// Every piece names the source run it is made of, so a rewrite can only
+/// re-emit bytes the part already holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunPiece {
+    /// The source run, byte for byte.
+    Keep(RunRef),
+    /// The source `<a:r>` re-emitted around different character data.
+    Text(RunRef, String),
+    /// A new `<a:br>` carrying a copy of the source run's `<a:rPr>`.
+    Break(RunRef),
+}
 
-/// Rewrites the named runs of a slide part, leaving every other byte in place.
-///
-/// Fails when an edit names a run the part does not contain, so a projection
-/// can never be silently dropped, and when the replacement text holds a
-/// character XML cannot represent.
-///
-/// # Splice bounds
-///
-/// Every splice is derived from [`Reader::buffer_position`] read immediately
-/// before an event (`opens_at`, the first byte of that event) and immediately
-/// after it (`ends_at`, one past its last byte). A `<a:t>` run's character data
-/// therefore spans the `ends_at` of its `Start` to the `opens_at` of its `End`,
-/// while an `<a:t/>` run spans its own `opens_at..ends_at`. quick-xml documents
-/// that position as consumed input rather than as element bounds, so both
-/// spans are checked against the source bytes before use — see
-/// [`check_element_span`] and [`check_character_data_span`].
-pub fn rewrite_slide_run_text(
-    part: &str,
-    bytes: &[u8],
-    edits: &[RunTextEdit],
-) -> Result<Vec<u8>, PptxError> {
-    if edits.is_empty() {
-        return Ok(bytes.to_vec());
-    }
-    let mut pending = BTreeMap::new();
-    for edit in edits {
-        let key = (
-            edit.shape_path.clone(),
-            edit.location.clone(),
-            edit.paragraph_index,
-            edit.run_index,
-        );
-        if pending.insert(key, edit.text.as_str()).is_some() {
-            return Err(PptxError::MissingTextTarget {
-                part: part.to_owned(),
-                target: format!("duplicate edit for {}", describe(edit)),
-            });
+impl RunPiece {
+    fn target(&self) -> RunRef {
+        match self {
+            Self::Keep(target) | Self::Text(target, _) | Self::Break(target) => *target,
         }
     }
 
+    fn holds_text(&self) -> bool {
+        matches!(self, Self::Keep(_) | Self::Text(_, _))
+    }
+}
+
+/// What one contiguous group of source paragraphs becomes.
+///
+/// `shape_path` indexes the shape tree the way the parser walks it: each entry
+/// is the position of a `<p:sp>`/`<p:pic>`/`<p:graphicFrame>`/`<p:grpSp>` among
+/// its container's shape children, descending through groups.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParagraphRewrite {
+    pub shape_path: Vec<usize>,
+    pub location: TextBodyLocation,
+    /// Index of the first source `<a:p>` the rewrite covers.
+    pub first_paragraph: usize,
+    /// How many source paragraphs it covers; more than one is a merge.
+    pub source_paragraphs: usize,
+    /// The paragraphs written in their place, each naming the source runs it
+    /// keeps in source order.
+    pub paragraphs: Vec<Vec<RunPiece>>,
+}
+
+impl ParagraphRewrite {
+    /// A rewrite that only replaces the character data of one run.
+    pub fn run_text(
+        shape_path: Vec<usize>,
+        location: TextBodyLocation,
+        paragraph: usize,
+        runs: usize,
+        run: usize,
+        text: impl Into<String>,
+    ) -> Self {
+        let text = text.into();
+        let pieces = (0..runs)
+            .map(|index| {
+                let target = RunRef {
+                    paragraph,
+                    run: index,
+                };
+                if index == run {
+                    RunPiece::Text(target, text.clone())
+                } else {
+                    RunPiece::Keep(target)
+                }
+            })
+            .collect();
+        Self {
+            shape_path,
+            location,
+            first_paragraph: paragraph,
+            source_paragraphs: 1,
+            paragraphs: vec![pieces],
+        }
+    }
+
+    fn body(&self) -> BodyKey {
+        (self.shape_path.clone(), self.location.clone())
+    }
+
+    fn last_paragraph(&self) -> usize {
+        self.first_paragraph + self.source_paragraphs - 1
+    }
+}
+
+type BodyKey = (Vec<usize>, TextBodyLocation);
+
+/// Rewrites the named paragraphs of a slide part, leaving every other byte in
+/// place.
+///
+/// Fails when a rewrite names a paragraph or run the part does not contain, so
+/// a projection can never be silently dropped; when a piece asks an `<a:br>` or
+/// an `<a:fld>` to hold run text; and when replacement text holds a character
+/// XML cannot represent.
+///
+/// # Splice bounds
+///
+/// Every span is derived from [`Reader::buffer_position`] read immediately
+/// before an event (the first byte of that event) and immediately after it (one
+/// past its last byte). An element's bytes therefore span its `Start`'s
+/// `opens_at` to its `End`'s `ends_at`, and a `<a:t>` run's character data spans
+/// the `ends_at` of its `Start` to the `opens_at` of its `End`. quick-xml
+/// documents that position as consumed input rather than as element bounds, so
+/// every span is checked against the source bytes before use — see
+/// [`check_element_span`], [`check_element_bounds`] and
+/// [`check_character_data_span`].
+pub fn rewrite_slide_text(
+    part: &str,
+    bytes: &[u8],
+    rewrites: &[ParagraphRewrite],
+) -> Result<Vec<u8>, PptxError> {
+    if rewrites.is_empty() {
+        return Ok(bytes.to_vec());
+    }
+    let wanted = coverage(part, rewrites)?;
+    let collected = collect_spans(part, bytes, &wanted)?;
+
+    let mut splices: Vec<(usize, usize, Vec<u8>)> = Vec::new();
+    for rewrite in rewrites {
+        let mut spans = BTreeMap::new();
+        for index in rewrite.first_paragraph..=rewrite.last_paragraph() {
+            let key = (rewrite.body(), index);
+            let paragraph = collected
+                .get(&key)
+                .ok_or_else(|| missing(part, &key.0, index, None))?;
+            spans.insert(index, paragraph);
+        }
+        splices.extend(plan_splices(part, bytes, rewrite, &spans)?);
+    }
+
+    splices.sort_by_key(|(start, _, _)| *start);
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut cursor = 0;
+    for (start, end, replacement) in splices {
+        if start < cursor || end < start || end > bytes.len() {
+            return Err(malformed(part, start, "two rewrites overlap in the part"));
+        }
+        output.extend_from_slice(&bytes[cursor..start]);
+        output.extend_from_slice(&replacement);
+        cursor = end;
+    }
+    output.extend_from_slice(&bytes[cursor..]);
+    Ok(output)
+}
+
+/// The paragraphs each rewrite covers, refusing overlapping rewrites so no
+/// paragraph is written twice.
+fn coverage(
+    part: &str,
+    rewrites: &[ParagraphRewrite],
+) -> Result<BTreeMap<BodyKey, BTreeSet<usize>>, PptxError> {
+    let mut wanted: BTreeMap<BodyKey, BTreeSet<usize>> = BTreeMap::new();
+    for rewrite in rewrites {
+        if rewrite.source_paragraphs == 0 || rewrite.paragraphs.is_empty() {
+            return Err(missing(
+                part,
+                &rewrite.body(),
+                rewrite.first_paragraph,
+                Some("a rewrite covers no paragraph"),
+            ));
+        }
+        let covered = wanted.entry(rewrite.body()).or_default();
+        for index in rewrite.first_paragraph..=rewrite.last_paragraph() {
+            if !covered.insert(index) {
+                return Err(missing(
+                    part,
+                    &rewrite.body(),
+                    index,
+                    Some("two rewrites cover the same paragraph"),
+                ));
+            }
+        }
+    }
+    Ok(wanted)
+}
+
+#[derive(Default)]
+struct ParagraphSpans {
+    open: (usize, usize),
+    properties: Option<(usize, usize)>,
+    runs: Vec<RunSpans>,
+    end_properties: Option<(usize, usize)>,
+    /// `None` for a self-closing `<a:p/>`, which has no separate close tag.
+    close: Option<(usize, usize)>,
+}
+
+impl ParagraphSpans {
+    fn content_start(&self) -> usize {
+        self.properties.map_or(self.open.1, |(_, end)| end)
+    }
+
+    fn content_end(&self) -> usize {
+        self.end_properties
+            .map(|(start, _)| start)
+            .or_else(|| self.close.map(|(start, _)| start))
+            .unwrap_or(self.open.1)
+    }
+}
+
+struct RunSpans {
+    regular: bool,
+    span: (usize, usize),
+    properties: Option<(usize, usize)>,
+    text: Option<TextSpans>,
+}
+
+/// Where a run's `<a:t>` keeps its character data.
+///
+/// `data` is the character data of a `<a:t>text</a:t>`, or the whole element of
+/// a self-closing `<a:t/>`, in which case `empty_tag` holds the source tag's own
+/// bytes so a rewrite can rebuild the element around them.
+struct TextSpans {
+    data: (usize, usize),
+    empty_tag: Option<Vec<u8>>,
+}
+
+fn collect_spans(
+    part: &str,
+    bytes: &[u8],
+    wanted: &BTreeMap<BodyKey, BTreeSet<usize>>,
+) -> Result<BTreeMap<(BodyKey, usize), ParagraphSpans>, PptxError> {
     let mut reader = Reader::from_reader(bytes);
     reader.config_mut().trim_text(false);
     reader.config_mut().check_end_names = true;
     let mut frames: Vec<Frame> = Vec::new();
     let mut shape_path: Vec<usize> = Vec::new();
-    let mut splices: Vec<(usize, usize, Vec<u8>)> = Vec::new();
-    let mut open_text: Option<(usize, RunKey, usize)> = None;
+    let mut collected: BTreeMap<(BodyKey, usize), ParagraphSpans> = BTreeMap::new();
+    let mut current: Option<(BodyKey, usize, ParagraphSpans)> = None;
 
     loop {
         let opens_at = reader.buffer_position() as usize;
@@ -97,24 +288,74 @@ pub fn rewrite_slide_run_text(
         match event {
             Event::Start(start) => {
                 let name = local_name(start.name().into_inner()).to_vec();
-                let frame = open_frame(&name, &mut frames, &mut shape_path);
-                if name == b"t"
-                    && let Some(key) = run_text_key(&frames, &shape_path)
-                    && pending.contains_key(&key)
+                let mut frame = open_frame(&name, &mut frames, &mut shape_path);
+                frame.start = opens_at;
+                frame.role = span_role(&name, &frame, &frames, current.is_some());
+                if let SpanRole::Paragraph = frame.role
+                    && let Some((key, index)) = paragraph_key(&frames, &shape_path)
+                    && wanted
+                        .get(&key)
+                        .is_some_and(|indexes| indexes.contains(&index))
                 {
-                    open_text = Some((ends_at, key, frames.len()));
+                    let mut spans = ParagraphSpans::default();
+                    check_element_bounds(part, bytes, opens_at, ends_at)?;
+                    spans.open = (opens_at, ends_at);
+                    current = Some((key, index, spans));
+                } else if let SpanRole::Paragraph = frame.role {
+                    frame.role = SpanRole::None;
+                }
+                if let Some((_, _, spans)) = current.as_mut() {
+                    match frame.role {
+                        SpanRole::Run => spans.runs.push(RunSpans {
+                            regular: name == b"r",
+                            span: (opens_at, opens_at),
+                            properties: None,
+                            text: None,
+                        }),
+                        SpanRole::RunText => frame.text_start = ends_at,
+                        _ => {}
+                    }
                 }
                 frames.push(frame);
             }
             Event::Empty(tag) => {
                 let name = local_name(tag.name().into_inner()).to_vec();
-                let frame = open_frame(&name, &mut frames, &mut shape_path);
-                if name == b"t"
-                    && let Some(key) = run_text_key(&frames, &shape_path)
-                    && let Some(text) = pending.remove(&key)
+                let mut frame = open_frame(&name, &mut frames, &mut shape_path);
+                frame.start = opens_at;
+                frame.role = span_role(&name, &frame, &frames, current.is_some());
+                if let SpanRole::Paragraph = frame.role
+                    && let Some((key, index)) = paragraph_key(&frames, &shape_path)
+                    && wanted
+                        .get(&key)
+                        .is_some_and(|indexes| indexes.contains(&index))
                 {
                     check_element_span(part, bytes, opens_at, ends_at)?;
-                    splices.push((opens_at, ends_at, empty_run_text(part, &key, &tag, text)?));
+                    collected.insert(
+                        (key, index),
+                        ParagraphSpans {
+                            open: (opens_at, ends_at),
+                            ..ParagraphSpans::default()
+                        },
+                    );
+                } else if let Some((_, _, spans)) = current.as_mut() {
+                    check_element_span(part, bytes, opens_at, ends_at)?;
+                    match frame.role {
+                        SpanRole::Run => spans.runs.push(RunSpans {
+                            regular: name == b"r",
+                            span: (opens_at, ends_at),
+                            properties: None,
+                            text: None,
+                        }),
+                        SpanRole::RunText => {
+                            if let Some(run) = spans.runs.last_mut() {
+                                run.text = Some(TextSpans {
+                                    data: (opens_at, ends_at),
+                                    empty_tag: Some(tag.to_vec()),
+                                });
+                            }
+                        }
+                        role => record_span(spans, role, (opens_at, ends_at)),
+                    }
                 }
                 close_frame(frame, &mut shape_path);
             }
@@ -122,14 +363,30 @@ pub fn rewrite_slide_run_text(
                 let Some(frame) = frames.pop() else {
                     return Err(malformed(part, opens_at, "unexpected closing element"));
                 };
-                if let Some((start, key, depth)) = open_text.take() {
-                    if depth == frames.len() {
-                        if let Some(text) = pending.remove(&key) {
-                            check_character_data_span(part, bytes, start, opens_at)?;
-                            splices.push((start, opens_at, escape_text(part, &key, text)?));
+                match frame.role {
+                    SpanRole::Paragraph => {
+                        if let Some((key, index, mut spans)) = current.take() {
+                            check_element_bounds(part, bytes, opens_at, ends_at)?;
+                            spans.close = Some((opens_at, ends_at));
+                            collected.insert((key, index), spans);
                         }
-                    } else {
-                        open_text = Some((start, key, depth));
+                    }
+                    SpanRole::RunText => {
+                        if let Some((_, _, spans)) = current.as_mut()
+                            && let Some(run) = spans.runs.last_mut()
+                        {
+                            check_character_data_span(part, bytes, frame.text_start, opens_at)?;
+                            run.text = Some(TextSpans {
+                                data: (frame.text_start, opens_at),
+                                empty_tag: None,
+                            });
+                        }
+                    }
+                    role => {
+                        if let Some((_, _, spans)) = current.as_mut() {
+                            check_element_bounds(part, bytes, frame.start, ends_at)?;
+                            record_span(spans, role, (frame.start, ends_at));
+                        }
                     }
                 }
                 close_frame(frame, &mut shape_path);
@@ -138,28 +395,63 @@ pub fn rewrite_slide_run_text(
             _ => {}
         }
     }
+    Ok(collected)
+}
 
-    if let Some((key, _)) = pending.into_iter().next() {
-        return Err(PptxError::MissingTextTarget {
-            part: part.to_owned(),
-            target: describe_key(&key),
-        });
+fn record_span(spans: &mut ParagraphSpans, role: SpanRole, span: (usize, usize)) {
+    match role {
+        SpanRole::ParagraphProperties => spans.properties = Some(span),
+        SpanRole::EndProperties => spans.end_properties = Some(span),
+        SpanRole::Run => {
+            if let Some(run) = spans.runs.last_mut() {
+                run.span = span;
+            }
+        }
+        SpanRole::RunProperties => {
+            if let Some(run) = spans.runs.last_mut() {
+                run.properties = Some(span);
+            }
+        }
+        _ => {}
     }
+}
 
-    let mut output = Vec::with_capacity(bytes.len());
-    let mut cursor = 0;
-    for (start, end, replacement) in splices {
-        output.extend_from_slice(&bytes[cursor..start]);
-        output.extend_from_slice(&replacement);
-        cursor = end;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpanRole {
+    None,
+    Paragraph,
+    ParagraphProperties,
+    Run,
+    RunProperties,
+    RunText,
+    EndProperties,
+}
+
+fn span_role(name: &[u8], frame: &Frame, frames: &[Frame], collecting: bool) -> SpanRole {
+    if let FrameKind::Paragraph { .. } = frame.kind {
+        return SpanRole::Paragraph;
     }
-    output.extend_from_slice(&bytes[cursor..]);
-    Ok(output)
+    if !collecting {
+        return SpanRole::None;
+    }
+    if let FrameKind::Run { .. } = frame.kind {
+        return SpanRole::Run;
+    }
+    match (name, frames.last().map(|frame| &frame.kind)) {
+        (b"pPr", Some(FrameKind::Paragraph { .. })) => SpanRole::ParagraphProperties,
+        (b"endParaRPr", Some(FrameKind::Paragraph { .. })) => SpanRole::EndProperties,
+        (b"rPr", Some(FrameKind::Run { .. })) => SpanRole::RunProperties,
+        (b"t", Some(FrameKind::Run { regular: true, .. })) => SpanRole::RunText,
+        _ => SpanRole::None,
+    }
 }
 
 struct Frame {
     kind: FrameKind,
     pushed_shape: bool,
+    role: SpanRole,
+    start: usize,
+    text_start: usize,
 }
 
 enum FrameKind {
@@ -187,12 +479,10 @@ enum FrameKind {
         next_paragraph: usize,
     },
     Paragraph {
-        index: usize,
         next_run: usize,
     },
     Run {
         regular: bool,
-        index: usize,
     },
 }
 
@@ -214,6 +504,9 @@ fn open_frame(name: &[u8], frames: &mut [Frame], shape_path: &mut Vec<usize>) ->
                     _ => FrameKind::Plain,
                 },
                 pushed_shape: true,
+                role: SpanRole::None,
+                start: 0,
+                text_start: 0,
             }
         }
         (b"graphic", Some(FrameKind::GraphicFrame)) => plain(FrameKind::Graphic),
@@ -247,16 +540,13 @@ fn open_frame(name: &[u8], frames: &mut [Frame], shape_path: &mut Vec<usize>) ->
                 next_paragraph,
             }),
         ) => {
-            let index = *next_paragraph;
             *next_paragraph += 1;
-            plain(FrameKind::Paragraph { index, next_run: 0 })
+            plain(FrameKind::Paragraph { next_run: 0 })
         }
-        (b"r" | b"fld" | b"br", Some(FrameKind::Paragraph { next_run, .. })) => {
-            let index = *next_run;
+        (b"r" | b"fld" | b"br", Some(FrameKind::Paragraph { next_run })) => {
             *next_run += 1;
             plain(FrameKind::Run {
                 regular: name == b"r",
-                index,
             })
         }
         _ => plain(FrameKind::Plain),
@@ -267,6 +557,9 @@ fn plain(kind: FrameKind) -> Frame {
     Frame {
         kind,
         pushed_shape: false,
+        role: SpanRole::None,
+        start: 0,
+        text_start: 0,
     }
 }
 
@@ -276,29 +569,20 @@ fn close_frame(frame: Frame, shape_path: &mut Vec<usize>) {
     }
 }
 
-fn run_text_key(frames: &[Frame], shape_path: &[usize]) -> Option<RunKey> {
-    let mut tail = frames.iter().rev();
-    let &FrameKind::Run {
-        regular: true,
-        index: run,
-    } = &tail.next()?.kind
-    else {
-        return None;
-    };
-    let &FrameKind::Paragraph {
-        index: paragraph, ..
-    } = &tail.next()?.kind
-    else {
-        return None;
-    };
+/// The body and paragraph index of the paragraph frame just opened, whose own
+/// frame is not on the stack yet.
+fn paragraph_key(frames: &[Frame], shape_path: &[usize]) -> Option<(BodyKey, usize)> {
     let FrameKind::TextBody {
         location: Some(location),
-        ..
-    } = &tail.next()?.kind
+        next_paragraph,
+    } = &frames.last()?.kind
     else {
         return None;
     };
-    Some((shape_path.to_vec(), location.clone(), paragraph, run))
+    Some((
+        (shape_path.to_vec(), location.clone()),
+        next_paragraph.checked_sub(1)?,
+    ))
 }
 
 fn local_name(name: &[u8]) -> &[u8] {
@@ -308,13 +592,375 @@ fn local_name(name: &[u8]) -> &[u8] {
     }
 }
 
+/// Turns one rewrite into the splices that write it.
+///
+/// The walk carries a cursor through the source bytes: content that stays is
+/// stepped over rather than re-emitted, so every byte between two pieces —
+/// whitespace, comments, elements this crate does not model — survives.
+fn plan_splices(
+    part: &str,
+    bytes: &[u8],
+    rewrite: &ParagraphRewrite,
+    spans: &BTreeMap<usize, &ParagraphSpans>,
+) -> Result<Vec<(usize, usize, Vec<u8>)>, PptxError> {
+    let first = rewrite.first_paragraph;
+    let last = rewrite.last_paragraph();
+    let stream = flatten(part, rewrite, spans)?;
+    let mut splices = Splices::new();
+    let mut cursor = spans[&first].content_start();
+    let mut source = first;
+    let mut boundaries = 0;
+    let mut index = 0;
+
+    while index < stream.len() {
+        let Item::Piece(piece) = &stream[index] else {
+            boundaries += 1;
+            index += 1;
+            continue;
+        };
+        let target = piece.target();
+        if target.paragraph != source {
+            cross(
+                part,
+                bytes,
+                spans,
+                &mut splices,
+                cursor,
+                source,
+                target.paragraph,
+                &mut boundaries,
+            )?;
+            source = target.paragraph;
+        }
+        let mut pending = boundary_bytes(bytes, spans[&source], std::mem::take(&mut boundaries));
+        let group_end = group_end(&stream, index, target);
+        let run = &spans[&source].runs[target.run];
+        let group = &stream[index..group_end];
+        if let [Item::Piece(single @ (RunPiece::Keep(_) | RunPiece::Text(_, _)))] = group {
+            if !pending.is_empty() {
+                splices.push(part, run.span.0, run.span.0, std::mem::take(&mut pending))?;
+            }
+            if let RunPiece::Text(_, text) = single {
+                let target_text = run
+                    .text
+                    .as_ref()
+                    .ok_or_else(|| missing_run(part, rewrite, target, "has no <a:t> to write"))?;
+                splices.push(
+                    part,
+                    target_text.data.0,
+                    target_text.data.1,
+                    render_text(part, rewrite, target, target_text, text)?,
+                )?;
+            }
+        } else {
+            let mut rebuilt = std::mem::take(&mut pending);
+            for item in group {
+                match item {
+                    Item::Boundary => rebuilt.extend(boundary_bytes(bytes, spans[&source], 1)),
+                    Item::Piece(RunPiece::Keep(_)) => {
+                        rebuilt.extend_from_slice(&bytes[run.span.0..run.span.1]);
+                    }
+                    Item::Piece(RunPiece::Text(_, text)) => {
+                        let target_text = run.text.as_ref().ok_or_else(|| {
+                            missing_run(part, rewrite, target, "has no <a:t> to write")
+                        })?;
+                        rebuilt.extend_from_slice(&bytes[run.span.0..target_text.data.0]);
+                        rebuilt.extend(render_text(part, rewrite, target, target_text, text)?);
+                        rebuilt.extend_from_slice(&bytes[target_text.data.1..run.span.1]);
+                    }
+                    Item::Piece(RunPiece::Break(_)) => {
+                        rebuilt.extend(break_bytes(bytes, run));
+                    }
+                }
+            }
+            splices.push(part, run.span.0, run.span.1, rebuilt)?;
+        }
+        cursor = run.span.1;
+        index = group_end;
+    }
+
+    if source != last {
+        cross(
+            part,
+            bytes,
+            spans,
+            &mut splices,
+            cursor,
+            source,
+            last,
+            &mut boundaries,
+        )?;
+    }
+    if boundaries > 0 {
+        let at = spans[&last].content_end();
+        splices.push(
+            part,
+            at,
+            at,
+            boundary_bytes(bytes, spans[&last], boundaries),
+        )?;
+    }
+    Ok(splices.items)
+}
+
+/// Steps from one source paragraph to a later one.
+///
+/// A paragraph end the output still wants is stepped over rather than rewritten,
+/// so an untouched paragraph boundary keeps its own bytes; one the output has no
+/// paragraph left for is cut away, which is what merges two paragraphs into one.
+#[allow(clippy::too_many_arguments)]
+fn cross(
+    part: &str,
+    bytes: &[u8],
+    spans: &BTreeMap<usize, &ParagraphSpans>,
+    splices: &mut Splices,
+    cursor: usize,
+    source: usize,
+    target: usize,
+    boundaries: &mut usize,
+) -> Result<usize, PptxError> {
+    let start = spans[&target].content_start();
+    let crossings = target - source;
+    if *boundaries >= crossings {
+        *boundaries -= crossings;
+    } else {
+        let written = boundary_bytes(bytes, spans[&source], *boundaries);
+        *boundaries = 0;
+        splices.push(part, cursor, start, written)?;
+    }
+    Ok(start)
+}
+
+enum Item<'a> {
+    Boundary,
+    Piece(&'a RunPiece),
+}
+
+/// Flattens the output paragraphs into one stream of pieces separated by
+/// paragraph boundaries, checking that the pieces name every source run of the
+/// group exactly once, in order, and that only a regular `<a:r>` is asked to
+/// hold text.
+fn flatten<'a>(
+    part: &str,
+    rewrite: &'a ParagraphRewrite,
+    spans: &BTreeMap<usize, &ParagraphSpans>,
+) -> Result<Vec<Item<'a>>, PptxError> {
+    let mut stream = Vec::new();
+    let mut expected = Vec::new();
+    for paragraph in rewrite.first_paragraph..=rewrite.last_paragraph() {
+        for run in 0..spans[&paragraph].runs.len() {
+            expected.push(RunRef { paragraph, run });
+        }
+    }
+    let pieces: Vec<&RunPiece> = rewrite.paragraphs.iter().flatten().collect();
+    let mut seen: Vec<RunRef> = Vec::new();
+    for (index, piece) in pieces.iter().enumerate() {
+        let target = piece.target();
+        let run = spans
+            .get(&target.paragraph)
+            .and_then(|spans| spans.runs.get(target.run))
+            .ok_or_else(|| missing_run(part, rewrite, target, "is not in the paragraph"))?;
+        if !run.regular && !matches!(piece, RunPiece::Keep(_)) {
+            return Err(missing_run(
+                part,
+                rewrite,
+                target,
+                "is a line break or a field, which cannot hold run text",
+            ));
+        }
+        if let Some(previous) = seen.last()
+            && *previous > target
+        {
+            return Err(missing_run(
+                part,
+                rewrite,
+                target,
+                "is written out of source order",
+            ));
+        }
+        if piece.holds_text() {
+            if seen.last() != Some(&target) {
+                seen.push(target);
+            }
+        } else {
+            let neighbours = [index.checked_sub(1), Some(index + 1)];
+            if !neighbours.iter().flatten().any(|neighbour| {
+                pieces
+                    .get(*neighbour)
+                    .is_some_and(|piece| piece.holds_text() && piece.target() == target)
+            }) {
+                return Err(missing_run(
+                    part,
+                    rewrite,
+                    target,
+                    "would take its line break properties from a run it does not touch",
+                ));
+            }
+        }
+    }
+    if seen != expected {
+        return Err(missing(
+            part,
+            &rewrite.body(),
+            rewrite.first_paragraph,
+            Some("the rewrite does not keep every source run exactly once"),
+        ));
+    }
+
+    for (index, paragraph) in rewrite.paragraphs.iter().enumerate() {
+        if index > 0 {
+            stream.push(Item::Boundary);
+        }
+        stream.extend(paragraph.iter().map(Item::Piece));
+    }
+    Ok(stream)
+}
+
+/// The end of the run of consecutive items writing one source run, taking in
+/// the paragraph boundaries between them but not those that follow it.
+fn group_end(stream: &[Item<'_>], start: usize, target: RunRef) -> usize {
+    let mut end = start;
+    let mut index = start;
+    while index < stream.len() {
+        match &stream[index] {
+            Item::Boundary => index += 1,
+            Item::Piece(piece) if piece.target() == target => {
+                index += 1;
+                end = index;
+            }
+            Item::Piece(_) => break,
+        }
+    }
+    end
+}
+
+/// `count` copies of `</a:p>` followed by the source paragraph's own open tag
+/// and a copy of its `<a:pPr>`, which is what starts the next paragraph of a
+/// split.
+fn boundary_bytes(bytes: &[u8], spans: &ParagraphSpans, count: usize) -> Vec<u8> {
+    let mut output = Vec::new();
+    for _ in 0..count {
+        let Some(close) = spans.close else {
+            output.extend_from_slice(&bytes[spans.open.0..spans.open.1]);
+            continue;
+        };
+        output.extend_from_slice(&bytes[close.0..close.1]);
+        output.extend_from_slice(&bytes[spans.open.0..spans.open.1]);
+        if let Some(properties) = spans.properties {
+            output.extend_from_slice(&bytes[properties.0..properties.1]);
+        }
+    }
+    output
+}
+
+/// A `<a:br>` carrying a copy of the source run's `<a:rPr>`, spelt with the
+/// run's own namespace prefix.
+fn break_bytes(bytes: &[u8], run: &RunSpans) -> Vec<u8> {
+    let name = element_name(&bytes[run.span.0..run.span.1]);
+    let prefix = match name.iter().position(|byte| *byte == b':') {
+        Some(index) => &name[..=index],
+        None => b"".as_slice(),
+    };
+    let Some(properties) = run.properties else {
+        let mut output = b"<".to_vec();
+        output.extend_from_slice(prefix);
+        output.extend_from_slice(b"br/>");
+        return output;
+    };
+    let mut output = b"<".to_vec();
+    output.extend_from_slice(prefix);
+    output.extend_from_slice(b"br>");
+    output.extend_from_slice(&bytes[properties.0..properties.1]);
+    output.extend_from_slice(b"</");
+    output.extend_from_slice(prefix);
+    output.extend_from_slice(b"br>");
+    output
+}
+
+fn element_name(tag: &[u8]) -> &[u8] {
+    let rest = tag.strip_prefix(b"<").unwrap_or(tag);
+    let end = rest
+        .iter()
+        .position(|byte| byte.is_ascii_whitespace() || *byte == b'>' || *byte == b'/')
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
+fn render_text(
+    part: &str,
+    rewrite: &ParagraphRewrite,
+    target: RunRef,
+    spans: &TextSpans,
+    text: &str,
+) -> Result<Vec<u8>, PptxError> {
+    let escaped = escape_text(part, rewrite, target, text)?;
+    let Some(tag) = &spans.empty_tag else {
+        return Ok(escaped);
+    };
+    let mut output = b"<".to_vec();
+    output.extend_from_slice(tag);
+    output.push(b'>');
+    output.extend_from_slice(&escaped);
+    output.extend_from_slice(b"</");
+    output.extend_from_slice(element_name(tag));
+    output.push(b'>');
+    Ok(output)
+}
+
+struct Splices {
+    items: Vec<(usize, usize, Vec<u8>)>,
+    cursor: usize,
+}
+
+impl Splices {
+    fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            cursor: 0,
+        }
+    }
+
+    fn push(
+        &mut self,
+        part: &str,
+        start: usize,
+        end: usize,
+        bytes: Vec<u8>,
+    ) -> Result<(), PptxError> {
+        if end < start || start < self.cursor {
+            return Err(malformed(
+                part,
+                start,
+                "a rewrite planned splices that run backwards",
+            ));
+        }
+        if start == end && bytes.is_empty() {
+            return Ok(());
+        }
+        match self.items.last_mut() {
+            Some(last) if last.1 == start => {
+                last.1 = end;
+                last.2.extend(bytes);
+            }
+            _ => self.items.push((start, end, bytes)),
+        }
+        self.cursor = end;
+        Ok(())
+    }
+}
+
 /// Encodes replacement text as `<a:t>` character data, refusing anything XML
 /// cannot represent.
 ///
 /// A carriage return is written as a character reference because an XML parser
 /// normalises a literal one to a line feed, which would silently change the
 /// text the next time the deck is opened.
-fn escape_text(part: &str, key: &RunKey, text: &str) -> Result<Vec<u8>, PptxError> {
+fn escape_text(
+    part: &str,
+    rewrite: &ParagraphRewrite,
+    target: RunRef,
+    text: &str,
+) -> Result<Vec<u8>, PptxError> {
     if let Some((index, character)) = text
         .chars()
         .enumerate()
@@ -322,7 +968,7 @@ fn escape_text(part: &str, key: &RunKey, text: &str) -> Result<Vec<u8>, PptxErro
     {
         return Err(PptxError::UnwritableText {
             part: part.to_owned(),
-            target: describe_key(key),
+            target: describe(&rewrite.body(), target),
             reason: format!(
                 "character {} of the run is U+{:04X}, which XML cannot store; delete that \
                  character — retyping the run's text replaces it — and save again",
@@ -336,28 +982,6 @@ fn escape_text(part: &str, key: &RunKey, text: &str) -> Result<Vec<u8>, PptxErro
         return Ok(escaped.replace('\r', "&#13;").into_bytes());
     }
     Ok(escaped.into_owned().into_bytes())
-}
-
-/// Rebuilds an empty `<a:t/>` around its replacement text.
-///
-/// The source tag's own bytes are re-emitted verbatim, so a part using a
-/// different namespace prefix or carrying attributes such as
-/// `xml:space="preserve"` keeps both.
-fn empty_run_text(
-    part: &str,
-    key: &RunKey,
-    tag: &BytesStart<'_>,
-    text: &str,
-) -> Result<Vec<u8>, PptxError> {
-    let escaped = escape_text(part, key, text)?;
-    let mut output = b"<".to_vec();
-    output.extend_from_slice(tag);
-    output.push(b'>');
-    output.extend_from_slice(&escaped);
-    output.extend_from_slice(b"</");
-    output.extend_from_slice(tag.name().into_inner());
-    output.push(b'>');
-    Ok(output)
 }
 
 /// Asserts that `start..end` covers exactly one self-closing element.
@@ -376,6 +1000,24 @@ fn check_element_span(part: &str, bytes: &[u8], start: usize, end: usize) -> Res
             start,
             "element bounds did not cover a self-closing tag",
         ));
+    }
+    Ok(())
+}
+
+/// Asserts that `start..end` covers a whole tag or element.
+///
+/// See [`check_element_span`] for why the bounds are checked at all.
+fn check_element_bounds(
+    part: &str,
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+) -> Result<(), PptxError> {
+    let span = bytes
+        .get(start..end)
+        .ok_or_else(|| malformed(part, start, "element bounds ran past the part"))?;
+    if !span.starts_with(b"<") || !span.ends_with(b">") {
+        return Err(malformed(part, start, "element bounds did not cover a tag"));
     }
     Ok(())
 }
@@ -402,27 +1044,44 @@ fn check_character_data_span(
     Ok(())
 }
 
-fn describe(edit: &RunTextEdit) -> String {
-    describe_key(&(
-        edit.shape_path.clone(),
-        edit.location.clone(),
-        edit.paragraph_index,
-        edit.run_index,
-    ))
+fn missing(part: &str, body: &BodyKey, paragraph: usize, reason: Option<&str>) -> PptxError {
+    let target = describe_body(body, paragraph);
+    PptxError::MissingTextTarget {
+        part: part.to_owned(),
+        target: match reason {
+            Some(reason) => format!("{target}: {reason}"),
+            None => target,
+        },
+    }
 }
 
-fn describe_key(key: &RunKey) -> String {
-    let path = key
+fn missing_run(part: &str, rewrite: &ParagraphRewrite, target: RunRef, reason: &str) -> PptxError {
+    PptxError::MissingTextTarget {
+        part: part.to_owned(),
+        target: format!("{} {reason}", describe(&rewrite.body(), target)),
+    }
+}
+
+fn describe(body: &BodyKey, target: RunRef) -> String {
+    format!(
+        "{} run {}",
+        describe_body(body, target.paragraph),
+        target.run
+    )
+}
+
+fn describe_body(body: &BodyKey, paragraph: usize) -> String {
+    let path = body
         .0
         .iter()
         .map(usize::to_string)
         .collect::<Vec<_>>()
         .join(".");
-    let body = match &key.1 {
+    let location = match &body.1 {
         TextBodyLocation::Shape => "text body".to_owned(),
         TextBodyLocation::TableCell { row, cell } => format!("table cell {row}/{cell}"),
     };
-    format!("shape {path} {body} paragraph {} run {}", key.2, key.3)
+    format!("shape {path} {location} paragraph {paragraph}")
 }
 
 fn malformed(part: &str, offset: usize, message: impl Into<String>) -> PptxError {
@@ -450,27 +1109,48 @@ mod tests {
         r#"</p:spTree></p:cSld></p:sld>"#,
     );
 
-    fn edit(
+    /// Two paragraphs of their own, so a split and a merge can be spelt out
+    /// against source bytes a test can quote in full.
+    const PARAGRAPHS: &str = concat!(
+        r#"<p:sld xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:txBody>"#,
+        r#"<a:p><a:pPr lvl="1"><a:buChar char="•"/></a:pPr>"#,
+        r#"<a:r><a:rPr b="1"/><a:t>alpha</a:t></a:r>"#,
+        r#"<a:r><a:rPr i="1"/><a:t>beta</a:t></a:r>"#,
+        r#"<a:endParaRPr sz="1800"/></a:p>"#,
+        r#"<a:p><a:pPr algn="r"/><a:r><a:t>gamma</a:t></a:r></a:p>"#,
+        r#"</p:txBody></p:sp></p:spTree></p:cSld></p:sld>"#,
+    );
+
+    fn shape_body(paragraph: usize, runs: usize, run: usize, text: &str) -> ParagraphRewrite {
+        ParagraphRewrite::run_text(vec![0], TextBodyLocation::Shape, paragraph, runs, run, text)
+    }
+
+    fn reference(paragraph: usize, run: usize) -> RunRef {
+        RunRef { paragraph, run }
+    }
+
+    fn rewrite(
         shape_path: &[usize],
         location: TextBodyLocation,
-        run_index: usize,
-        text: &str,
-    ) -> RunTextEdit {
-        RunTextEdit {
+        first_paragraph: usize,
+        source_paragraphs: usize,
+        paragraphs: Vec<Vec<RunPiece>>,
+    ) -> ParagraphRewrite {
+        ParagraphRewrite {
             shape_path: shape_path.to_vec(),
             location,
-            paragraph_index: 0,
-            run_index,
-            text: text.to_owned(),
+            first_paragraph,
+            source_paragraphs,
+            paragraphs,
         }
     }
 
     #[test]
     fn rewrites_only_the_named_run_text() {
-        let output = rewrite_slide_run_text(
+        let output = rewrite_slide_text(
             "slide1.xml",
             SLIDE.as_bytes(),
-            &[edit(&[0], TextBodyLocation::Shape, 3, "TWO & <more>")],
+            &[shape_body(0, 4, 3, "TWO & <more>")],
         )
         .unwrap();
         let output = String::from_utf8(output).unwrap();
@@ -484,14 +1164,16 @@ mod tests {
 
     #[test]
     fn addresses_group_children_table_cells_and_empty_runs() {
-        let output = rewrite_slide_run_text(
+        let output = rewrite_slide_text(
             "slide1.xml",
             SLIDE.as_bytes(),
             &[
-                edit(&[1, 1], TextBodyLocation::Shape, 0, "grouped"),
-                edit(
-                    &[2],
+                ParagraphRewrite::run_text(vec![1, 1], TextBodyLocation::Shape, 0, 1, 0, "grouped"),
+                ParagraphRewrite::run_text(
+                    vec![2],
                     TextBodyLocation::TableCell { row: 0, cell: 0 },
+                    0,
+                    1,
                     0,
                     "filled",
                 ),
@@ -507,52 +1189,321 @@ mod tests {
     #[test]
     fn refuses_edits_the_part_cannot_hold() {
         for target in [
-            edit(&[0], TextBodyLocation::Shape, 1, "into a break"),
-            edit(&[0], TextBodyLocation::Shape, 2, "into a field"),
-            edit(&[0], TextBodyLocation::Shape, 9, "past the end"),
-            edit(&[7], TextBodyLocation::Shape, 0, "missing shape"),
-            edit(
-                &[2],
+            shape_body(0, 4, 1, "into a break"),
+            shape_body(0, 4, 2, "into a field"),
+            shape_body(0, 10, 9, "past the end"),
+            ParagraphRewrite::run_text(vec![7], TextBodyLocation::Shape, 0, 1, 0, "missing shape"),
+            ParagraphRewrite::run_text(
+                vec![2],
                 TextBodyLocation::TableCell { row: 4, cell: 0 },
+                0,
+                1,
                 0,
                 "missing row",
             ),
         ] {
             assert!(matches!(
-                rewrite_slide_run_text("slide1.xml", SLIDE.as_bytes(), &[target]),
+                rewrite_slide_text("slide1.xml", SLIDE.as_bytes(), &[target]),
                 Err(PptxError::MissingTextTarget { .. })
             ));
         }
     }
 
     #[test]
-    fn two_edits_naming_the_same_run_are_refused() {
-        for (label, second) in [("different text", "second"), ("the same text", "first")] {
-            let result = rewrite_slide_run_text(
-                "slide1.xml",
-                SLIDE.as_bytes(),
-                &[
-                    edit(&[0], TextBodyLocation::Shape, 0, "first"),
-                    edit(&[0], TextBodyLocation::Shape, 0, second),
-                ],
-            );
-            let Err(error @ PptxError::MissingTextTarget { .. }) = result else {
-                panic!("{label} was accepted: {result:?}");
-            };
-            let message = error.to_string();
-            assert!(message.contains("duplicate edit for"), "{message}");
-            assert!(
-                message.contains("shape 0 text body paragraph 0 run 0"),
-                "{message}"
-            );
-        }
+    fn two_rewrites_of_the_same_paragraph_are_refused() {
+        let result = rewrite_slide_text(
+            "slide1.xml",
+            SLIDE.as_bytes(),
+            &[shape_body(0, 4, 0, "first"), shape_body(0, 4, 0, "second")],
+        );
+        let Err(error @ PptxError::MissingTextTarget { .. }) = result else {
+            panic!("two rewrites of one paragraph were accepted: {result:?}");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("two rewrites cover the same paragraph"),
+            "{message}"
+        );
+        assert!(
+            message.contains("shape 0 text body paragraph 0"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_rewrite_that_drops_a_run_is_refused() {
+        let result = rewrite_slide_text(
+            "slide1.xml",
+            SLIDE.as_bytes(),
+            &[rewrite(
+                &[0],
+                TextBodyLocation::Shape,
+                0,
+                1,
+                vec![vec![
+                    RunPiece::Keep(reference(0, 0)),
+                    RunPiece::Keep(reference(0, 1)),
+                    RunPiece::Keep(reference(0, 2)),
+                ]],
+            )],
+        );
+        let Err(error @ PptxError::MissingTextTarget { .. }) = result else {
+            panic!("a dropped run was accepted: {result:?}");
+        };
+        assert!(
+            error.to_string().contains("every source run exactly once"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_rewrite_that_reorders_runs_is_refused() {
+        let result = rewrite_slide_text(
+            "slide1.xml",
+            SLIDE.as_bytes(),
+            &[rewrite(
+                &[0],
+                TextBodyLocation::Shape,
+                0,
+                1,
+                vec![vec![
+                    RunPiece::Keep(reference(0, 1)),
+                    RunPiece::Keep(reference(0, 0)),
+                    RunPiece::Keep(reference(0, 2)),
+                    RunPiece::Keep(reference(0, 3)),
+                ]],
+            )],
+        );
+        let Err(error @ PptxError::MissingTextTarget { .. }) = result else {
+            panic!("reordered runs were accepted: {result:?}");
+        };
+        assert!(error.to_string().contains("out of source order"), "{error}");
     }
 
     #[test]
     fn an_empty_edit_list_returns_the_source_bytes() {
         assert_eq!(
-            rewrite_slide_run_text("slide1.xml", SLIDE.as_bytes(), &[]).unwrap(),
+            rewrite_slide_text("slide1.xml", SLIDE.as_bytes(), &[]).unwrap(),
             SLIDE.as_bytes()
+        );
+    }
+
+    #[test]
+    fn splitting_at_a_run_boundary_moves_no_other_byte() {
+        let output = rewrite_slide_text(
+            "slide2.xml",
+            PARAGRAPHS.as_bytes(),
+            &[rewrite(
+                &[0],
+                TextBodyLocation::Shape,
+                0,
+                1,
+                vec![
+                    vec![RunPiece::Keep(reference(0, 0))],
+                    vec![RunPiece::Keep(reference(0, 1))],
+                ],
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            PARAGRAPHS.replace(
+                r#"</a:r><a:r><a:rPr i="1"/>"#,
+                concat!(
+                    r#"</a:r></a:p><a:p><a:pPr lvl="1"><a:buChar char="•"/></a:pPr>"#,
+                    r#"<a:r><a:rPr i="1"/>"#,
+                )
+            ),
+            "the new paragraph copies the source pPr and nothing else moves"
+        );
+    }
+
+    #[test]
+    fn splitting_inside_a_run_duplicates_its_run_properties() {
+        let output = rewrite_slide_text(
+            "slide2.xml",
+            PARAGRAPHS.as_bytes(),
+            &[rewrite(
+                &[0],
+                TextBodyLocation::Shape,
+                0,
+                1,
+                vec![
+                    vec![RunPiece::Text(reference(0, 0), "al".to_owned())],
+                    vec![
+                        RunPiece::Text(reference(0, 0), "pha".to_owned()),
+                        RunPiece::Keep(reference(0, 1)),
+                    ],
+                ],
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            PARAGRAPHS.replace(
+                r#"<a:r><a:rPr b="1"/><a:t>alpha</a:t></a:r>"#,
+                concat!(
+                    r#"<a:r><a:rPr b="1"/><a:t>al</a:t></a:r>"#,
+                    r#"</a:p><a:p><a:pPr lvl="1"><a:buChar char="•"/></a:pPr>"#,
+                    r#"<a:r><a:rPr b="1"/><a:t>pha</a:t></a:r>"#,
+                )
+            ),
+            "both halves of the divided run keep its <a:rPr> byte for byte"
+        );
+    }
+
+    #[test]
+    fn splitting_at_the_end_leaves_the_end_properties_on_the_new_paragraph() {
+        let output = rewrite_slide_text(
+            "slide2.xml",
+            PARAGRAPHS.as_bytes(),
+            &[rewrite(
+                &[0],
+                TextBodyLocation::Shape,
+                0,
+                1,
+                vec![
+                    vec![
+                        RunPiece::Keep(reference(0, 0)),
+                        RunPiece::Keep(reference(0, 1)),
+                    ],
+                    vec![],
+                ],
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            PARAGRAPHS.replace(
+                r#"<a:endParaRPr sz="1800"/>"#,
+                concat!(
+                    r#"</a:p><a:p><a:pPr lvl="1"><a:buChar char="•"/></a:pPr>"#,
+                    r#"<a:endParaRPr sz="1800"/>"#,
+                )
+            ),
+            "the end paragraph mark stays at the end of the split"
+        );
+    }
+
+    #[test]
+    fn splitting_at_the_start_leaves_an_empty_paragraph_before_it() {
+        let output = rewrite_slide_text(
+            "slide2.xml",
+            PARAGRAPHS.as_bytes(),
+            &[rewrite(
+                &[0],
+                TextBodyLocation::Shape,
+                0,
+                1,
+                vec![
+                    vec![],
+                    vec![
+                        RunPiece::Keep(reference(0, 0)),
+                        RunPiece::Keep(reference(0, 1)),
+                    ],
+                ],
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            PARAGRAPHS.replace(
+                r#"<a:r><a:rPr b="1"/><a:t>alpha</a:t></a:r>"#,
+                concat!(
+                    r#"</a:p><a:p><a:pPr lvl="1"><a:buChar char="•"/></a:pPr>"#,
+                    r#"<a:r><a:rPr b="1"/><a:t>alpha</a:t></a:r>"#,
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn merging_two_paragraphs_deletes_one_span_and_keeps_the_first_ppr() {
+        let output = rewrite_slide_text(
+            "slide2.xml",
+            PARAGRAPHS.as_bytes(),
+            &[rewrite(
+                &[0],
+                TextBodyLocation::Shape,
+                0,
+                2,
+                vec![vec![
+                    RunPiece::Keep(reference(0, 0)),
+                    RunPiece::Keep(reference(0, 1)),
+                    RunPiece::Keep(reference(1, 0)),
+                ]],
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            PARAGRAPHS.replace(
+                concat!(
+                    r#"<a:endParaRPr sz="1800"/></a:p>"#,
+                    r#"<a:p><a:pPr algn="r"/><a:r><a:t>gamma</a:t></a:r>"#,
+                ),
+                r#"<a:r><a:t>gamma</a:t></a:r>"#
+            ),
+            "the merged paragraph keeps the first pPr and the last end properties"
+        );
+    }
+
+    #[test]
+    fn a_paragraph_boundary_the_output_keeps_is_stepped_over_not_rewritten() {
+        let output = rewrite_slide_text(
+            "slide2.xml",
+            PARAGRAPHS.as_bytes(),
+            &[rewrite(
+                &[0],
+                TextBodyLocation::Shape,
+                0,
+                2,
+                vec![
+                    vec![
+                        RunPiece::Keep(reference(0, 0)),
+                        RunPiece::Text(reference(0, 1), "BETA".to_owned()),
+                    ],
+                    vec![RunPiece::Keep(reference(1, 0))],
+                ],
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            PARAGRAPHS.replace("<a:t>beta</a:t>", "<a:t>BETA</a:t>"),
+            "the boundary between the two paragraphs keeps its own bytes"
+        );
+    }
+
+    #[test]
+    fn a_line_break_copies_the_run_properties_it_divides() {
+        let output = rewrite_slide_text(
+            "slide2.xml",
+            PARAGRAPHS.as_bytes(),
+            &[rewrite(
+                &[0],
+                TextBodyLocation::Shape,
+                0,
+                1,
+                vec![vec![
+                    RunPiece::Text(reference(0, 0), "al".to_owned()),
+                    RunPiece::Break(reference(0, 0)),
+                    RunPiece::Text(reference(0, 0), "pha".to_owned()),
+                    RunPiece::Keep(reference(0, 1)),
+                ]],
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            PARAGRAPHS.replace(
+                r#"<a:r><a:rPr b="1"/><a:t>alpha</a:t></a:r>"#,
+                concat!(
+                    r#"<a:r><a:rPr b="1"/><a:t>al</a:t></a:r>"#,
+                    r#"<a:br><a:rPr b="1"/></a:br>"#,
+                    r#"<a:r><a:rPr b="1"/><a:t>pha</a:t></a:r>"#,
+                )
+            )
         );
     }
 
@@ -596,16 +1547,18 @@ mod tests {
             "a\u{ffff}b",
         ] {
             for target in [
-                edit(&[0], TextBodyLocation::Shape, 0, text),
-                edit(&[1, 1], TextBodyLocation::Shape, 0, text),
-                edit(
-                    &[2],
+                shape_body(0, 4, 0, text),
+                ParagraphRewrite::run_text(vec![1, 1], TextBodyLocation::Shape, 0, 1, 0, text),
+                ParagraphRewrite::run_text(
+                    vec![2],
                     TextBodyLocation::TableCell { row: 0, cell: 0 },
+                    0,
+                    1,
                     0,
                     text,
                 ),
             ] {
-                let result = rewrite_slide_run_text("slide1.xml", SLIDE.as_bytes(), &[target]);
+                let result = rewrite_slide_text("slide1.xml", SLIDE.as_bytes(), &[target]);
                 assert!(
                     matches!(result, Err(PptxError::UnwritableText { .. })),
                     "{text:?} was accepted: {result:?}"
@@ -616,10 +1569,10 @@ mod tests {
 
     #[test]
     fn the_refusal_names_the_run_and_the_character() {
-        let error = rewrite_slide_run_text(
+        let error = rewrite_slide_text(
             "slide1.xml",
             SLIDE.as_bytes(),
-            &[edit(&[0], TextBodyLocation::Shape, 0, "ab\u{7}c")],
+            &[shape_body(0, 4, 0, "ab\u{7}c")],
         )
         .unwrap_err();
         let message = error.to_string();
@@ -631,10 +1584,10 @@ mod tests {
 
     #[test]
     fn writes_the_control_characters_xml_allows() {
-        let output = rewrite_slide_run_text(
+        let output = rewrite_slide_text(
             "slide1.xml",
             SLIDE.as_bytes(),
-            &[edit(&[0], TextBodyLocation::Shape, 0, "a\tb\nc\rd")],
+            &[shape_body(0, 4, 0, "a\tb\nc\rd")],
         )
         .unwrap();
         let output = String::from_utf8(output).unwrap();
@@ -644,13 +1597,33 @@ mod tests {
 
     #[test]
     fn an_empty_run_keeps_its_prefix_and_attributes() {
-        let output = rewrite_slide_run_text(
+        let output = rewrite_slide_text(
             "slide2.xml",
             PREFIXED.as_bytes(),
             &[
-                edit(&[0], TextBodyLocation::Shape, 1, "preserved"),
-                edit(&[0], TextBodyLocation::Shape, 2, "closed"),
+                ParagraphRewrite::run_text(vec![0], TextBodyLocation::Shape, 0, 3, 1, "preserved"),
+                ParagraphRewrite::run_text(vec![0], TextBodyLocation::Shape, 0, 3, 2, "closed"),
             ],
+        );
+        let Err(error) = output else {
+            panic!("two rewrites of one paragraph must be refused");
+        };
+        assert!(error.to_string().contains("two rewrites cover the same"));
+
+        let output = rewrite_slide_text(
+            "slide2.xml",
+            PREFIXED.as_bytes(),
+            &[rewrite(
+                &[0],
+                TextBodyLocation::Shape,
+                0,
+                1,
+                vec![vec![
+                    RunPiece::Keep(reference(0, 0)),
+                    RunPiece::Text(reference(0, 1), "preserved".to_owned()),
+                    RunPiece::Text(reference(0, 2), "closed".to_owned()),
+                ]],
+            )],
         )
         .unwrap();
         let output = String::from_utf8(output).unwrap();
@@ -664,15 +1637,46 @@ mod tests {
     }
 
     #[test]
-    fn splices_land_on_the_element_and_its_character_data() {
-        let output = rewrite_slide_run_text(
+    fn a_line_break_takes_the_namespace_prefix_of_the_run_it_divides() {
+        let output = rewrite_slide_text(
             "slide2.xml",
             PREFIXED.as_bytes(),
-            &[
-                edit(&[0], TextBodyLocation::Shape, 0, "ONE"),
-                edit(&[0], TextBodyLocation::Shape, 1, "TWO"),
-                edit(&[0], TextBodyLocation::Shape, 2, "THREE"),
-            ],
+            &[rewrite(
+                &[0],
+                TextBodyLocation::Shape,
+                0,
+                1,
+                vec![vec![
+                    RunPiece::Text(reference(0, 0), "fi".to_owned()),
+                    RunPiece::Break(reference(0, 0)),
+                    RunPiece::Text(reference(0, 0), "rst".to_owned()),
+                    RunPiece::Keep(reference(0, 1)),
+                    RunPiece::Keep(reference(0, 2)),
+                ]],
+            )],
+        )
+        .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("<dml:br/>"), "{output}");
+        assert!(every_prefix_resolves(&output), "{output}");
+    }
+
+    #[test]
+    fn splices_land_on_the_element_and_its_character_data() {
+        let output = rewrite_slide_text(
+            "slide2.xml",
+            PREFIXED.as_bytes(),
+            &[rewrite(
+                &[0],
+                TextBodyLocation::Shape,
+                0,
+                1,
+                vec![vec![
+                    RunPiece::Text(reference(0, 0), "ONE".to_owned()),
+                    RunPiece::Text(reference(0, 1), "TWO".to_owned()),
+                    RunPiece::Text(reference(0, 2), "THREE".to_owned()),
+                ]],
+            )],
         )
         .unwrap();
         let expected = PREFIXED

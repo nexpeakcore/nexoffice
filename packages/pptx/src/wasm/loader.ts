@@ -50,6 +50,12 @@ export interface PresentationHandle extends CollaborationReplica {
   deleteText(storyId: string, start: number, end: number): TextReceipt;
   formatText(storyId: string, start: number, end: number, patch: TextStylePatch): TextReceipt;
   insertParagraphBreak(storyId: string, index: number): TextReceipt;
+  /**
+   * Joins the paragraph that ends at `index` with the one after it, the way
+   * Backspace at the start of a paragraph does. The joined paragraph keeps the
+   * level, alignment and bullet of the first of the two.
+   */
+  deleteParagraphBreak(storyId: string, index: number): TextReceipt;
   insertSlide(index: number, layoutPartPath?: string): SlideReceipt;
   deleteSlide(slideId: string): SlideReceipt;
   moveSlide(slideId: string, toIndex: number): SlideReceipt;
@@ -73,13 +79,14 @@ export interface PresentationHandle extends CollaborationReplica {
    * Projects the deck's text edits back onto the parts the file was opened
    * with and returns the re-zipped PPTX. Slides no edit touched, and every
    * non-slide part, keep their source bytes; an edited slide keeps every byte
-   * outside the `<a:t>` elements whose text changed.
+   * outside the elements the edit changed.
    *
-   * Only run text is written today. Throws, naming the change, when the deck
-   * holds anything else — a formatting patch, a new paragraph, a moved or
-   * added shape, a slide insert, remove or reorder — so a host can keep saving
-   * disabled instead of writing a file that has lost the edit. A replica
-   * opened from `initialUpdate` alone has no source bytes and always throws.
+   * Run text, paragraph splits and merges, and soft line breaks are written
+   * today. Throws, naming the change, when the deck holds anything else — a
+   * formatting patch, a run split, a moved or added shape, a slide insert,
+   * remove or reorder — so a host can keep saving disabled instead of writing
+   * a file that has lost the edit. A replica opened from `initialUpdate` alone
+   * has no source bytes and always throws.
    */
   save(): Uint8Array;
   canUndo(): boolean;
@@ -291,6 +298,12 @@ export function openPresentation(
     insertParagraphBreak(storyId, index): TextReceipt {
       return jsonWasmCall(
         () => doc.insertParagraphBreakJson(JSON.stringify({ storyId, index })),
+        true
+      );
+    },
+    deleteParagraphBreak(storyId, index): TextReceipt {
+      return jsonWasmCall(
+        () => doc.deleteParagraphBreakJson(JSON.stringify({ storyId, index })),
         true
       );
     },

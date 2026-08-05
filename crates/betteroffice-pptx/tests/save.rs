@@ -218,6 +218,138 @@ fn one_save_carries_edits_from_two_paragraphs_and_two_slides() {
     assert!(text.contains("TOP ONE NATIVE STACK"));
 }
 
+/// The `<a:pPr>` and `<a:rPr>` of the demo deck's title paragraphs, which a
+/// split has to copy verbatim.
+const TITLE_PPR: &str = r#"<a:pPr algn="l" lvl="0"></a:pPr>"#;
+const TITLE_RPR: &str = concat!(
+    r#"<a:rPr lang="en-US" sz="4400" b="1">"#,
+    r#"<a:solidFill><a:srgbClr val="101828"/></a:solidFill>"#,
+    r#"<a:latin typeface="Arial"/></a:rPr>"#,
+);
+
+/// Every part of `saved` against `FIXTURE`, with `slide1` compared to what the
+/// edit should have made of it and every other part to its own source bytes.
+fn assert_only_slide_one_changed(saved: &[u8], expected_slide_one: &str) {
+    let before = parts(FIXTURE);
+    let after = parts(saved);
+    assert_eq!(before.len(), after.len());
+    for ((source_path, source_bytes), (saved_path, saved_bytes)) in before.iter().zip(&after) {
+        assert_eq!(source_path, saved_path);
+        if source_path == "ppt/slides/slide1.xml" {
+            assert_eq!(
+                String::from_utf8(saved_bytes.clone()).unwrap(),
+                expected_slide_one,
+                "the edited slide differs outside the structure the edit changed"
+            );
+        } else {
+            assert_eq!(source_bytes, saved_bytes, "{source_path} was rewritten");
+        }
+    }
+}
+
+fn slide_one() -> String {
+    String::from_utf8(
+        parts(FIXTURE)
+            .into_iter()
+            .find(|(path, _)| path == "ppt/slides/slide1.xml")
+            .expect("the demo deck has a first slide")
+            .1,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_paragraph_split_rewrites_only_the_slide_it_happened_on() {
+    let presentation = Presentation::open(FIXTURE).unwrap();
+    let (story_id, _) = story_holding(&presentation, "Office files,");
+    presentation
+        .insert_paragraph_break(&context(), &story_id, 7)
+        .unwrap();
+
+    let saved = presentation.save().unwrap();
+    assert_only_slide_one_changed(
+        &saved,
+        &slide_one().replace(
+            &format!("<a:r>{TITLE_RPR}<a:t>Office files,</a:t></a:r>"),
+            &format!(
+                "<a:r>{TITLE_RPR}<a:t>Office </a:t></a:r></a:p><a:p>{TITLE_PPR}\
+                 <a:r>{TITLE_RPR}<a:t>files,</a:t></a:r>"
+            ),
+        ),
+    );
+
+    let reopened = Presentation::open(&saved).unwrap();
+    assert!(plain_text(&reopened).contains("Office \nfiles,\nwithout the office."));
+    assert_eq!(reopened.slides().len(), 3);
+    assert_eq!(
+        reopened.story(&story_id).unwrap().paragraphs.len(),
+        3,
+        "the title body now holds three paragraphs"
+    );
+}
+
+#[test]
+fn a_paragraph_merge_rewrites_only_the_slide_it_happened_on() {
+    let presentation = Presentation::open(FIXTURE).unwrap();
+    let (story_id, _) = story_holding(&presentation, "Office files,");
+    let break_index = presentation
+        .story(&story_id)
+        .unwrap()
+        .plain_text()
+        .find('\n')
+        .expect("both title lines live in one body") as u32;
+    presentation
+        .delete_paragraph_break(&context(), &story_id, break_index)
+        .unwrap();
+
+    let saved = presentation.save().unwrap();
+    assert_only_slide_one_changed(
+        &saved,
+        &slide_one().replace(
+            &format!(
+                r#"<a:endParaRPr lang="en-US" sz="1800"/></a:p><a:p>{TITLE_PPR}<a:r><a:rPr lang="en-US" sz="4400" b="1"><a:solidFill><a:srgbClr val="315EFB"/></a:solidFill><a:latin typeface="Arial"/></a:rPr><a:t>without the office.</a:t></a:r>"#
+            ),
+            r#"<a:r><a:rPr lang="en-US" sz="4400" b="1"><a:solidFill><a:srgbClr val="315EFB"/></a:solidFill><a:latin typeface="Arial"/></a:rPr><a:t>without the office.</a:t></a:r>"#,
+        ),
+    );
+
+    let reopened = Presentation::open(&saved).unwrap();
+    assert!(plain_text(&reopened).contains("Office files,without the office."));
+    let paragraphs = reopened.story(&story_id).unwrap().paragraphs;
+    assert_eq!(paragraphs.len(), 1);
+    assert_eq!(paragraphs[0].runs.len(), 2, "each line keeps its own run");
+}
+
+#[test]
+fn a_line_break_rewrites_only_the_run_it_divides() {
+    let presentation = Presentation::open(FIXTURE).unwrap();
+    let (story_id, style) = story_holding(&presentation, "Office files,");
+    presentation
+        .insert_text(&context(), &story_id, 7, "\n", &style)
+        .unwrap();
+
+    let saved = presentation.save().unwrap();
+    assert_only_slide_one_changed(
+        &saved,
+        &slide_one().replace(
+            &format!("<a:r>{TITLE_RPR}<a:t>Office files,</a:t></a:r>"),
+            &format!(
+                "<a:r>{TITLE_RPR}<a:t>Office </a:t></a:r><a:br>{}</a:br>\
+                 <a:r>{TITLE_RPR}<a:t>files,</a:t></a:r>",
+                TITLE_RPR
+            ),
+        ),
+    );
+
+    let reopened = Presentation::open(&saved).unwrap();
+    assert!(plain_text(&reopened).contains("Office \nfiles,\nwithout the office."));
+    assert_eq!(
+        reopened.story(&story_id).unwrap().paragraphs.len(),
+        2,
+        "a soft break keeps the two paragraphs the deck had"
+    );
+}
+
 type Refusal = (&'static str, Box<dyn Fn(&Presentation)>);
 
 #[test]
@@ -242,11 +374,14 @@ fn a_change_this_slice_cannot_write_refuses_instead_of_dropping_it() {
             }),
         ),
         (
-            "a new paragraph",
+            "two paragraph breaks in different runs",
             Box::new(|presentation: &Presentation| {
-                let (story_id, _) = story_holding(presentation, "A Rust-native");
+                let (story_id, _) = story_holding(presentation, "01");
                 presentation
-                    .insert_paragraph_break(&context(), &story_id, 4)
+                    .insert_paragraph_break(&context(), &story_id, 1)
+                    .unwrap();
+                presentation
+                    .insert_paragraph_break(&context(), &story_id, 6)
                     .unwrap();
             }),
         ),

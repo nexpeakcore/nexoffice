@@ -17,6 +17,7 @@ export const pptxdocument_canRedo: (a: number) => number;
 export const pptxdocument_canUndo: (a: number) => number;
 export const pptxdocument_clearUpdateObservation: (a: number) => void;
 export const pptxdocument_clientId: (a: number) => number;
+export const pptxdocument_deleteParagraphBreakJson: (a: number, b: number, c: number) => [number, number, number, number];
 export const pptxdocument_deleteSlideJson: (a: number, b: number, c: number) => [number, number, number, number];
 export const pptxdocument_deleteTextJson: (a: number, b: number, c: number) => [number, number, number, number];
 export const pptxdocument_drainUpdateEvent: (a: number) => [number, number];

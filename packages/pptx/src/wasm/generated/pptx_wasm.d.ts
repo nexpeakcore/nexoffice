@@ -11,6 +11,7 @@ export class PptxDocument {
     canRedo(): boolean;
     canUndo(): boolean;
     clearUpdateObservation(): void;
+    deleteParagraphBreakJson(args: string): string;
     deleteSlideJson(args: string): string;
     deleteTextJson(args: string): string;
     drainUpdateEvent(): Uint8Array;
@@ -32,7 +33,9 @@ export class PptxDocument {
     /**
      * Projects the deck's text edits onto the source parts and returns the
      * re-zipped file. Rejects when the deck holds a change the writer cannot
-     * express, naming what it cannot write.
+     * express, when the written bytes do not read back as the deck they were
+     * planned from, or when the edit is larger than [`crate::WriteLimits`] allows,
+     * naming what it cannot write.
      */
     saveBytes(): Uint8Array;
     setShapeAdjustJson(args: string): string;
@@ -93,6 +96,7 @@ export interface InitOutput {
     readonly pptxdocument_canUndo: (a: number) => number;
     readonly pptxdocument_clearUpdateObservation: (a: number) => void;
     readonly pptxdocument_clientId: (a: number) => number;
+    readonly pptxdocument_deleteParagraphBreakJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly pptxdocument_deleteSlideJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly pptxdocument_deleteTextJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly pptxdocument_drainUpdateEvent: (a: number) => [number, number];

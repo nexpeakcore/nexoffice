@@ -341,6 +341,16 @@ impl PptxDocument {
         )
     }
 
+    #[wasm_bindgen(js_name = deleteParagraphBreakJson)]
+    pub fn delete_paragraph_break_json(&self, args: &str) -> Result<String, JsValue> {
+        let args: ParagraphBreakArgs = parse_args(args)?;
+        json(
+            self.session
+                .delete_paragraph_break(&local_context(), &args.story_id, args.index)
+                .map_err(js_error)?,
+        )
+    }
+
     #[wasm_bindgen(js_name = insertSlideJson)]
     pub fn insert_slide_json(&self, args: &str) -> Result<String, JsValue> {
         let args: InsertSlideArgs = parse_args(args)?;

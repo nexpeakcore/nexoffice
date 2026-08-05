@@ -13,5 +13,5 @@ pub use error::PptxError;
 pub use model::*;
 pub use package::{parse_pptx, parse_pptx_with_limits, write_pptx};
 pub use relationships::{Relationship, TargetMode, relationship_types};
-pub use write::{RunTextEdit, TextBodyLocation, rewrite_slide_run_text};
+pub use write::{ParagraphRewrite, RunPiece, RunRef, TextBodyLocation, rewrite_slide_text};
 pub use xml::{ParseLimits, is_legal_xml_character, sanitize_xml_text};

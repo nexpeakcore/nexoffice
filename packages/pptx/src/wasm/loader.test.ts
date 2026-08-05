@@ -115,6 +115,25 @@ describe('PPTX wasm boundary', () => {
     editor.dispose();
   });
 
+  test('saves a paragraph split and a merge back into the file', () => {
+    const editor = openPresentation(fixture, { clientId: 9201 });
+    const story = firstStory(editor.snapshot().slides.flatMap((slide) => slide.shapes));
+    const before = editor.story(story.id).paragraphs.length;
+    const head = editor.story(story.id).paragraphs[0].runs[0].text.length;
+
+    editor.insertParagraphBreak(story.id, head);
+    const split = openPresentation(editor.save(), { clientId: 9202 });
+    expect(split.story(story.id).paragraphs.length).toBe(before + 1);
+    split.dispose();
+
+    editor.deleteParagraphBreak(story.id, head);
+    const merged = openPresentation(editor.save(), { clientId: 9203 });
+    expect(merged.story(story.id).paragraphs.length).toBe(before);
+    expect(plainText(merged.story(story.id))).toBe(plainText(editor.story(story.id)));
+    merged.dispose();
+    editor.dispose();
+  });
+
   test('inserts and styles preset shapes with undo and redo', () => {
     const slide = handle.snapshot().slides[0];
     const receipt = handle.addShape(slide.id, {
@@ -184,6 +203,12 @@ function caretStyle(style: TextStyleSnapshot): TextStyle {
     fontFamily: style.fontFamily ?? undefined,
     underline: style.underline ?? undefined,
   };
+}
+
+function plainText(story: StorySnapshot): string {
+  return story.paragraphs
+    .map((paragraph) => paragraph.runs.map((run) => run.text).join(''))
+    .join('\n');
 }
 
 function shapeSnapshot(shapeId: string) {

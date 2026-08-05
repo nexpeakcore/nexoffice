@@ -276,6 +276,8 @@ pub enum EditError {
     OutOfBounds { index: u32, length: u32 },
     #[error("text range {start}..{end} crosses a paragraph boundary")]
     ParagraphBoundary { start: u32, end: u32 },
+    #[error("index {0} is not a paragraph break this story can join")]
+    NotAParagraphBreak(u32),
     #[error("invalid shape geometry: {0}")]
     InvalidGeometry(String),
     #[error("invalid shape adjustment: {0}")]

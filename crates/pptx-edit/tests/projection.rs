@@ -185,6 +185,29 @@ fn a_splice_that_lands_on_the_wrong_run_is_refused() {
 }
 
 #[test]
+fn a_split_whose_bytes_land_on_the_wrong_run_is_refused() {
+    let deck = deck_with(r#"<a:p><a:r><a:t>AAA</a:t></a:r><a:r><a:t>BBB</a:t></a:r></a:p>"#);
+    let mut package = pptx_parse::parse_pptx(&deck).unwrap();
+    let bytes = String::from_utf8(package.part_bytes(SLIDE_PART).unwrap().to_vec()).unwrap();
+    let swapped = bytes
+        .replace("<a:t>AAA</a:t>", "<a:t>ZZZ</a:t>")
+        .replace("<a:t>BBB</a:t>", "<a:t>AAA</a:t>")
+        .replace("<a:t>ZZZ</a:t>", "<a:t>BBB</a:t>");
+    assert!(package.replace_part(SLIDE_PART, swapped.into_bytes()));
+
+    let session = DeckSession::from_package(package, 217).unwrap();
+    let story = first_story(&session);
+    assert_eq!(story.plain_text(), "AAABBB");
+    press_enter(&session, &story.id, 1);
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("read back as a different deck"),
+        "a split spliced into the wrong run must be refused, not shipped: {reason}"
+    );
+}
+
+#[test]
 fn an_edit_after_a_line_break_lands_in_the_run_that_follows_it() {
     let session =
         session_with(r#"<a:p><a:r><a:t>ab</a:t></a:r><a:br/><a:r><a:t>cd</a:t></a:r></a:p>"#);
@@ -401,6 +424,453 @@ fn one_save_rewrites_several_paragraphs_across_several_slides() {
         "1alpha\n2beta"
     );
     assert_eq!(reopened.story(&back.id).unwrap().plain_text(), "3gamma");
+}
+
+/// A paragraph with properties worth carrying, formatting worth keeping and an
+/// end paragraph mark worth placing, so a split can be checked byte for byte.
+const BULLETED: &str = concat!(
+    r#"<a:p><a:pPr lvl="2" marL="457200" indent="-228600"><a:buChar char="•"/></a:pPr>"#,
+    r#"<a:r><a:rPr b="1" sz="1400"/><a:t>alpha</a:t></a:r>"#,
+    r#"<a:r><a:rPr i="1"/><a:t>beta</a:t></a:r>"#,
+    r#"<a:endParaRPr sz="1800"/></a:p>"#,
+);
+
+const BULLET_PPR: &str =
+    r#"<a:pPr lvl="2" marL="457200" indent="-228600"><a:buChar char="•"/></a:pPr>"#;
+
+fn press_enter(session: &DeckSession, story_id: &str, index: u32) {
+    session
+        .insert_paragraph_break(&EditCtx::local("test"), story_id, index)
+        .unwrap();
+}
+
+#[test]
+fn a_split_at_the_start_of_a_paragraph_leaves_an_empty_paragraph_above_it() {
+    let session = session_with(BULLETED);
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 0);
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(BULLETED).replace(
+            r#"<a:r><a:rPr b="1" sz="1400"/>"#,
+            &format!(r#"</a:p><a:p>{BULLET_PPR}<a:r><a:rPr b="1" sz="1400"/>"#),
+        ),
+        "the empty paragraph copies the pPr and every run keeps its own bytes"
+    );
+
+    let reopened = DeckSession::open(&bytes, 201).unwrap();
+    let story = reopened
+        .snapshot()
+        .unwrap()
+        .slides
+        .iter()
+        .flat_map(|slide| slide.shapes.clone())
+        .find_map(|shape| shape.text_stories.first().cloned())
+        .unwrap();
+    assert_eq!(story.plain_text(), "\nalphabeta");
+    assert_eq!(story.paragraphs[0].level, 2);
+    assert_eq!(story.paragraphs[1].level, 2);
+    assert_eq!(
+        story.paragraphs[0].bullet_json,
+        story.paragraphs[1].bullet_json
+    );
+}
+
+#[test]
+fn a_split_at_the_end_of_a_paragraph_moves_the_end_mark_onto_the_new_one() {
+    let session = session_with(BULLETED);
+    let story = first_story(&session);
+    press_enter(&session, &story.id, "alphabeta".chars().count() as u32);
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(BULLETED).replace(
+            r#"<a:endParaRPr sz="1800"/>"#,
+            &format!(r#"</a:p><a:p>{BULLET_PPR}<a:endParaRPr sz="1800"/>"#),
+        ),
+        "the paragraph mark of the source paragraph ends the new empty one"
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 202)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "alphabeta\n"
+    );
+}
+
+#[test]
+fn a_split_inside_a_formatted_run_gives_both_halves_its_run_properties() {
+    let session = session_with(BULLETED);
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 2);
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(BULLETED).replace(
+            r#"<a:r><a:rPr b="1" sz="1400"/><a:t>alpha</a:t></a:r>"#,
+            &format!(
+                concat!(
+                    r#"<a:r><a:rPr b="1" sz="1400"/><a:t>al</a:t></a:r>"#,
+                    r#"</a:p><a:p>{}"#,
+                    r#"<a:r><a:rPr b="1" sz="1400"/><a:t>pha</a:t></a:r>"#,
+                ),
+                BULLET_PPR
+            ),
+        ),
+        "the divided run's <a:rPr> is copied, not rebuilt"
+    );
+
+    let reopened = DeckSession::open(&bytes, 203).unwrap();
+    let reparsed = reopened.story(&story.id).unwrap();
+    assert_eq!(reparsed.plain_text(), "al\nphabeta");
+    assert_eq!(reparsed.paragraphs[0].runs[0].style.bold, Some(true));
+    assert_eq!(reparsed.paragraphs[1].runs[0].style.bold, Some(true));
+    assert_eq!(
+        reparsed.paragraphs[1].runs[0].style.font_size_pt,
+        Some(14.0)
+    );
+}
+
+#[test]
+fn a_split_leaves_the_slides_it_did_not_touch_byte_for_byte() {
+    let deck = deck_with_slides(BULLETED, r#"<a:p><a:r><a:t>gamma</a:t></a:r></a:p>"#);
+    let session = DeckSession::open(&deck, 204).unwrap();
+    let story = stories(&session)[0].clone();
+    press_enter(&session, &story.id, 5);
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SECOND_SLIDE_PART),
+        part_text(&deck, SECOND_SLIDE_PART)
+    );
+    assert_eq!(
+        part_text(&bytes, THIRD_SLIDE_PART),
+        part_text(&deck, THIRD_SLIDE_PART)
+    );
+    let before = ooxml_opc::unzip_parts(&deck).unwrap();
+    let after = ooxml_opc::unzip_parts(&bytes).unwrap();
+    for ((path, source), (saved_path, saved)) in before.iter().zip(&after) {
+        assert_eq!(path, saved_path);
+        if path != SLIDE_PART {
+            assert_eq!(source, saved, "{path} was rewritten");
+        }
+    }
+}
+
+#[test]
+fn a_merge_keeps_the_first_paragraphs_properties_and_the_last_end_mark() {
+    let paragraphs = concat!(
+        r#"<a:p><a:pPr algn="ctr"/><a:r><a:rPr b="1"/><a:t>alpha</a:t></a:r>"#,
+        r#"<a:endParaRPr sz="900"/></a:p>"#,
+        r#"<a:p><a:pPr lvl="3" algn="r"><a:buNone/></a:pPr>"#,
+        r#"<a:r><a:rPr i="1" sz="2400"/><a:t>beta</a:t></a:r>"#,
+        r#"<a:endParaRPr sz="1800"/></a:p>"#,
+    );
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    assert_eq!(story.plain_text(), "alpha\nbeta");
+    session
+        .delete_paragraph_break(&EditCtx::local("test"), &story.id, 5)
+        .unwrap();
+    assert_eq!(session.story(&story.id).unwrap().plain_text(), "alphabeta");
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace(
+            concat!(
+                r#"<a:endParaRPr sz="900"/></a:p>"#,
+                r#"<a:p><a:pPr lvl="3" algn="r"><a:buNone/></a:pPr>"#,
+            ),
+            "",
+        ),
+        "one deletion joins the paragraphs; both runs keep their own bytes"
+    );
+
+    let reparsed = DeckSession::open(&bytes, 205)
+        .unwrap()
+        .story(&story.id)
+        .unwrap();
+    assert_eq!(reparsed.plain_text(), "alphabeta");
+    assert_eq!(reparsed.paragraphs.len(), 1);
+    assert_eq!(reparsed.paragraphs[0].alignment.as_deref(), Some("ctr"));
+    assert_eq!(reparsed.paragraphs[0].level, 0);
+    assert_eq!(reparsed.paragraphs[0].runs[0].style.bold, Some(true));
+    assert_eq!(reparsed.paragraphs[0].runs[1].style.italic, Some(true));
+}
+
+#[test]
+fn a_split_and_a_merge_are_inverses_down_to_the_byte() {
+    let deck = deck_with(BULLETED);
+    let session = DeckSession::open(&deck, 206).unwrap();
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 5);
+    let split = session.save_bytes().unwrap();
+    assert_ne!(part_text(&split, SLIDE_PART), part_text(&deck, SLIDE_PART));
+
+    let session = DeckSession::open(&split, 207).unwrap();
+    let story = first_story(&session);
+    session
+        .delete_paragraph_break(&EditCtx::local("test"), &story.id, 5)
+        .unwrap();
+    assert_eq!(
+        part_text(&session.save_bytes().unwrap(), SLIDE_PART),
+        part_text(&deck, SLIDE_PART),
+        "merging what a split produced restores the source part"
+    );
+}
+
+#[test]
+fn merging_a_split_run_keeps_the_two_runs_it_was_divided_into() {
+    let deck = deck_with(BULLETED);
+    let session = DeckSession::open(&deck, 213).unwrap();
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 3);
+    let split = session.save_bytes().unwrap();
+
+    let session = DeckSession::open(&split, 214).unwrap();
+    let story = first_story(&session);
+    session
+        .delete_paragraph_break(&EditCtx::local("test"), &story.id, 3)
+        .unwrap();
+    let merged = session.save_bytes().unwrap();
+    let reparsed = DeckSession::open(&merged, 215)
+        .unwrap()
+        .story(&story.id)
+        .unwrap();
+    assert_eq!(reparsed.plain_text(), "alphabeta");
+    assert_eq!(reparsed.paragraphs.len(), 1);
+    assert_eq!(
+        part_text(&merged, SLIDE_PART),
+        slide_xml(BULLETED).replace(
+            r#"<a:r><a:rPr b="1" sz="1400"/><a:t>alpha</a:t></a:r>"#,
+            concat!(
+                r#"<a:r><a:rPr b="1" sz="1400"/><a:t>alp</a:t></a:r>"#,
+                r#"<a:r><a:rPr b="1" sz="1400"/><a:t>ha</a:t></a:r>"#,
+            ),
+        ),
+        "joining runs is not this writer's to do, so the divided run stays divided"
+    );
+}
+
+#[test]
+fn a_line_break_typed_inside_a_run_writes_a_br_carrying_its_properties() {
+    let session = session_with(BULLETED);
+    let story = first_story(&session);
+    let style = story.paragraphs[0].runs[0].style.clone();
+    session
+        .insert_text(&EditCtx::local("test"), &story.id, 2, "\n", &style)
+        .unwrap();
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(BULLETED).replace(
+            r#"<a:r><a:rPr b="1" sz="1400"/><a:t>alpha</a:t></a:r>"#,
+            concat!(
+                r#"<a:r><a:rPr b="1" sz="1400"/><a:t>al</a:t></a:r>"#,
+                r#"<a:br><a:rPr b="1" sz="1400"/></a:br>"#,
+                r#"<a:r><a:rPr b="1" sz="1400"/><a:t>pha</a:t></a:r>"#,
+            ),
+        ),
+        "the break carries the formatting of the run it divides, as PowerPoint writes it"
+    );
+
+    let reparsed = DeckSession::open(&bytes, 208)
+        .unwrap()
+        .story(&story.id)
+        .unwrap();
+    assert_eq!(reparsed.plain_text(), "al\nphabeta");
+    assert_eq!(reparsed.paragraphs.len(), 1);
+}
+
+#[test]
+fn a_line_break_typed_next_to_an_unstyled_run_needs_no_run_properties() {
+    let paragraphs = r#"<a:p><a:r><a:t>abcd</a:t></a:r></a:p>"#;
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    type_text(&session, &story.id, 2, "\n");
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace(
+            r#"<a:r><a:t>abcd</a:t></a:r>"#,
+            r#"<a:r><a:t>ab</a:t></a:r><a:br/><a:r><a:t>cd</a:t></a:r>"#,
+        )
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 209)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "ab\ncd"
+    );
+}
+
+#[test]
+fn typing_and_then_splitting_in_one_place_saves_as_one_change() {
+    let paragraphs = r#"<a:p><a:pPr algn="ctr"/><a:r><a:t>abcd</a:t></a:r></a:p>"#;
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    type_text(&session, &story.id, 2, "XY");
+    press_enter(&session, &story.id, 4);
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace(
+            r#"<a:r><a:t>abcd</a:t></a:r>"#,
+            concat!(
+                r#"<a:r><a:t>abXY</a:t></a:r>"#,
+                r#"</a:p><a:p><a:pPr algn="ctr"/>"#,
+                r#"<a:r><a:t>cd</a:t></a:r>"#,
+            ),
+        )
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 210)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "abXY\ncd"
+    );
+}
+
+#[test]
+fn a_split_of_an_empty_paragraph_writes_a_second_empty_paragraph() {
+    let paragraphs = concat!(
+        r#"<a:p><a:pPr algn="ctr"/><a:endParaRPr sz="1800"/></a:p>"#,
+        r#"<a:p><a:r><a:t>after</a:t></a:r></a:p>"#,
+    );
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 0);
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace(
+            r#"<a:p><a:pPr algn="ctr"/><a:endParaRPr sz="1800"/></a:p>"#,
+            r#"<a:p><a:pPr algn="ctr"/></a:p><a:p><a:pPr algn="ctr"/><a:endParaRPr sz="1800"/></a:p>"#,
+        )
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 211)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "\n\nafter"
+    );
+}
+
+#[test]
+fn two_splits_inside_one_run_write_three_paragraphs() {
+    let paragraphs = r#"<a:p><a:pPr algn="ctr"/><a:r><a:t>abcdefgh</a:t></a:r></a:p>"#;
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 6);
+    press_enter(&session, &story.id, 2);
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace(
+            r#"<a:r><a:t>abcdefgh</a:t></a:r>"#,
+            concat!(
+                r#"<a:r><a:t>ab</a:t></a:r>"#,
+                r#"</a:p><a:p><a:pPr algn="ctr"/><a:r><a:t>cdef</a:t></a:r>"#,
+                r#"</a:p><a:p><a:pPr algn="ctr"/><a:r><a:t>gh</a:t></a:r>"#,
+            ),
+        )
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 216)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "ab\ncdef\ngh"
+    );
+}
+
+#[test]
+fn two_edits_in_different_runs_of_one_paragraph_are_still_refused_by_name() {
+    let session = session_with(concat!(
+        r#"<a:p><a:r><a:t>abcd</a:t></a:r>"#,
+        r#"<a:r><a:rPr b="1"/><a:t>efgh</a:t></a:r></a:p>"#,
+    ));
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 2);
+    press_enter(&session, &story.id, 7);
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("the change spans more than one run"),
+        "two changes in one body that are not one change have no faithful rewrite: {reason}"
+    );
+}
+
+#[test]
+fn a_split_inside_a_field_is_refused_by_name() {
+    let session = session_with(concat!(
+        r#"<a:p><a:r><a:t>page </a:t></a:r>"#,
+        r#"<a:fld id="{4B0A}" type="slidenum"><a:t>12</a:t></a:fld></a:p>"#,
+    ));
+    let story = first_story(&session);
+    assert_eq!(story.plain_text(), "page 12");
+    press_enter(&session, &story.id, 6);
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("the change lands on field 2"),
+        "a field's text belongs to PowerPoint, not to the writer: {reason}"
+    );
+}
+
+#[test]
+fn typing_into_a_paragraph_with_no_run_is_still_refused_by_name() {
+    let session = session_with(r#"<a:p><a:endParaRPr sz="1800"/></a:p>"#);
+    let story = first_story(&session);
+    type_text(&session, &story.id, 0, "X");
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("no run to hold text"),
+        "an empty paragraph has no run to carry a style: {reason}"
+    );
+}
+
+#[test]
+fn a_split_keeps_the_paragraph_level_on_both_halves() {
+    let session = session_with(BULLETED);
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 5);
+    let split = session.snapshot().unwrap();
+    assert_eq!(
+        split.slides[0].shapes[0].text_stories[0].paragraphs.len(),
+        2
+    );
+
+    let bytes = session.save_bytes().unwrap();
+    let reopened = DeckSession::open(&bytes, 212).unwrap();
+    let levels: Vec<u32> = reopened
+        .story(&story.id)
+        .unwrap()
+        .paragraphs
+        .iter()
+        .map(|paragraph| paragraph.level)
+        .collect();
+    assert_eq!(levels, vec![2, 2], "a split keeps the level on both halves");
 }
 
 #[test]
