@@ -22,11 +22,15 @@ import {
 } from '../i18n/index.js'
 import { checkForUpdatesManually, installDownloadedUpdate, setupAutoUpdater } from './updater.js'
 import {
+  ALL_EDIT_CAPABILITIES,
   EXTENSIONS,
   IPC,
   kindFromPath,
   PRINT_PAGE_CAP,
+  readEditCapabilities,
+  sameEditCapabilities,
   type DocumentKind,
+  type EditCapabilities,
   type ExportPdfRequest,
   type ExportPdfResult,
   type MenuAction,
@@ -44,6 +48,7 @@ let mainWindow: BrowserWindow | null = null
 let rendererReady = false
 let quitting = false
 let activeDocumentKind: DocumentKind | null = null
+let activeEditCapabilities: EditCapabilities = ALL_EDIT_CAPABILITIES
 const pendingOpenPaths: string[] = []
 const grantedPaths = new Set<string>()
 
@@ -235,6 +240,7 @@ function rebuildMenu(): void {
     locale: activeLocale,
     dispatch: sendMenuAction,
     documentKind: activeDocumentKind,
+    editCapabilities: activeEditCapabilities,
     recents: getRecents(),
     onOpenRecent: (filePath) => void openRecentPath(filePath),
     onClearRecents: () => {
@@ -335,6 +341,15 @@ async function promptSaveAs(kind: DocumentKind, suggestedPath: string | null): P
 const PRINT_QUERY = 'offscreenReplay=0&pageWindow=0'
 const PRINT_TIMEOUT_MS = 120_000
 
+// A deck can fail on more pages than a message box can carry, so the notice
+// names the first few and the main-process log keeps the rest.
+const MAX_LISTED_PAGES = 12
+
+function formatPageList(numbers: number[]): string {
+  if (numbers.length <= MAX_LISTED_PAGES) return numbers.join(', ')
+  return `${numbers.slice(0, MAX_LISTED_PAGES).join(', ')}…`
+}
+
 function createPrintWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1000,
@@ -363,7 +378,7 @@ function createPrintWindow(): BrowserWindow {
 function renderPrintJob(
   window: BrowserWindow,
   job: PrintJob,
-): Promise<{ pages: number; truncated: boolean }> {
+): Promise<{ pages: number; truncated: boolean; skippedPages: number[] }> {
   return new Promise((resolvePromise, rejectPromise) => {
     const cleanup = (): void => {
       clearTimeout(timer)
@@ -385,7 +400,11 @@ function renderPrintJob(
       if (window.isDestroyed() || event.sender !== window.webContents) return
       if (result.ok) {
         cleanup()
-        resolvePromise({ pages: result.pages, truncated: result.truncated })
+        resolvePromise({
+          pages: result.pages,
+          truncated: result.truncated,
+          skippedPages: result.skippedPages,
+        })
       } else {
         fail(result.error)
       }
@@ -461,7 +480,7 @@ function registerIpc(): void {
 
     const printWindow = createPrintWindow()
     try {
-      const { pages, truncated } = await renderPrintJob(printWindow, {
+      const { pages, truncated, skippedPages } = await renderPrintJob(printWindow, {
         kind: request.kind,
         data: request.data,
       })
@@ -478,7 +497,29 @@ function registerIpc(): void {
           detail: t('dialog.pdfTruncated.detail', { cap: PRINT_PAGE_CAP, pages }),
         })
       }
-      return { path: filePath, canceled: false, pages, truncated }
+      if (skippedPages.length > 0) {
+        // The only other record of which slides failed is a console warning
+        // inside the hidden print window, which nothing outlives.
+        console.warn(
+          `PDF export left out ${skippedPages.length} unrenderable page(s) of ${basename(filePath)}: ${skippedPages.join(', ')}`,
+        )
+        if (!owner.isDestroyed()) {
+          const slides = formatPageList(skippedPages)
+          void dialog.showMessageBox(owner, {
+            type: 'warning',
+            message: t('dialog.pdfSkipped.message'),
+            detail:
+              skippedPages.length === 1
+                ? t('dialog.pdfSkipped.detailOne', { slides, pages })
+                : t('dialog.pdfSkipped.detailMany', {
+                    count: skippedPages.length,
+                    slides,
+                    pages,
+                  }),
+          })
+        }
+      }
+      return { path: filePath, canceled: false, pages, truncated, skipped: skippedPages.length }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       dialog.showErrorBox(t('dialog.pdfFailed.title'), message)
@@ -505,6 +546,20 @@ function registerIpc(): void {
     if (kind !== null && kind !== 'docx' && kind !== 'xlsx' && kind !== 'pptx') return
     if (kind === activeDocumentKind) return
     activeDocumentKind = kind
+    // Only the pptx editor reports narrower capabilities, so leaving its last
+    // report in place would disable the Edit menu over the next document.
+    if (kind !== 'pptx') activeEditCapabilities = ALL_EDIT_CAPABILITIES
+    rebuildMenu()
+  })
+
+  // The renderer only sends this when a capability actually flips, but the
+  // menu is rebuilt from scratch here, so the comparison is repeated rather
+  // than trusted: a caret moving inside a paragraph must not rebuild a menu.
+  ipcMain.on(IPC.editCapabilities, (event, capabilities: EditCapabilities) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) return
+    const next = readEditCapabilities(capabilities)
+    if (!next || sameEditCapabilities(next, activeEditCapabilities)) return
+    activeEditCapabilities = next
     rebuildMenu()
   })
 

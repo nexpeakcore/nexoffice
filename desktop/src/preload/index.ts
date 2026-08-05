@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import {
   IPC,
   type DocumentKind,
+  type EditCapabilities,
   type ExportPdfResult,
   type MenuAction,
   type OpenedDocument,
@@ -54,6 +55,9 @@ const api = {
   webEditAction: (action: WebEditAction): void => ipcRenderer.send(IPC.webEditAction, action),
 
   setDocumentKind: (kind: DocumentKind | null): void => ipcRenderer.send(IPC.documentKind, kind),
+
+  setEditCapabilities: (capabilities: EditCapabilities): void =>
+    ipcRenderer.send(IPC.editCapabilities, capabilities),
 
   rendererReady: (): void => ipcRenderer.send(IPC.rendererReady),
 

@@ -87,6 +87,11 @@
       "message": "ייצוא ה-PDF קוצץ",
       "detail": "המסמך חורג ממגבלת הייצוא של {cap} עמודים; רק {pages} העמודים הראשונים יוצאו."
     },
+    "pdfSkipped": {
+      "message": "לא ניתן היה לייצא חלק מהשקופיות",
+      "detailOne": "שקופית {slides} לא עברה עיבוד ולא נכללה ב-PDF. שאר {pages} העמודים יוצאו.",
+      "detailMany": "{count} שקופיות לא עברו עיבוד ולא נכללו ב-PDF: {slides}. שאר {pages} העמודים יוצאו."
+    },
     "pdfFailed": {
       "title": "ייצוא ה-PDF נכשל"
     },
@@ -96,21 +101,16 @@
   },
   "app": {
     "edited": " — נערך",
-    "kind": {
-      "docx": "מסמך",
-      "xlsx": "חוברת עבודה",
-      "pptx": "מצגת"
-    },
-    "meta": {
-      "type": "סוג",
-      "size": "גודל",
-      "path": "נתיב"
-    },
-    "presentationComingSoon": "עורך המצגות יגיע בקרוב.",
     "empty": {
       "subtitle": "פתח קובץ ‎.docx‏, ‎.xlsx או ‎.pptx כדי להתחיל.",
       "openFile": "פתח קובץ"
     }
+  },
+  "exportStale": {
+    "message": "לייצא את {name} כפי שנפתח?",
+    "detail": "המצגת הזו השתנתה מאז שפתחת אותה, אך עדיין לא ניתן לשמור או לייצא שינויים במצגת. קובץ ה-PDF יכיל את הקובץ כפי שנפתח — השינויים שלך לא יופיעו בו.",
+    "cancel": "ביטול",
+    "confirm": "ייצא כפי שנפתח"
   },
   "status": {
     "ready": "מוכן",
@@ -121,6 +121,7 @@
     "saved": "{path} נשמר",
     "saveCanceled": "השמירה בוטלה",
     "saveFailed": "השמירה נכשלה: {message}",
+    "presentationSaveUnsupported": "שמירת מצגות אינה נתמכת עדיין — העריכות נשארות בהפעלה זו",
     "openFirst": "פתח מסמך תחילה",
     "openWordFirst": "פתח מסמך Word תחילה",
     "exportingPdf": "מייצא PDF…",
@@ -130,18 +131,24 @@
     "exportedPagesOne": "{path} יוצא (עמוד אחד)",
     "exportedPagesMany": "{path} יוצא ({pages} עמודים)",
     "truncatedSuffix": " — קוצץ במגבלת העמודים",
+    "skippedSuffixOne": " — שקופית אחת לא עברה עיבוד והושמטה",
+    "skippedSuffixMany": " — {slides} שקופיות לא עברו עיבוד והושמטו",
+    "asOpenedSuffix": " — המצגת כפי שנפתחה; השינויים שלך אינם כלולים",
     "wordCount": "מילים: {words} · תווים: {characters} · עמוד {page}/{pages}",
+    "wordCountSlides": "מילים: {words} · תווים: {characters} · שקופית {slide}/{slides}",
     "frozeTopRow": "השורה העליונה הוקפאה",
     "frozeFirstColumn": "העמודה הראשונה הוקפאה",
     "unfroze": "ההקפאה בוטלה"
   },
   "footer": {
     "stats": "{words} מילים · {characters} תווים · עמוד {page}/{pages}",
+    "statsSlides": "{words} מילים · {characters} תווים · שקופית {slide}/{slides}",
     "misspelledOne": "מילה אחת עם שגיאת כתיב",
     "misspelledMany": "{count} מילים עם שגיאות כתיב",
     "spellingOk": "האיות תקין",
     "loadingDictionary": "טוען מילון…",
-    "dictError": "שגיאת מילון"
+    "dictError": "שגיאת מילון",
+    "presentationSaveUnsupported": "נערך — עדיין לא ניתן לשמור שינויים במצגת"
   },
   "spellPanel": {
     "title": "בדיקת איות",

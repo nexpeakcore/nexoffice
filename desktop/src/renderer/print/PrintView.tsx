@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { DocxEditor, type DocxEditorRef } from '@betteroffice/docx-react'
 import '@betteroffice/docx-react/styles.css'
 import { PRINT_PAGE_CAP, type PrintJob } from '../../shared/ipc.js'
+import { renderPptxPages } from './renderPptxPages.js'
 import { renderXlsxPages } from './renderXlsxPages.js'
 import type { PageImage, PageSet } from './types.js'
 
@@ -48,7 +49,7 @@ function DocxCapture({
           height: parseFloat(canvas.style.height) || canvas.height,
         }))
         if (pages.length === 0) throw new Error('No document pages were rendered')
-        onCaptured({ pages, padding: 0, truncated })
+        onCaptured({ pages, padding: 0, truncated, skippedPages: [] })
       } catch (error) {
         onError(error)
       }
@@ -148,6 +149,7 @@ function PrintPages({ set }: { set: PageSet }) {
             ok: true,
             pages: set.pages.length,
             truncated: set.truncated,
+            skippedPages: set.skippedPages,
           })
         }),
       )
@@ -204,10 +206,12 @@ export function PrintView() {
         setPhase({ mode: 'docx', data: job.data })
       } else if (job.kind === 'xlsx') {
         void renderXlsxPages(job.data).then(handleCaptured).catch(reportFailure)
+      } else if (job.kind === 'pptx') {
+        void renderPptxPages(job.data).then(handleCaptured).catch(reportFailure)
       } else {
         window.nexoffice.printRendered({
           ok: false,
-          error: `PDF export is not supported for ${job.kind} files yet`,
+          error: `PDF export is not supported for ${String(job.kind)} files yet`,
         })
       }
     })

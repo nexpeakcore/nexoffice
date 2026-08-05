@@ -87,6 +87,11 @@
       "message": "PDF export truncated",
       "detail": "The document exceeds the {cap}-page export limit; only the first {pages} pages were exported."
     },
+    "pdfSkipped": {
+      "message": "Some slides couldn't be exported",
+      "detailOne": "Slide {slides} couldn't be rendered and was left out of the PDF. The other {pages} pages were exported.",
+      "detailMany": "{count} slides couldn't be rendered and were left out of the PDF: {slides}. The other {pages} pages were exported."
+    },
     "pdfFailed": {
       "title": "PDF Export Failed"
     },
@@ -96,21 +101,16 @@
   },
   "app": {
     "edited": " — Edited",
-    "kind": {
-      "docx": "Document",
-      "xlsx": "Workbook",
-      "pptx": "Presentation"
-    },
-    "meta": {
-      "type": "Type",
-      "size": "Size",
-      "path": "Path"
-    },
-    "presentationComingSoon": "Presentation editor coming soon.",
     "empty": {
       "subtitle": "Open a .docx, .xlsx, or .pptx file to get started.",
       "openFile": "Open File"
     }
+  },
+  "exportStale": {
+    "message": "Export {name} as it was opened?",
+    "detail": "This presentation has changed since you opened it, but presentation edits can't be saved or exported yet. The PDF will contain the file as it was opened — your edits won't appear in it.",
+    "cancel": "Cancel",
+    "confirm": "Export as Opened"
   },
   "status": {
     "ready": "Ready",
@@ -121,6 +121,7 @@
     "saved": "Saved {path}",
     "saveCanceled": "Save canceled",
     "saveFailed": "Save failed: {message}",
+    "presentationSaveUnsupported": "Saving presentations isn't supported yet — edits stay in this session",
     "openFirst": "Open a document first",
     "openWordFirst": "Open a Word document first",
     "exportingPdf": "Exporting PDF…",
@@ -130,18 +131,24 @@
     "exportedPagesOne": "Exported {path} (1 page)",
     "exportedPagesMany": "Exported {path} ({pages} pages)",
     "truncatedSuffix": " — truncated at page limit",
+    "skippedSuffixOne": " — 1 slide couldn't be rendered and was left out",
+    "skippedSuffixMany": " — {slides} slides couldn't be rendered and were left out",
+    "asOpenedSuffix": " — the presentation as it was opened; your edits aren't included",
     "wordCount": "Words: {words} · Chars: {characters} · Page {page}/{pages}",
+    "wordCountSlides": "Words: {words} · Chars: {characters} · Slide {slide}/{slides}",
     "frozeTopRow": "Frozen top row",
     "frozeFirstColumn": "Frozen first column",
     "unfroze": "Unfrozen panes"
   },
   "footer": {
     "stats": "{words} words · {characters} chars · Page {page}/{pages}",
+    "statsSlides": "{words} words · {characters} chars · Slide {slide}/{slides}",
     "misspelledOne": "1 misspelled word",
     "misspelledMany": "{count} misspelled words",
     "spellingOk": "Spelling OK",
     "loadingDictionary": "Loading dictionary…",
-    "dictError": "Dict error"
+    "dictError": "Dict error",
+    "presentationSaveUnsupported": "Edited — presentation edits can't be saved yet"
   },
   "spellPanel": {
     "title": "Spell Check",

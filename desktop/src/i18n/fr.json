@@ -87,6 +87,11 @@
       "message": "Export PDF tronqué",
       "detail": "Le document dépasse la limite d'export de {cap} pages ; seules les {pages} premières pages ont été exportées."
     },
+    "pdfSkipped": {
+      "message": "Certaines diapositives n'ont pas pu être exportées",
+      "detailOne": "La diapositive {slides} n'a pas pu être rendue et ne figure pas dans le PDF. Les {pages} autres pages ont été exportées.",
+      "detailMany": "{count} diapositives n'ont pas pu être rendues et ne figurent pas dans le PDF : {slides}. Les {pages} autres pages ont été exportées."
+    },
     "pdfFailed": {
       "title": "Échec de l'export PDF"
     },
@@ -96,21 +101,16 @@
   },
   "app": {
     "edited": " — Modifié",
-    "kind": {
-      "docx": "Document",
-      "xlsx": "Classeur",
-      "pptx": "Présentation"
-    },
-    "meta": {
-      "type": "Type",
-      "size": "Taille",
-      "path": "Chemin"
-    },
-    "presentationComingSoon": "L'éditeur de présentations arrive bientôt.",
     "empty": {
       "subtitle": "Ouvrez un fichier .docx, .xlsx ou .pptx pour commencer.",
       "openFile": "Ouvrir un fichier"
     }
+  },
+  "exportStale": {
+    "message": "Exporter {name} tel qu'il a été ouvert ?",
+    "detail": "Cette présentation a changé depuis son ouverture, mais les modifications de présentation ne peuvent pas encore être enregistrées ni exportées. Le PDF contiendra le fichier tel qu'il a été ouvert — vos modifications n'y apparaîtront pas.",
+    "cancel": "Annuler",
+    "confirm": "Exporter tel qu'ouvert"
   },
   "status": {
     "ready": "Prêt",
@@ -121,6 +121,7 @@
     "saved": "{path} enregistré",
     "saveCanceled": "Enregistrement annulé",
     "saveFailed": "Échec de l'enregistrement : {message}",
+    "presentationSaveUnsupported": "L'enregistrement des présentations n'est pas encore pris en charge — les modifications restent dans cette session",
     "openFirst": "Ouvrez d'abord un document",
     "openWordFirst": "Ouvrez d'abord un document Word",
     "exportingPdf": "Export PDF en cours…",
@@ -130,18 +131,24 @@
     "exportedPagesOne": "{path} exporté (1 page)",
     "exportedPagesMany": "{path} exporté ({pages} pages)",
     "truncatedSuffix": " — tronqué à la limite de pages",
+    "skippedSuffixOne": " — 1 diapositive n'a pas pu être rendue et a été omise",
+    "skippedSuffixMany": " — {slides} diapositives n'ont pas pu être rendues et ont été omises",
+    "asOpenedSuffix": " — la présentation telle qu'elle a été ouverte ; vos modifications ne sont pas incluses",
     "wordCount": "Mots : {words} · Caractères : {characters} · Page {page}/{pages}",
+    "wordCountSlides": "Mots : {words} · Caractères : {characters} · Diapositive {slide}/{slides}",
     "frozeTopRow": "Première ligne figée",
     "frozeFirstColumn": "Première colonne figée",
     "unfroze": "Volets libérés"
   },
   "footer": {
     "stats": "{words} mots · {characters} caractères · Page {page}/{pages}",
+    "statsSlides": "{words} mots · {characters} caractères · Diapositive {slide}/{slides}",
     "misspelledOne": "1 mot mal orthographié",
     "misspelledMany": "{count} mots mal orthographiés",
     "spellingOk": "Orthographe OK",
     "loadingDictionary": "Chargement du dictionnaire…",
-    "dictError": "Erreur de dictionnaire"
+    "dictError": "Erreur de dictionnaire",
+    "presentationSaveUnsupported": "Modifié — les modifications de présentation ne peuvent pas encore être enregistrées"
   },
   "spellPanel": {
     "title": "Vérification orthographique",

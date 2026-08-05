@@ -87,6 +87,11 @@
       "message": "PDF-Export gekürzt",
       "detail": "Das Dokument überschreitet das Exportlimit von {cap} Seiten; nur die ersten {pages} Seiten wurden exportiert."
     },
+    "pdfSkipped": {
+      "message": "Einige Folien konnten nicht exportiert werden",
+      "detailOne": "Folie {slides} konnte nicht gerendert werden und fehlt im PDF. Die übrigen {pages} Seiten wurden exportiert.",
+      "detailMany": "{count} Folien konnten nicht gerendert werden und fehlen im PDF: {slides}. Die übrigen {pages} Seiten wurden exportiert."
+    },
     "pdfFailed": {
       "title": "PDF-Export fehlgeschlagen"
     },
@@ -96,21 +101,16 @@
   },
   "app": {
     "edited": " — Bearbeitet",
-    "kind": {
-      "docx": "Dokument",
-      "xlsx": "Arbeitsmappe",
-      "pptx": "Präsentation"
-    },
-    "meta": {
-      "type": "Typ",
-      "size": "Größe",
-      "path": "Pfad"
-    },
-    "presentationComingSoon": "Der Präsentationseditor folgt in Kürze.",
     "empty": {
       "subtitle": "Öffnen Sie eine .docx-, .xlsx- oder .pptx-Datei, um zu beginnen.",
       "openFile": "Datei öffnen"
     }
+  },
+  "exportStale": {
+    "message": "{name} im geöffneten Zustand exportieren?",
+    "detail": "Diese Präsentation hat sich seit dem Öffnen geändert, aber Präsentationsänderungen können noch nicht gespeichert oder exportiert werden. Das PDF enthält die Datei im geöffneten Zustand — Ihre Änderungen erscheinen darin nicht.",
+    "cancel": "Abbrechen",
+    "confirm": "Wie geöffnet exportieren"
   },
   "status": {
     "ready": "Bereit",
@@ -121,6 +121,7 @@
     "saved": "{path} gespeichert",
     "saveCanceled": "Speichern abgebrochen",
     "saveFailed": "Speichern fehlgeschlagen: {message}",
+    "presentationSaveUnsupported": "Präsentationen können noch nicht gespeichert werden — Änderungen bleiben in dieser Sitzung",
     "openFirst": "Öffnen Sie zuerst ein Dokument",
     "openWordFirst": "Öffnen Sie zuerst ein Word-Dokument",
     "exportingPdf": "PDF wird exportiert…",
@@ -130,18 +131,24 @@
     "exportedPagesOne": "{path} exportiert (1 Seite)",
     "exportedPagesMany": "{path} exportiert ({pages} Seiten)",
     "truncatedSuffix": " — beim Seitenlimit gekürzt",
+    "skippedSuffixOne": " — 1 Folie konnte nicht gerendert werden und fehlt",
+    "skippedSuffixMany": " — {slides} Folien konnten nicht gerendert werden und fehlen",
+    "asOpenedSuffix": " — die Präsentation im geöffneten Zustand; Ihre Änderungen sind nicht enthalten",
     "wordCount": "Wörter: {words} · Zeichen: {characters} · Seite {page}/{pages}",
+    "wordCountSlides": "Wörter: {words} · Zeichen: {characters} · Folie {slide}/{slides}",
     "frozeTopRow": "Oberste Zeile fixiert",
     "frozeFirstColumn": "Erste Spalte fixiert",
     "unfroze": "Fixierung aufgehoben"
   },
   "footer": {
     "stats": "{words} Wörter · {characters} Zeichen · Seite {page}/{pages}",
+    "statsSlides": "{words} Wörter · {characters} Zeichen · Folie {slide}/{slides}",
     "misspelledOne": "1 falsch geschriebenes Wort",
     "misspelledMany": "{count} falsch geschriebene Wörter",
     "spellingOk": "Rechtschreibung OK",
     "loadingDictionary": "Wörterbuch wird geladen…",
-    "dictError": "Wörterbuchfehler"
+    "dictError": "Wörterbuchfehler",
+    "presentationSaveUnsupported": "Bearbeitet — Präsentationsänderungen können noch nicht gespeichert werden"
   },
   "spellPanel": {
     "title": "Rechtschreibprüfung",

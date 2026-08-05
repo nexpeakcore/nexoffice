@@ -87,6 +87,7 @@
     "defaultTextBoxName": "Text Box"
   },
   "errors": {
-    "decodeSlideImage": "could not decode slide image"
+    "decodeSlideImage": "could not decode slide image",
+    "pasteTooLarge": "Paste was too large for one text box — {dropped, plural, one {the last character was} other {the last # characters were}} left out."
   }
 }
