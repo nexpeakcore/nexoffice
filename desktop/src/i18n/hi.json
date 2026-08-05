@@ -87,6 +87,11 @@
       "message": "PDF निर्यात छोटा किया गया",
       "detail": "दस्तावेज़ {cap}-पृष्ठ निर्यात सीमा से अधिक है; केवल पहले {pages} पृष्ठ निर्यात किए गए।"
     },
+    "pdfSkipped": {
+      "message": "कुछ स्लाइड निर्यात नहीं की जा सकीं",
+      "detailOne": "स्लाइड {slides} रेंडर नहीं हो सकी और PDF में शामिल नहीं है। बाकी {pages} पृष्ठ निर्यात कर दिए गए।",
+      "detailMany": "{count} स्लाइड रेंडर नहीं हो सकीं और PDF में शामिल नहीं हैं: {slides}। बाकी {pages} पृष्ठ निर्यात कर दिए गए।"
+    },
     "pdfFailed": {
       "title": "PDF निर्यात विफल"
     },
@@ -96,21 +101,16 @@
   },
   "app": {
     "edited": " — संपादित",
-    "kind": {
-      "docx": "दस्तावेज़",
-      "xlsx": "कार्यपुस्तिका",
-      "pptx": "प्रस्तुति"
-    },
-    "meta": {
-      "type": "प्रकार",
-      "size": "आकार",
-      "path": "पथ"
-    },
-    "presentationComingSoon": "प्रस्तुति संपादक जल्द आ रहा है।",
     "empty": {
       "subtitle": "आरंभ करने के लिए .docx, .xlsx या .pptx फ़ाइल खोलें।",
       "openFile": "फ़ाइल खोलें"
     }
+  },
+  "exportStale": {
+    "message": "{name} को जैसा खोला गया था वैसा निर्यात करें?",
+    "detail": "यह प्रस्तुति खोलने के बाद बदली है, लेकिन प्रस्तुति के संपादन अभी सहेजे या निर्यात नहीं किए जा सकते। PDF में फ़ाइल वैसी ही रहेगी जैसी खोली गई थी — आपके संपादन उसमें नहीं दिखेंगे।",
+    "cancel": "रद्द करें",
+    "confirm": "जैसा खोला गया वैसा निर्यात करें"
   },
   "status": {
     "ready": "तैयार",
@@ -121,6 +121,7 @@
     "saved": "{path} सहेजा गया",
     "saveCanceled": "सहेजना रद्द किया गया",
     "saveFailed": "सहेजना विफल: {message}",
+    "presentationSaveUnsupported": "प्रस्तुतियाँ सहेजना अभी समर्थित नहीं है — संपादन इसी सत्र तक सीमित हैं",
     "openFirst": "पहले कोई दस्तावेज़ खोलें",
     "openWordFirst": "पहले कोई Word दस्तावेज़ खोलें",
     "exportingPdf": "PDF निर्यात हो रहा है…",
@@ -130,18 +131,24 @@
     "exportedPagesOne": "{path} निर्यात किया गया (1 पृष्ठ)",
     "exportedPagesMany": "{path} निर्यात किया गया ({pages} पृष्ठ)",
     "truncatedSuffix": " — पृष्ठ सीमा पर छोटा किया गया",
+    "skippedSuffixOne": " — 1 स्लाइड रेंडर नहीं हो सकी और छोड़ दी गई",
+    "skippedSuffixMany": " — {slides} स्लाइड रेंडर नहीं हो सकीं और छोड़ दी गईं",
+    "asOpenedSuffix": " — प्रस्तुति जैसी खोली गई थी; आपके संपादन शामिल नहीं हैं",
     "wordCount": "शब्द: {words} · वर्ण: {characters} · पृष्ठ {page}/{pages}",
+    "wordCountSlides": "शब्द: {words} · वर्ण: {characters} · स्लाइड {slide}/{slides}",
     "frozeTopRow": "शीर्ष पंक्ति स्थिर की गई",
     "frozeFirstColumn": "पहला स्तंभ स्थिर किया गया",
     "unfroze": "स्थिरता हटाई गई"
   },
   "footer": {
     "stats": "{words} शब्द · {characters} वर्ण · पृष्ठ {page}/{pages}",
+    "statsSlides": "{words} शब्द · {characters} वर्ण · स्लाइड {slide}/{slides}",
     "misspelledOne": "1 गलत वर्तनी वाला शब्द",
     "misspelledMany": "{count} गलत वर्तनी वाले शब्द",
     "spellingOk": "वर्तनी सही है",
     "loadingDictionary": "शब्दकोश लोड हो रहा है…",
-    "dictError": "शब्दकोश त्रुटि"
+    "dictError": "शब्दकोश त्रुटि",
+    "presentationSaveUnsupported": "संपादित — प्रस्तुति के संपादन अभी सहेजे नहीं जा सकते"
   },
   "spellPanel": {
     "title": "वर्तनी जाँच",

@@ -70,6 +70,15 @@ import type { EffectiveTextStyle } from './textFormatting';
 import { shapeFormattingFromShape } from './shapeFormatting';
 import { extendTextRange, textRangeAt } from './textSelection';
 import type { TextSelectionGranularity } from './textSelection';
+import {
+  copyTextSelection,
+  createClipboardQueue,
+  cutTextSelection,
+  deleteTextSelection,
+  pasteTextSelection,
+  textRangeOf,
+} from './clipboard';
+import type { ClipboardHost, ClipboardQueue } from './clipboard';
 
 export interface PptxTextSelection {
   shapeId: string;
@@ -78,9 +87,69 @@ export interface PptxTextSelection {
   focus: number;
 }
 
+/**
+ * What the editor's clipboard, delete and select-all actions can act on right
+ * now. A host that drives them from a menu should gate those items on this
+ * rather than enabling them unconditionally, because each one no-ops without
+ * the state it needs.
+ */
+export interface PptxEditorSelectionState {
+  /** A caret or range is live inside a shape's text story. */
+  hasTextSelection: boolean;
+  /** That selection spans at least one character — what copy, cut and delete need. */
+  hasTextRange: boolean;
+  /**
+   * A shape is selected on the canvas. The editor has no shape clipboard, so
+   * copy, cut, paste and delete still do nothing in this state.
+   */
+  hasShapeSelection: boolean;
+  /** Whether {@link PptxEditorApi.selectAll} has a story to select. */
+  canSelectAll: boolean;
+}
+
+/**
+ * The imperative surface handed to {@link PptxEditorProps.onReady}: the open
+ * presentation handle, a `refresh` to re-lay-out after an external caller edits
+ * through the same handle, and the editor's own history, clipboard, selection,
+ * and zoom actions so a host shell (menus, command palettes) can drive them
+ * against the live selection.
+ */
 export interface PptxEditorApi {
   handle: PresentationHandle;
   refresh: () => void;
+  /** Undo the last edit through the editor's history pipeline. */
+  undo: () => void;
+  /** Redo the last undone edit through the editor's history pipeline. */
+  redo: () => void;
+  /**
+   * Copy the selected text of the active story to the system clipboard. Does
+   * nothing without a non-empty text range, or if the clipboard refuses.
+   */
+  copySelection: () => Promise<void>;
+  /**
+   * Copy the selected text to the clipboard, then delete it. The delete is
+   * skipped when the copy failed or the caret moved while the clipboard was
+   * still writing, so a refused clipboard never loses the text.
+   */
+  cutSelection: () => Promise<void>;
+  /**
+   * Replace the selected text with the clipboard's plain text. Pastes run one
+   * at a time, and a paste whose selection moved while the clipboard was being
+   * read is dropped rather than applied to the stale range.
+   */
+  pasteSelection: () => Promise<void>;
+  /** Delete the selected text (Delete key equivalent). */
+  deleteSelection: () => void;
+  /** Select the active story's whole text (Cmd/Ctrl+A equivalent). */
+  selectAll: () => void;
+  /** What the clipboard, delete and select-all actions can act on right now. */
+  getSelectionState: () => PptxEditorSelectionState;
+  /** Zero-based index of the slide the editor is showing. */
+  getSlideIndex: () => number;
+  /** The current zoom factor (1 = 100%), resolved when fitting to the stage. */
+  getZoom: () => number;
+  /** Set the zoom factor, clamped to the toolbar's 50%–200% range. */
+  setZoom: (zoom: number) => void;
 }
 
 export interface PptxEditorCollaborationOptions {
@@ -100,6 +169,8 @@ export interface PptxEditorProps {
   className?: string;
   onReady?: (api: PptxEditorApi) => void;
   onChange?: (snapshot: DeckSnapshot) => void;
+  /** Fires whenever what the clipboard and delete actions can act on changes. */
+  onSelectionStateChange?: (state: PptxEditorSelectionState) => void;
   onError?: (error: Error) => void;
 }
 
@@ -186,6 +257,9 @@ interface RecentCanvasClick {
   count: number;
 }
 
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 2;
+
 const initialStyle: EffectiveTextStyle = {
   bold: false,
   italic: false,
@@ -214,6 +288,7 @@ function PptxEditorContent({
   className,
   onReady,
   onChange,
+  onSelectionStateChange,
   onError,
 }: Omit<PptxEditorProps, 'i18n'>) {
   const { t } = useTranslation();
@@ -226,6 +301,7 @@ function PptxEditorContent({
   const modelRef = useRef<EditorModel | null>(null);
   const onReadyRef = useRef(onReady);
   const onChangeRef = useRef(onChange);
+  const onSelectionStateChangeRef = useRef(onSelectionStateChange);
   const onErrorRef = useRef(onError);
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasHostRef = useRef<HTMLDivElement>(null);
@@ -234,6 +310,25 @@ function PptxEditorContent({
   const pointerGestureRef = useRef<PointerGesture | null>(null);
   const recentClickRef = useRef<RecentCanvasClick | null>(null);
   const imageCacheRef = useRef(new Map<string, Promise<CanvasImageSource | null>>());
+  // The clipboard actions await the system clipboard, so they read the caret
+  // back from here rather than from the render that started them.
+  const selectionRef = useRef<PptxTextSelection | null>(null);
+  const clipboardQueueRef = useRef<ClipboardQueue | null>(null);
+  const enqueueClipboardTask = (clipboardQueueRef.current ??= createClipboardQueue());
+  // `onReady` fires once per open, so the API it hands out reads the current
+  // render's closures through this ref instead of capturing that first render.
+  const editorActionsRef = useRef<{
+    undo: () => void;
+    redo: () => void;
+    copySelection: () => Promise<void>;
+    cutSelection: () => Promise<void>;
+    pasteSelection: () => Promise<void>;
+    deleteSelection: () => void;
+    selectAll: () => void;
+    getSelectionState: () => PptxEditorSelectionState;
+    getZoom: () => number;
+    setZoom: (zoom: number) => void;
+  } | null>(null);
   const stableFonts = useStableFontFaces(fonts);
   const [model, setModel] = useState<EditorModel | null>(null);
   const [selection, setSelection] = useState<PptxTextSelection | null>(null);
@@ -253,8 +348,10 @@ function PptxEditorContent({
 
   onReadyRef.current = onReady;
   onChangeRef.current = onChange;
+  onSelectionStateChangeRef.current = onSelectionStateChange;
   onErrorRef.current = onError;
   modelRef.current = model;
+  selectionRef.current = selection;
 
   const reportError = useCallback((value: unknown) => {
     const next = value instanceof Error ? value : new Error(String(value));
@@ -367,7 +464,25 @@ function PptxEditorContent({
           refreshAt(0);
           setLoading(false);
           setCollaborationReplica(handle);
-          onReadyRef.current?.({ handle, refresh });
+          onReadyRef.current?.({
+            handle,
+            refresh,
+            undo: () => editorActionsRef.current?.undo(),
+            redo: () => editorActionsRef.current?.redo(),
+            copySelection: () =>
+              editorActionsRef.current?.copySelection() ?? Promise.resolve(),
+            cutSelection: () =>
+              editorActionsRef.current?.cutSelection() ?? Promise.resolve(),
+            pasteSelection: () =>
+              editorActionsRef.current?.pasteSelection() ?? Promise.resolve(),
+            deleteSelection: () => editorActionsRef.current?.deleteSelection(),
+            selectAll: () => editorActionsRef.current?.selectAll(),
+            getSelectionState: () =>
+              editorActionsRef.current?.getSelectionState() ?? emptySelectionState(),
+            getSlideIndex: () => modelRef.current?.slideIndex ?? 0,
+            getZoom: () => editorActionsRef.current?.getZoom() ?? 1,
+            setZoom: (next: number) => editorActionsRef.current?.setZoom(next),
+          });
         } catch (value) {
           setLoading(false);
           reportError(value);
@@ -1044,6 +1159,7 @@ function PptxEditorContent({
   };
 
   const commit = (nextSelection: PptxTextSelection | null) => {
+    selectionRef.current = nextSelection;
     setSelection(nextSelection);
     setShapeSelection(null);
     recentClickRef.current = null;
@@ -1274,6 +1390,90 @@ function PptxEditorContent({
     } catch (value) {
       reportError(value);
     }
+  };
+
+  const selectedTextRange = textRangeOf(selection);
+
+  // Reporting no selection once the presentation is gone is what stops an
+  // action that was awaiting the system clipboard from resuming against a
+  // disposed handle: every step of those actions re-reads `selection`.
+  const clipboardHost: ClipboardHost = {
+    selection: () => (handleRef.current ? selectionRef.current : null),
+    storyText: (storyId) => {
+      const story = handleRef.current?.story(storyId);
+      return story ? storyText(story) : '';
+    },
+    deleteText: (storyId, start, end) => {
+      handleRef.current?.deleteText(storyId, start, end);
+    },
+    insertText: (storyId, index, text) => {
+      handleRef.current?.insertText(storyId, index, text, textStyle);
+    },
+    insertParagraphBreak: (storyId, index) => {
+      handleRef.current?.insertParagraphBreak(storyId, index);
+    },
+    commit,
+    readClipboard: () => navigator.clipboard.readText(),
+    writeClipboard: (text) => navigator.clipboard.writeText(text),
+    reportError,
+    reportPasteLimit: (droppedCharacters) => {
+      reportError(new Error(t('errors.pasteTooLarge', { dropped: droppedCharacters })));
+    },
+  };
+
+  const deleteSelectedText = () => deleteTextSelection(clipboardHost);
+
+  const copySelectedText = () =>
+    enqueueClipboardTask(async () => {
+      await copyTextSelection(clipboardHost);
+    });
+
+  const cutSelectedText = () => enqueueClipboardTask(() => cutTextSelection(clipboardHost));
+
+  const pasteText = () => enqueueClipboardTask(() => pasteTextSelection(clipboardHost));
+
+  const selectAllText = () => {
+    const handle = handleRef.current;
+    const shapeId = selection?.shapeId ?? shapeSelection?.shapeId;
+    const storyId = selection?.storyId ?? selectedShapeStoryId;
+    if (!handle || !shapeId || !storyId) return;
+    try {
+      const length = storyText(handle.story(storyId)).length;
+      setShapeSelection(null);
+      setSelection({ shapeId, storyId, anchor: 0, focus: length });
+    } catch (value) {
+      reportError(value);
+    }
+  };
+
+  const selectionState: PptxEditorSelectionState = {
+    hasTextSelection: selection !== null,
+    hasTextRange: selectedTextRange !== null && selectedTextRange.start !== selectedTextRange.end,
+    hasShapeSelection: shapeSelection !== null,
+    canSelectAll: selection !== null || (shapeSelection !== null && selectedShapeStoryId !== null),
+  };
+
+  const { hasTextSelection, hasTextRange, hasShapeSelection, canSelectAll } = selectionState;
+  useEffect(() => {
+    onSelectionStateChangeRef.current?.({
+      hasTextSelection,
+      hasTextRange,
+      hasShapeSelection,
+      canSelectAll,
+    });
+  }, [hasTextSelection, hasTextRange, hasShapeSelection, canSelectAll]);
+
+  editorActionsRef.current = {
+    undo: () => history('undo'),
+    redo: () => history('redo'),
+    copySelection: copySelectedText,
+    cutSelection: cutSelectedText,
+    pasteSelection: pasteText,
+    deleteSelection: deleteSelectedText,
+    selectAll: selectAllText,
+    getSelectionState: () => selectionState,
+    getZoom: () => scale,
+    setZoom: (next: number) => setZoom(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next))),
   };
 
   const slideCount = model?.snapshot.slides.length ?? 0;
@@ -1634,6 +1834,15 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   if (left === right) return true;
   if (left.byteLength !== right.byteLength) return false;
   return left.every((byte, index) => byte === right[index]);
+}
+
+function emptySelectionState(): PptxEditorSelectionState {
+  return {
+    hasTextSelection: false,
+    hasTextRange: false,
+    hasShapeSelection: false,
+    canSelectAll: false,
+  };
 }
 
 function storyText(story: StorySnapshot): string {

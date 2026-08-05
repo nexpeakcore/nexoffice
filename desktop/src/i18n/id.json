@@ -87,6 +87,11 @@
       "message": "Ekspor PDF terpotong",
       "detail": "Dokumen melebihi batas ekspor {cap} halaman; hanya {pages} halaman pertama yang diekspor."
     },
+    "pdfSkipped": {
+      "message": "Beberapa slide tidak dapat diekspor",
+      "detailOne": "Slide {slides} tidak dapat dirender dan tidak disertakan dalam PDF. {pages} halaman lainnya telah diekspor.",
+      "detailMany": "{count} slide tidak dapat dirender dan tidak disertakan dalam PDF: {slides}. {pages} halaman lainnya telah diekspor."
+    },
     "pdfFailed": {
       "title": "Ekspor PDF Gagal"
     },
@@ -96,21 +101,16 @@
   },
   "app": {
     "edited": " — Disunting",
-    "kind": {
-      "docx": "Dokumen",
-      "xlsx": "Buku Kerja",
-      "pptx": "Presentasi"
-    },
-    "meta": {
-      "type": "Jenis",
-      "size": "Ukuran",
-      "path": "Jalur"
-    },
-    "presentationComingSoon": "Editor presentasi segera hadir.",
     "empty": {
       "subtitle": "Buka berkas .docx, .xlsx, atau .pptx untuk memulai.",
       "openFile": "Buka Berkas"
     }
+  },
+  "exportStale": {
+    "message": "Ekspor {name} seperti saat dibuka?",
+    "detail": "Presentasi ini berubah sejak dibuka, tetapi suntingan presentasi belum dapat disimpan atau diekspor. PDF akan berisi berkas seperti saat dibuka — suntingan Anda tidak akan muncul di dalamnya.",
+    "cancel": "Batal",
+    "confirm": "Ekspor seperti saat dibuka"
   },
   "status": {
     "ready": "Siap",
@@ -121,6 +121,7 @@
     "saved": "{path} disimpan",
     "saveCanceled": "Penyimpanan dibatalkan",
     "saveFailed": "Gagal menyimpan: {message}",
+    "presentationSaveUnsupported": "Menyimpan presentasi belum didukung — suntingan hanya bertahan di sesi ini",
     "openFirst": "Buka dokumen terlebih dahulu",
     "openWordFirst": "Buka dokumen Word terlebih dahulu",
     "exportingPdf": "Mengekspor PDF…",
@@ -130,18 +131,24 @@
     "exportedPagesOne": "{path} diekspor (1 halaman)",
     "exportedPagesMany": "{path} diekspor ({pages} halaman)",
     "truncatedSuffix": " — terpotong pada batas halaman",
+    "skippedSuffixOne": " — 1 slide tidak dapat dirender dan dilewati",
+    "skippedSuffixMany": " — {slides} slide tidak dapat dirender dan dilewati",
+    "asOpenedSuffix": " — presentasi seperti saat dibuka; suntingan Anda tidak disertakan",
     "wordCount": "Kata: {words} · Karakter: {characters} · Halaman {page}/{pages}",
+    "wordCountSlides": "Kata: {words} · Karakter: {characters} · Slide {slide}/{slides}",
     "frozeTopRow": "Baris atas dibekukan",
     "frozeFirstColumn": "Kolom pertama dibekukan",
     "unfroze": "Pembekuan dilepas"
   },
   "footer": {
     "stats": "{words} kata · {characters} karakter · Halaman {page}/{pages}",
+    "statsSlides": "{words} kata · {characters} karakter · Slide {slide}/{slides}",
     "misspelledOne": "1 kata salah eja",
     "misspelledMany": "{count} kata salah eja",
     "spellingOk": "Ejaan benar",
     "loadingDictionary": "Memuat kamus…",
-    "dictError": "Kesalahan kamus"
+    "dictError": "Kesalahan kamus",
+    "presentationSaveUnsupported": "Disunting — suntingan presentasi belum dapat disimpan"
   },
   "spellPanel": {
     "title": "Periksa Ejaan",

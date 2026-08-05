@@ -87,6 +87,11 @@
       "message": "Exportação de PDF truncada",
       "detail": "O documento excede o limite de exportação de {cap} páginas; apenas as primeiras {pages} páginas foram exportadas."
     },
+    "pdfSkipped": {
+      "message": "Alguns slides não puderam ser exportados",
+      "detailOne": "O slide {slides} não pôde ser renderizado e ficou de fora do PDF. As outras {pages} páginas foram exportadas.",
+      "detailMany": "{count} slides não puderam ser renderizados e ficaram de fora do PDF: {slides}. As outras {pages} páginas foram exportadas."
+    },
     "pdfFailed": {
       "title": "Falha na exportação de PDF"
     },
@@ -96,21 +101,16 @@
   },
   "app": {
     "edited": " — Editado",
-    "kind": {
-      "docx": "Documento",
-      "xlsx": "Pasta de trabalho",
-      "pptx": "Apresentação"
-    },
-    "meta": {
-      "type": "Tipo",
-      "size": "Tamanho",
-      "path": "Caminho"
-    },
-    "presentationComingSoon": "O editor de apresentações chega em breve.",
     "empty": {
       "subtitle": "Abra um arquivo .docx, .xlsx ou .pptx para começar.",
       "openFile": "Abrir arquivo"
     }
+  },
+  "exportStale": {
+    "message": "Exportar {name} como foi aberto?",
+    "detail": "Esta apresentação mudou desde que foi aberta, mas ainda não é possível salvar ou exportar edições de apresentação. O PDF conterá o arquivo como foi aberto — suas edições não aparecerão nele.",
+    "cancel": "Cancelar",
+    "confirm": "Exportar como aberto"
   },
   "status": {
     "ready": "Pronto",
@@ -121,6 +121,7 @@
     "saved": "{path} salvo",
     "saveCanceled": "Salvamento cancelado",
     "saveFailed": "Falha ao salvar: {message}",
+    "presentationSaveUnsupported": "Salvar apresentações ainda não é compatível — as edições ficam nesta sessão",
     "openFirst": "Abra um documento primeiro",
     "openWordFirst": "Abra um documento do Word primeiro",
     "exportingPdf": "Exportando PDF…",
@@ -130,18 +131,24 @@
     "exportedPagesOne": "{path} exportado (1 página)",
     "exportedPagesMany": "{path} exportado ({pages} páginas)",
     "truncatedSuffix": " — truncado no limite de páginas",
+    "skippedSuffixOne": " — 1 slide não pôde ser renderizado e ficou de fora",
+    "skippedSuffixMany": " — {slides} slides não puderam ser renderizados e ficaram de fora",
+    "asOpenedSuffix": " — a apresentação como foi aberta; suas edições não estão incluídas",
     "wordCount": "Palavras: {words} · Caracteres: {characters} · Página {page}/{pages}",
+    "wordCountSlides": "Palavras: {words} · Caracteres: {characters} · Slide {slide}/{slides}",
     "frozeTopRow": "Linha superior congelada",
     "frozeFirstColumn": "Primeira coluna congelada",
     "unfroze": "Painéis descongelados"
   },
   "footer": {
     "stats": "{words} palavras · {characters} caracteres · Página {page}/{pages}",
+    "statsSlides": "{words} palavras · {characters} caracteres · Slide {slide}/{slides}",
     "misspelledOne": "1 palavra com erro de ortografia",
     "misspelledMany": "{count} palavras com erro de ortografia",
     "spellingOk": "Ortografia OK",
     "loadingDictionary": "Carregando dicionário…",
-    "dictError": "Erro no dicionário"
+    "dictError": "Erro no dicionário",
+    "presentationSaveUnsupported": "Editado — ainda não é possível salvar edições de apresentação"
   },
   "spellPanel": {
     "title": "Verificação ortográfica",

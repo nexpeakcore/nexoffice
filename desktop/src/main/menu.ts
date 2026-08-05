@@ -6,7 +6,7 @@ import {
   type LocaleCode,
   type Translator,
 } from '../i18n/index.js'
-import type { DocumentKind, MenuAction } from '../shared/ipc.js'
+import type { DocumentKind, EditCapabilities, MenuAction } from '../shared/ipc.js'
 
 type Dispatch = (action: MenuAction) => void
 
@@ -15,6 +15,7 @@ export interface MenuContext {
   locale: LocaleCode
   dispatch: Dispatch
   documentKind: DocumentKind | null
+  editCapabilities: EditCapabilities
   recents: readonly string[]
   onOpenRecent: (path: string) => void
   onClearRecents: () => void
@@ -58,8 +59,21 @@ function languageSubmenu(context: MenuContext): MenuItemConstructorOptions[] {
 export function buildMenu(context: MenuContext): Menu {
   const { t } = context
   const send = (action: MenuAction) => () => context.dispatch(action)
-  const hasZoom = context.documentKind === 'docx' || context.documentKind === 'xlsx'
+  const hasZoom = context.documentKind !== null
   const hasFind = context.documentKind === 'docx'
+  const hasFreeze = context.documentKind === 'xlsx'
+  // Word count and spell check only read text, so they serve a presentation
+  // too even though its edits can never be saved.
+  const hasProofing = context.documentKind === 'docx' || context.documentKind === 'pptx'
+  // The pptx engine holds edits in its CRDT without a PresentationML writer, so
+  // a presentation has no bytes to save. PDF export renders from the bytes the
+  // deck opened with, so it stays available for every kind.
+  const canSave = context.documentKind !== 'pptx'
+  const canExportPdf = context.documentKind !== null
+  // What the focused editor says its clipboard verbs can act on right now: the
+  // pptx editor has no shape clipboard, so cut, copy, paste and delete would
+  // silently do nothing over a shape selection.
+  const edits = context.editCapabilities
 
   const appMenu: MenuItemConstructorOptions[] = isMac
     ? [
@@ -90,12 +104,23 @@ export function buildMenu(context: MenuContext): Menu {
         { label: t('menu.file.open'), accelerator: 'CmdOrCtrl+O', click: send('file:open') },
         { label: t('menu.file.openRecent'), submenu: openRecentSubmenu(context) },
         { type: 'separator' },
-        { label: t('menu.file.save'), accelerator: 'CmdOrCtrl+S', click: send('file:save') },
-        { label: t('menu.file.saveAs'), accelerator: 'CmdOrCtrl+Shift+S', click: send('file:saveAs') },
+        {
+          label: t('menu.file.save'),
+          accelerator: 'CmdOrCtrl+S',
+          enabled: canSave,
+          click: send('file:save'),
+        },
+        {
+          label: t('menu.file.saveAs'),
+          accelerator: 'CmdOrCtrl+Shift+S',
+          enabled: canSave,
+          click: send('file:saveAs'),
+        },
         { type: 'separator' },
         {
           label: t('menu.file.exportPdf'),
           accelerator: 'CmdOrCtrl+Shift+E',
+          enabled: canExportPdf,
           click: send('file:exportPdf'),
         },
         { type: 'separator' },
@@ -114,25 +139,46 @@ export function buildMenu(context: MenuContext): Menu {
           click: send('edit:redo'),
         },
         { type: 'separator' },
-        { label: t('menu.edit.cut'), accelerator: 'CmdOrCtrl+X', click: send('edit:cut') },
-        { label: t('menu.edit.copy'), accelerator: 'CmdOrCtrl+C', click: send('edit:copy') },
-        { label: t('menu.edit.paste'), accelerator: 'CmdOrCtrl+V', click: send('edit:paste') },
+        {
+          label: t('menu.edit.cut'),
+          accelerator: 'CmdOrCtrl+X',
+          enabled: edits.cut,
+          click: send('edit:cut'),
+        },
+        {
+          label: t('menu.edit.copy'),
+          accelerator: 'CmdOrCtrl+C',
+          enabled: edits.copy,
+          click: send('edit:copy'),
+        },
+        {
+          label: t('menu.edit.paste'),
+          accelerator: 'CmdOrCtrl+V',
+          enabled: edits.paste,
+          click: send('edit:paste'),
+        },
         ...(isMac
           ? ([
-              { role: 'pasteAndMatchStyle', label: t('menu.edit.pasteAndMatchStyle') },
-              { label: t('menu.edit.delete'), click: send('edit:delete') },
+              {
+                role: 'pasteAndMatchStyle',
+                label: t('menu.edit.pasteAndMatchStyle'),
+                enabled: edits.paste,
+              },
+              { label: t('menu.edit.delete'), enabled: edits.delete, click: send('edit:delete') },
               {
                 label: t('menu.edit.selectAll'),
                 accelerator: 'CmdOrCtrl+A',
+                enabled: edits.selectAll,
                 click: send('edit:selectAll'),
               },
             ] as MenuItemConstructorOptions[])
           : ([
-              { label: t('menu.edit.delete'), click: send('edit:delete') },
+              { label: t('menu.edit.delete'), enabled: edits.delete, click: send('edit:delete') },
               { type: 'separator' },
               {
                 label: t('menu.edit.selectAll'),
                 accelerator: 'CmdOrCtrl+A',
+                enabled: edits.selectAll,
                 click: send('edit:selectAll'),
               },
             ] as MenuItemConstructorOptions[])),
@@ -175,12 +221,26 @@ export function buildMenu(context: MenuContext): Menu {
           click: send('view:zoomReset'),
         },
         { type: 'separator' },
-        { label: t('menu.view.wordCount'), accelerator: 'CmdOrCtrl+Shift+G', click: send('view:wordCount') },
-        { label: t('menu.view.spellCheck'), accelerator: 'CmdOrCtrl+Shift+;', click: send('view:spellCheck') },
+        {
+          label: t('menu.view.wordCount'),
+          accelerator: 'CmdOrCtrl+Shift+G',
+          enabled: hasProofing,
+          click: send('view:wordCount'),
+        },
+        {
+          label: t('menu.view.spellCheck'),
+          accelerator: 'CmdOrCtrl+Shift+;',
+          enabled: hasProofing,
+          click: send('view:spellCheck'),
+        },
         { type: 'separator' },
-        { label: t('menu.view.freezeTopRow'), click: send('view:freezeTopRow') },
-        { label: t('menu.view.freezeFirstColumn'), click: send('view:freezeFirstColumn') },
-        { label: t('menu.view.unfreeze'), click: send('view:unfreeze') },
+        { label: t('menu.view.freezeTopRow'), enabled: hasFreeze, click: send('view:freezeTopRow') },
+        {
+          label: t('menu.view.freezeFirstColumn'),
+          enabled: hasFreeze,
+          click: send('view:freezeFirstColumn'),
+        },
+        { label: t('menu.view.unfreeze'), enabled: hasFreeze, click: send('view:unfreeze') },
         { type: 'separator' },
         { label: t('menu.view.language'), submenu: languageSubmenu(context) },
         { type: 'separator' },

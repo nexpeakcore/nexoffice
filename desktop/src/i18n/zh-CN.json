@@ -87,6 +87,11 @@
       "message": "PDF 导出被截断",
       "detail": "文档超过 {cap} 页的导出限制；仅导出了前 {pages} 页。"
     },
+    "pdfSkipped": {
+      "message": "部分幻灯片无法导出",
+      "detailOne": "第 {slides} 张幻灯片无法渲染，未包含在 PDF 中。其余 {pages} 页已导出。",
+      "detailMany": "有 {count} 张幻灯片无法渲染，未包含在 PDF 中：{slides}。其余 {pages} 页已导出。"
+    },
     "pdfFailed": {
       "title": "PDF 导出失败"
     },
@@ -96,21 +101,16 @@
   },
   "app": {
     "edited": " — 已编辑",
-    "kind": {
-      "docx": "文档",
-      "xlsx": "工作簿",
-      "pptx": "演示文稿"
-    },
-    "meta": {
-      "type": "类型",
-      "size": "大小",
-      "path": "路径"
-    },
-    "presentationComingSoon": "演示文稿编辑器即将推出。",
     "empty": {
       "subtitle": "打开 .docx、.xlsx 或 .pptx 文件即可开始。",
       "openFile": "打开文件"
     }
+  },
+  "exportStale": {
+    "message": "按打开时的内容导出 {name}？",
+    "detail": "此演示文稿自打开后已更改，但演示文稿的编辑尚无法保存或导出。PDF 将包含打开时的文件内容 — 您的编辑不会出现在其中。",
+    "cancel": "取消",
+    "confirm": "按打开时的内容导出"
   },
   "status": {
     "ready": "就绪",
@@ -121,6 +121,7 @@
     "saved": "已保存 {path}",
     "saveCanceled": "已取消保存",
     "saveFailed": "保存失败：{message}",
+    "presentationSaveUnsupported": "尚不支持保存演示文稿 — 编辑仅保留在本次会话中",
     "openFirst": "请先打开一个文档",
     "openWordFirst": "请先打开一个 Word 文档",
     "exportingPdf": "正在导出 PDF…",
@@ -130,18 +131,24 @@
     "exportedPagesOne": "已导出 {path}（1 页）",
     "exportedPagesMany": "已导出 {path}（{pages} 页）",
     "truncatedSuffix": " — 已在页数限制处截断",
+    "skippedSuffixOne": " — 1 张幻灯片无法渲染，已跳过",
+    "skippedSuffixMany": " — {slides} 张幻灯片无法渲染，已跳过",
+    "asOpenedSuffix": " — 打开时的演示文稿内容；不包含您的编辑",
     "wordCount": "字数：{words} · 字符：{characters} · 第 {page}/{pages} 页",
+    "wordCountSlides": "字数：{words} · 字符：{characters} · 第 {slide}/{slides} 张幻灯片",
     "frozeTopRow": "已冻结首行",
     "frozeFirstColumn": "已冻结首列",
     "unfroze": "已取消冻结"
   },
   "footer": {
     "stats": "{words} 字 · {characters} 字符 · 第 {page}/{pages} 页",
+    "statsSlides": "{words} 字 · {characters} 字符 · 第 {slide}/{slides} 张幻灯片",
     "misspelledOne": "1 个拼写错误的单词",
     "misspelledMany": "{count} 个拼写错误的单词",
     "spellingOk": "拼写正确",
     "loadingDictionary": "正在加载词典…",
-    "dictError": "词典错误"
+    "dictError": "词典错误",
+    "presentationSaveUnsupported": "已编辑 — 演示文稿的编辑尚无法保存"
   },
   "spellPanel": {
     "title": "拼写检查",

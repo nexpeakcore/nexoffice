@@ -87,6 +87,7 @@
     "defaultTextBoxName": null
   },
   "errors": {
-    "decodeSlideImage": null
+    "decodeSlideImage": null,
+    "pasteTooLarge": null
   }
 }

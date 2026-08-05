@@ -87,6 +87,11 @@
       "message": "PDF dışa aktarma kısaltıldı",
       "detail": "Belge {cap} sayfalık dışa aktarma sınırını aşıyor; yalnızca ilk {pages} sayfa dışa aktarıldı."
     },
+    "pdfSkipped": {
+      "message": "Bazı slaytlar dışa aktarılamadı",
+      "detailOne": "{slides}. slayt işlenemedi ve PDF'e eklenmedi. Diğer {pages} sayfa dışa aktarıldı.",
+      "detailMany": "{count} slayt işlenemedi ve PDF'e eklenmedi: {slides}. Diğer {pages} sayfa dışa aktarıldı."
+    },
     "pdfFailed": {
       "title": "PDF Dışa Aktarma Başarısız"
     },
@@ -96,21 +101,16 @@
   },
   "app": {
     "edited": " — Düzenlendi",
-    "kind": {
-      "docx": "Belge",
-      "xlsx": "Çalışma Kitabı",
-      "pptx": "Sunu"
-    },
-    "meta": {
-      "type": "Tür",
-      "size": "Boyut",
-      "path": "Yol"
-    },
-    "presentationComingSoon": "Sunu düzenleyici yakında geliyor.",
     "empty": {
       "subtitle": "Başlamak için bir .docx, .xlsx veya .pptx dosyası açın.",
       "openFile": "Dosya Aç"
     }
+  },
+  "exportStale": {
+    "message": "{name} açıldığı haliyle dışa aktarılsın mı?",
+    "detail": "Bu sunu açıldığından beri değişti, ancak sunu düzenlemeleri henüz kaydedilemiyor veya dışa aktarılamıyor. PDF, dosyanın açıldığı halini içerecek — düzenlemeleriniz onda görünmeyecek.",
+    "cancel": "İptal",
+    "confirm": "Açıldığı haliyle dışa aktar"
   },
   "status": {
     "ready": "Hazır",
@@ -121,6 +121,7 @@
     "saved": "{path} kaydedildi",
     "saveCanceled": "Kaydetme iptal edildi",
     "saveFailed": "Kaydetme başarısız: {message}",
+    "presentationSaveUnsupported": "Sunuları kaydetme henüz desteklenmiyor — düzenlemeler bu oturumda kalır",
     "openFirst": "Önce bir belge açın",
     "openWordFirst": "Önce bir Word belgesi açın",
     "exportingPdf": "PDF dışa aktarılıyor…",
@@ -130,18 +131,24 @@
     "exportedPagesOne": "{path} dışa aktarıldı (1 sayfa)",
     "exportedPagesMany": "{path} dışa aktarıldı ({pages} sayfa)",
     "truncatedSuffix": " — sayfa sınırında kısaltıldı",
+    "skippedSuffixOne": " — 1 slayt işlenemedi ve atlandı",
+    "skippedSuffixMany": " — {slides} slayt işlenemedi ve atlandı",
+    "asOpenedSuffix": " — sunu açıldığı haliyle; düzenlemeleriniz dahil değil",
     "wordCount": "Sözcük: {words} · Karakter: {characters} · Sayfa {page}/{pages}",
+    "wordCountSlides": "Sözcük: {words} · Karakter: {characters} · Slayt {slide}/{slides}",
     "frozeTopRow": "Üst satır donduruldu",
     "frozeFirstColumn": "İlk sütun donduruldu",
     "unfroze": "Bölmeler çözüldü"
   },
   "footer": {
     "stats": "{words} sözcük · {characters} karakter · Sayfa {page}/{pages}",
+    "statsSlides": "{words} sözcük · {characters} karakter · Slayt {slide}/{slides}",
     "misspelledOne": "1 yazım hatalı sözcük",
     "misspelledMany": "{count} yazım hatalı sözcük",
     "spellingOk": "Yazım doğru",
     "loadingDictionary": "Sözlük yükleniyor…",
-    "dictError": "Sözlük hatası"
+    "dictError": "Sözlük hatası",
+    "presentationSaveUnsupported": "Düzenlendi — sunu düzenlemeleri henüz kaydedilemiyor"
   },
   "spellPanel": {
     "title": "Yazım Denetimi",
