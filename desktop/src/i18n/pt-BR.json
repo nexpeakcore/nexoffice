@@ -85,8 +85,8 @@
     },
     "saveRefused": {
       "message": "O NexOffice ainda não consegue salvar esta alteração em {name}",
-      "detail": "{message}\n\nNada foi gravado, então o arquivo em disco continua o mesmo. Se você continuar sem salvar, esta alteração será perdida.",
-      "discard": "Descartar a alteração",
+      "detail": "{message}\n\nNada foi gravado, então o arquivo em disco continua o mesmo. Se você continuar sem salvar, perderá todas as edições feitas desde o último salvamento — não apenas esta.",
+      "discard": "Descartar todas as edições",
       "keepEditing": "Continuar editando"
     },
     "pdfTruncated": {
@@ -114,7 +114,7 @@
   },
   "exportStale": {
     "message": "Exportar {name} como foi aberto?",
-    "detail": "O NexOffice ainda não consegue gravar uma das alterações desta apresentação, então o PDF só pode conter o arquivo como foi aberto — essa alteração não aparecerá nele.",
+    "detail": "O NexOffice ainda não consegue gravar uma das alterações desta apresentação, então o PDF só pode conter o arquivo exatamente como foi aberto — nenhuma das suas edições aparecerá nele, não apenas essa.",
     "cancel": "Cancelar",
     "confirm": "Exportar como aberto"
   },
@@ -139,7 +139,7 @@
     "truncatedSuffix": " — truncado no limite de páginas",
     "skippedSuffixOne": " — 1 slide não pôde ser renderizado e ficou de fora",
     "skippedSuffixMany": " — {slides} slides não puderam ser renderizados e ficaram de fora",
-    "asOpenedSuffix": " — a apresentação como foi aberta; a alteração que o NexOffice não consegue gravar não está incluída",
+    "asOpenedSuffix": " — a apresentação exatamente como foi aberta; nenhuma das suas edições está incluída",
     "wordCount": "Palavras: {words} · Caracteres: {characters} · Página {page}/{pages}",
     "wordCountSlides": "Palavras: {words} · Caracteres: {characters} · Slide {slide}/{slides}",
     "frozeTopRow": "Linha superior congelada",

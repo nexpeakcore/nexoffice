@@ -85,8 +85,8 @@
     },
     "saveRefused": {
       "message": "NexOffice ne peut pas encore enregistrer cette modification dans {name}",
-      "detail": "{message}\n\nRien n'a été écrit : le fichier sur le disque est inchangé. Si vous continuez sans enregistrer, cette modification sera perdue.",
-      "discard": "Abandonner la modification",
+      "detail": "{message}\n\nRien n'a été écrit : le fichier sur le disque est inchangé. Si vous continuez sans enregistrer, vous perdez toutes les modifications faites depuis le dernier enregistrement — pas seulement celle-ci.",
+      "discard": "Abandonner toutes les modifications",
       "keepEditing": "Continuer à modifier"
     },
     "pdfTruncated": {
@@ -114,7 +114,7 @@
   },
   "exportStale": {
     "message": "Exporter {name} tel qu'il a été ouvert ?",
-    "detail": "NexOffice ne peut pas encore écrire l'une des modifications de cette présentation ; le PDF ne peut donc contenir que le fichier tel qu'il a été ouvert — cette modification n'y apparaîtra pas.",
+    "detail": "NexOffice ne peut pas encore écrire l'une des modifications de cette présentation ; le PDF ne peut donc contenir que le fichier exactement tel qu'il a été ouvert — aucune de vos modifications n'y apparaîtra, pas seulement celle-là.",
     "cancel": "Annuler",
     "confirm": "Exporter tel qu'ouvert"
   },
@@ -139,7 +139,7 @@
     "truncatedSuffix": " — tronqué à la limite de pages",
     "skippedSuffixOne": " — 1 diapositive n'a pas pu être rendue et a été omise",
     "skippedSuffixMany": " — {slides} diapositives n'ont pas pu être rendues et ont été omises",
-    "asOpenedSuffix": " — la présentation telle qu'elle a été ouverte ; la modification que NexOffice ne peut pas écrire n'est pas incluse",
+    "asOpenedSuffix": " — la présentation exactement telle qu'elle a été ouverte ; aucune de vos modifications n'est incluse",
     "wordCount": "Mots : {words} · Caractères : {characters} · Page {page}/{pages}",
     "wordCountSlides": "Mots : {words} · Caractères : {characters} · Diapositive {slide}/{slides}",
     "frozeTopRow": "Première ligne figée",

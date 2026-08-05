@@ -1,3 +1,4 @@
+import { PptxSaveRefusedError } from '@betteroffice/pptx'
 import {
   ALL_EDIT_CAPABILITIES,
   type DocumentKind,
@@ -54,6 +55,20 @@ export type SaveOutcome =
   | { status: 'canceled' }
   | { status: 'refused'; message: string }
   | { status: 'failed'; message: string }
+
+// What the presentation writer said it could not express, or null when the
+// throw meant something else.
+//
+// The wasm boundary hands every error out as text, so a save that was refused
+// and a save that broke are told apart in the pptx loader, which raises
+// `PptxSaveRefusedError` for the one error that means the edit cannot be
+// projected and leaves a disposed handle, a bad snapshot and a panic as plain
+// errors. Only the first is a refusal: reading the others as one would offer
+// to throw away work that retrying the save would have written, and the offer
+// is what a refusal exists to make.
+export function saveRefusal(error: unknown): string | null {
+  return error instanceof PptxSaveRefusedError ? error.message : null
+}
 
 export function saveOutcomeStatus(outcome: SaveOutcome): StatusMessage {
   switch (outcome.status) {

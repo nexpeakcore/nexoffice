@@ -85,8 +85,8 @@
     },
     "saveRefused": {
       "message": "NexOffice belum dapat menyimpan perubahan ini ke {name}",
-      "detail": "{message}\n\nTidak ada yang ditulis, jadi berkas di disk tidak berubah. Jika Anda lanjut tanpa menyimpan, perubahan ini akan hilang.",
-      "discard": "Buang Perubahan",
+      "detail": "{message}\n\nTidak ada yang ditulis, jadi berkas di disk tidak berubah. Jika Anda lanjut tanpa menyimpan, semua suntingan sejak penyimpanan terakhir akan hilang — bukan hanya yang ini.",
+      "discard": "Buang Semua Suntingan",
       "keepEditing": "Lanjut Menyunting"
     },
     "pdfTruncated": {
@@ -114,7 +114,7 @@
   },
   "exportStale": {
     "message": "Ekspor {name} seperti saat dibuka?",
-    "detail": "NexOffice belum dapat menulis salah satu perubahan dalam presentasi ini, sehingga PDF hanya dapat berisi berkas seperti saat dibuka — perubahan itu tidak akan muncul di dalamnya.",
+    "detail": "NexOffice belum dapat menulis salah satu perubahan dalam presentasi ini, sehingga PDF hanya dapat berisi berkas persis seperti saat dibuka — tidak ada suntingan Anda yang akan muncul di dalamnya, bukan hanya yang itu.",
     "cancel": "Batal",
     "confirm": "Ekspor seperti saat dibuka"
   },
@@ -139,7 +139,7 @@
     "truncatedSuffix": " — terpotong pada batas halaman",
     "skippedSuffixOne": " — 1 slide tidak dapat dirender dan dilewati",
     "skippedSuffixMany": " — {slides} slide tidak dapat dirender dan dilewati",
-    "asOpenedSuffix": " — presentasi seperti saat dibuka; perubahan yang tidak dapat ditulis NexOffice tidak disertakan",
+    "asOpenedSuffix": " — presentasi persis seperti saat dibuka; tidak ada suntingan Anda yang disertakan",
     "wordCount": "Kata: {words} · Karakter: {characters} · Halaman {page}/{pages}",
     "wordCountSlides": "Kata: {words} · Karakter: {characters} · Slide {slide}/{slides}",
     "frozeTopRow": "Baris atas dibekukan",

@@ -85,8 +85,8 @@
     },
     "saveRefused": {
       "message": "NexOffice nie może jeszcze zapisać tej zmiany w {name}",
-      "detail": "{message}\n\nNic nie zostało zapisane, więc plik na dysku pozostaje bez zmian. Jeśli przejdziesz dalej bez zapisywania, ta zmiana zostanie utracona.",
-      "discard": "Odrzuć zmianę",
+      "detail": "{message}\n\nNic nie zostało zapisane, więc plik na dysku pozostaje bez zmian. Jeśli przejdziesz dalej bez zapisywania, utracisz wszystkie zmiany wprowadzone od ostatniego zapisu — nie tylko tę jedną.",
+      "discard": "Odrzuć wszystkie zmiany",
       "keepEditing": "Edytuj dalej"
     },
     "pdfTruncated": {
@@ -114,7 +114,7 @@
   },
   "exportStale": {
     "message": "Wyeksportować {name} w wersji z chwili otwarcia?",
-    "detail": "NexOffice nie potrafi jeszcze zapisać jednej ze zmian w tej prezentacji, więc plik PDF może zawierać tylko wersję z chwili otwarcia — ta zmiana się w nim nie pojawi.",
+    "detail": "NexOffice nie potrafi jeszcze zapisać jednej ze zmian w tej prezentacji, więc plik PDF może zawierać tylko wersję dokładnie z chwili otwarcia — żadna z Twoich zmian się w nim nie pojawi, nie tylko tamta.",
     "cancel": "Anuluj",
     "confirm": "Eksportuj wersję z otwarcia"
   },
@@ -139,7 +139,7 @@
     "truncatedSuffix": " — skrócono na limicie stron",
     "skippedSuffixOne": " — 1 slajdu nie udało się wyrenderować i został pominięty",
     "skippedSuffixMany": " — nie udało się wyrenderować slajdów ({slides}) i zostały pominięte",
-    "asOpenedSuffix": " — prezentacja w wersji z chwili otwarcia; zmiana, której NexOffice nie potrafi zapisać, nie jest uwzględniona",
+    "asOpenedSuffix": " — prezentacja dokładnie w wersji z chwili otwarcia; żadna z Twoich zmian nie jest uwzględniona",
     "wordCount": "Słowa: {words} · Znaki: {characters} · Strona {page}/{pages}",
     "wordCountSlides": "Słowa: {words} · Znaki: {characters} · Slajd {slide}/{slides}",
     "frozeTopRow": "Zablokowano górny wiersz",

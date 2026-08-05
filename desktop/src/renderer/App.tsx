@@ -18,6 +18,7 @@ import {
   exportSuffixes,
   exportedStatusKey,
   saveOutcomeStatus,
+  saveRefusal,
   unsavedStep,
   type SaveOutcome,
   type StatusMessage,
@@ -69,9 +70,13 @@ export function App() {
   const [misspellings, setMisspellings] = useState<Misspelling[]>([])
   const [docStats, setDocStats] = useState<EditorStats | null>(null)
   const [editRevision, setEditRevision] = useState(0)
+  // The last thing the writer said it could not express, or null while the
+  // open document projects cleanly. It outlives the status line on purpose:
+  // the refusal arrives after the change was already made, so the footer keeps
+  // saying so until a projection succeeds rather than letting the notice scroll
+  // away behind the next status.
   const [refusal, setRefusal] = useState<string | null>(null)
   const [staleExportTarget, setStaleExportTarget] = useState<StaleExport | null>(null)
-  const refusalRef = useRef<string | null>(null)
   const pptxSelectionRef = useRef<TextSelectionState | null>(null)
   const sentEditCapabilitiesRef = useRef<EditCapabilities>(ALL_EDIT_CAPABILITIES)
   const xlsxRef = useRef<XlsxEditorViewRef>(null)
@@ -179,16 +184,6 @@ export function App() {
     }, 700)
   }, [])
 
-  // The last thing the writer said it could not express, or null while the
-  // open document projects cleanly. It outlives the status line on purpose:
-  // the refusal arrives after the change was already made, so the footer keeps
-  // saying so until a projection succeeds rather than letting the notice scroll
-  // away behind the next status.
-  const noteRefusal = useCallback((message: string | null) => {
-    refusalRef.current = message
-    setRefusal(message)
-  }, [])
-
   // An editor that fails to open reports no stats, and the ticker keeps the
   // last value it saw — which would be the previous document's.
   const clearStats = useCallback(() => {
@@ -214,26 +209,30 @@ export function App() {
         const bytes = xlsxRef.current?.save()
         if (bytes) return { ok: true, bytes }
       } else {
+        let bytes: Uint8Array | null
         try {
-          const bytes = pptxRef.current?.save()
-          if (bytes) {
-            noteRefusal(null)
-            return { ok: true, bytes }
-          }
+          bytes = pptxRef.current?.save() ?? null
         } catch (error) {
-          // The pptx writer refuses by name. Whatever it said is the only
-          // account of the change that cannot be written, so it is passed on
-          // untouched instead of being folded into a generic failure.
-          const message = error instanceof Error ? error.message : String(error)
-          noteRefusal(message)
+          // Only the writer declining to express an edit is a refusal.
+          // Everything else — a disposed handle, a wasm panic — is a failed
+          // write that a retry may well complete, so it propagates to be
+          // reported as a failure rather than offered as work to throw away.
+          // What the writer said is the only account of the change that cannot
+          // be written, so it is passed on untouched.
+          const message = saveRefusal(error)
+          if (message === null) throw error
+          setRefusal(message)
           return { ok: false, refusal: message }
         }
+        // Nothing refused this attempt, so an older notice no longer holds.
+        setRefusal(null)
+        if (bytes) return { ok: true, bytes }
       }
       // No editor yet (still loading) means the bytes the document opened with
       // are the only ones there are.
       return { ok: true, bytes: current.seed }
     },
-    [noteRefusal],
+    [],
   )
 
   const performSave = useCallback(
@@ -354,7 +353,7 @@ export function App() {
       return
     }
     savedGenerationRef.current = editGenerationRef.current
-    noteRefusal(null)
+    setRefusal(null)
     setStaleExportTarget(null)
     clearStats()
     documentIdRef.current += 1
@@ -369,7 +368,7 @@ export function App() {
     publishEditCapabilities()
     setDocument(next)
     setStatus({ key: 'status.opened', vars: { name: opened.name } })
-  }, [clearStats, noteRefusal, publishEditCapabilities])
+  }, [clearStats, publishEditCapabilities])
 
   const openDocument = useCallback(async () => {
     if (!(await ensureSaved())) return
@@ -508,14 +507,24 @@ export function App() {
   const exportPdf = useCallback(
     (target: DocumentState) => {
       setStatus({ key: 'status.exportingPdf' })
-      void serializeDocument(target).then((serialized) => {
-        if (serialized.ok) {
-          runPdfExport(target, serialized.bytes, false)
-          return
-        }
-        setStatus(saveOutcomeStatus({ status: 'refused', message: serialized.refusal }))
-        setStaleExportTarget({ document: target, refusal: serialized.refusal })
-      })
+      void serializeDocument(target)
+        .then((serialized) => {
+          if (serialized.ok) {
+            runPdfExport(target, serialized.bytes, false)
+            return
+          }
+          setStatus(saveOutcomeStatus({ status: 'refused', message: serialized.refusal }))
+          setStaleExportTarget({ document: target, refusal: serialized.refusal })
+        })
+        // Serializing is the one step of an export that can fail before the
+        // exporter is ever reached: every editor projects through wasm, and a
+        // rejection there would otherwise leave the footer exporting forever.
+        .catch((error: unknown) =>
+          setStatus({
+            key: 'status.pdfFailed',
+            vars: { message: error instanceof Error ? error.message : String(error) },
+          }),
+        )
     },
     [runPdfExport, serializeDocument],
   )
@@ -541,7 +550,7 @@ export function App() {
           void ensureSaved().then((proceed) => {
             if (!proceed) return
             savedGenerationRef.current = editGenerationRef.current
-            noteRefusal(null)
+            setRefusal(null)
             setStaleExportTarget(null)
             documentRef.current = null
             setDocument(null)
@@ -651,7 +660,6 @@ export function App() {
     openDocument,
     saveDocument,
     ensureSaved,
-    noteRefusal,
     exportPdf,
     runEditAction,
     applyZoom,

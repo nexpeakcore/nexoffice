@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { PptxSaveRefusedError } from '@betteroffice/pptx'
 import { createTranslator } from '../../i18n/index.js'
 import { ALL_EDIT_CAPABILITIES } from '../../shared/ipc.js'
 import {
@@ -6,6 +7,7 @@ import {
   exportSuffixes,
   exportedStatusKey,
   saveOutcomeStatus,
+  saveRefusal,
   unsavedStep,
 } from './documentPolicy.js'
 
@@ -14,6 +16,30 @@ import {
 const REFUSAL =
   'this deck holds a change the PPTX writer cannot save yet: slide 1 shape "Title 1" ' +
   'added or removed a paragraph'
+
+describe('saveRefusal', () => {
+  test('reads the writer’s account off a refusal', () => {
+    expect(saveRefusal(new PptxSaveRefusedError(REFUSAL, 'added or removed a paragraph'))).toBe(
+      REFUSAL,
+    )
+  })
+
+  // Every one of these throws from the same call site as a refusal does, so
+  // classifying by where the call sat would read them all as refusals and offer
+  // to abandon edits a second attempt would have saved.
+  test('refuses to read a failed save as a refusal', () => {
+    expect(saveRefusal(new Error('presentation handle is disposed'))).toBeNull()
+    expect(saveRefusal(new WebAssembly.RuntimeError('unreachable'))).toBeNull()
+    expect(saveRefusal(new TypeError('doc.saveBytes is not a function'))).toBeNull()
+    expect(saveRefusal('some string the boundary threw')).toBeNull()
+    expect(saveRefusal(undefined)).toBeNull()
+  })
+
+  // The message alone is not the signal — the loader owns that reading, once.
+  test('does not promote a plain error that merely quotes the writer', () => {
+    expect(saveRefusal(new Error(REFUSAL))).toBeNull()
+  })
+})
 
 describe('saveOutcomeStatus', () => {
   test('names the file a save wrote', () => {

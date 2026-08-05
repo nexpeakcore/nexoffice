@@ -85,8 +85,8 @@
     },
     "saveRefused": {
       "message": "NexOffice kann diese Änderung an {name} noch nicht speichern",
-      "detail": "{message}\n\nEs wurde nichts geschrieben, die Datei auf dem Datenträger ist also unverändert. Wenn Sie ohne Speichern fortfahren, geht diese Änderung verloren.",
-      "discard": "Änderung verwerfen",
+      "detail": "{message}\n\nEs wurde nichts geschrieben, die Datei auf dem Datenträger ist also unverändert. Wenn Sie ohne Speichern fortfahren, gehen alle seit dem letzten Speichern vorgenommenen Änderungen verloren — nicht nur diese eine.",
+      "discard": "Alle Änderungen verwerfen",
       "keepEditing": "Weiter bearbeiten"
     },
     "pdfTruncated": {
@@ -114,7 +114,7 @@
   },
   "exportStale": {
     "message": "{name} im geöffneten Zustand exportieren?",
-    "detail": "NexOffice kann eine der Änderungen in dieser Präsentation noch nicht schreiben, daher kann das PDF nur die Datei im geöffneten Zustand enthalten — diese Änderung erscheint darin nicht.",
+    "detail": "NexOffice kann eine der Änderungen in dieser Präsentation noch nicht schreiben, daher kann das PDF nur die Datei genau im geöffneten Zustand enthalten — keine Ihrer Änderungen erscheint darin, nicht nur diese eine.",
     "cancel": "Abbrechen",
     "confirm": "Wie geöffnet exportieren"
   },
@@ -139,7 +139,7 @@
     "truncatedSuffix": " — beim Seitenlimit gekürzt",
     "skippedSuffixOne": " — 1 Folie konnte nicht gerendert werden und fehlt",
     "skippedSuffixMany": " — {slides} Folien konnten nicht gerendert werden und fehlen",
-    "asOpenedSuffix": " — die Präsentation im geöffneten Zustand; die Änderung, die NexOffice nicht schreiben kann, ist nicht enthalten",
+    "asOpenedSuffix": " — die Präsentation genau im geöffneten Zustand; keine Ihrer Änderungen ist enthalten",
     "wordCount": "Wörter: {words} · Zeichen: {characters} · Seite {page}/{pages}",
     "wordCountSlides": "Wörter: {words} · Zeichen: {characters} · Folie {slide}/{slides}",
     "frozeTopRow": "Oberste Zeile fixiert",

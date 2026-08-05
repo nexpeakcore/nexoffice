@@ -85,8 +85,8 @@
     },
     "saveRefused": {
       "message": "NexOffice bu değişikliği {name} dosyasına henüz kaydedemiyor",
-      "detail": "{message}\n\nHiçbir şey yazılmadı, dolayısıyla diskteki dosya değişmedi. Kaydetmeden devam ederseniz bu değişiklik kaybolur.",
-      "discard": "Değişikliği At",
+      "detail": "{message}\n\nHiçbir şey yazılmadı, dolayısıyla diskteki dosya değişmedi. Kaydetmeden devam ederseniz son kaydetmeden bu yana yaptığınız tüm düzenlemeleri kaybedersiniz — yalnızca bu değişikliği değil.",
+      "discard": "Tüm Düzenlemeleri At",
       "keepEditing": "Düzenlemeye Devam Et"
     },
     "pdfTruncated": {
@@ -114,7 +114,7 @@
   },
   "exportStale": {
     "message": "{name} açıldığı haliyle dışa aktarılsın mı?",
-    "detail": "NexOffice bu sunudaki değişikliklerden birini henüz yazamıyor, bu yüzden PDF yalnızca dosyanın açıldığı halini içerebilir — o değişiklik onda görünmeyecek.",
+    "detail": "NexOffice bu sunudaki değişikliklerden birini henüz yazamıyor, bu yüzden PDF yalnızca dosyanın açıldığı andaki halini içerebilir — düzenlemelerinizin hiçbiri onda görünmeyecek, yalnızca o değişiklik değil.",
     "cancel": "İptal",
     "confirm": "Açıldığı haliyle dışa aktar"
   },
@@ -139,7 +139,7 @@
     "truncatedSuffix": " — sayfa sınırında kısaltıldı",
     "skippedSuffixOne": " — 1 slayt işlenemedi ve atlandı",
     "skippedSuffixMany": " — {slides} slayt işlenemedi ve atlandı",
-    "asOpenedSuffix": " — sunu açıldığı haliyle; NexOffice'in yazamadığı değişiklik dahil değil",
+    "asOpenedSuffix": " — sunu tam olarak açıldığı haliyle; düzenlemelerinizin hiçbiri dahil değil",
     "wordCount": "Sözcük: {words} · Karakter: {characters} · Sayfa {page}/{pages}",
     "wordCountSlides": "Sözcük: {words} · Karakter: {characters} · Slayt {slide}/{slides}",
     "frozeTopRow": "Üst satır donduruldu",

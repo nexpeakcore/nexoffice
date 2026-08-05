@@ -85,8 +85,8 @@
     },
     "saveRefused": {
       "message": "NexOffice can't save this change to {name} yet",
-      "detail": "{message}\n\nNothing was written, so the file on disk is unchanged. If you continue without saving, this change is lost.",
-      "discard": "Discard the Change",
+      "detail": "{message}\n\nNothing was written, so the file on disk is unchanged. If you continue without saving, you lose every edit made since your last save — not only this one.",
+      "discard": "Discard All Edits",
       "keepEditing": "Keep Editing"
     },
     "pdfTruncated": {
@@ -114,7 +114,7 @@
   },
   "exportStale": {
     "message": "Export {name} as it was opened?",
-    "detail": "NexOffice can't write one of the changes in this presentation yet, so the PDF can only contain the file as it was opened — that change won't appear in it.",
+    "detail": "NexOffice can't write one of the changes in this presentation yet, so the PDF can only contain the file exactly as it was opened — none of your edits will appear in it, not just that one.",
     "cancel": "Cancel",
     "confirm": "Export as Opened"
   },
@@ -139,7 +139,7 @@
     "truncatedSuffix": " — truncated at page limit",
     "skippedSuffixOne": " — 1 slide couldn't be rendered and was left out",
     "skippedSuffixMany": " — {slides} slides couldn't be rendered and were left out",
-    "asOpenedSuffix": " — the presentation as it was opened; the change NexOffice can't write isn't included",
+    "asOpenedSuffix": " — the presentation exactly as it was opened; none of your edits are included",
     "wordCount": "Words: {words} · Chars: {characters} · Page {page}/{pages}",
     "wordCountSlides": "Words: {words} · Chars: {characters} · Slide {slide}/{slides}",
     "frozeTopRow": "Frozen top row",
