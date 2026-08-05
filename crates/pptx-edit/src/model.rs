@@ -288,6 +288,81 @@ pub enum EditError {
     Json(String),
     #[error("this deck holds a change the PPTX writer cannot save yet: {0}")]
     Unprojectable(String),
+    #[error("this deck cannot be saved as a file: {0}")]
+    Unsavable(String),
+    #[error("this save writes more than one save may write: {0}")]
+    WriteLimit(String),
+    #[error("writing the deck failed: {0}")]
+    WriteFailed(String),
+    #[error("the written deck did not read back as the deck it was planned from: {0}")]
+    VerificationFailed(String),
+}
+
+/// What a failed save means for the work sitting in the deck.
+///
+/// The desktop offers to abandon edits on exactly one of these, so the
+/// distinction is the whole point: a writer that cannot express a change is
+/// not a disk that would not take the bytes, and only the first is fixed by
+/// undoing something.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum SaveFault {
+    /// The writer cannot express a change this deck holds. Undoing the change
+    /// the message names lets the same save succeed.
+    Unprojectable,
+    /// This deck can never be written as a file, whatever is undone. A replica
+    /// opened from a collaborative update is the only one so far: it never
+    /// carried the original package bytes to splice into.
+    Unsavable,
+    /// The edit is larger than one save may write. Saving less at a time works.
+    Limit,
+    /// Writing broke, or the writer reached a state it does not hold. The edit
+    /// is intact and the same save may well succeed on the next attempt.
+    WriteFailed,
+    /// The bytes written did not read back as the deck they were planned from.
+    /// A writer bug, never the user's change — so the edits must survive it.
+    VerificationFailed,
+}
+
+impl SaveFault {
+    /// A stable name for this fault, for hosts that must branch on it rather
+    /// than read the message. Never change one of these: a host that does not
+    /// recognise a code treats the save as [`SaveFault::WriteFailed`], and
+    /// renaming an existing code silently moves users onto that fallback.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Unprojectable => "unprojectable",
+            Self::Unsavable => "unsavable",
+            Self::Limit => "limit",
+            Self::WriteFailed => "write-failed",
+            Self::VerificationFailed => "verification-failed",
+        }
+    }
+
+    /// Whether undoing the change the message names lets the save through.
+    ///
+    /// This is what an offer to abandon edits hangs on, so it is false for
+    /// every fault the user's own change did not cause.
+    pub fn undoing_helps(self) -> bool {
+        matches!(self, Self::Unprojectable)
+    }
+}
+
+impl EditError {
+    /// How a save that ended in this error should be read.
+    ///
+    /// Errors that are not about writing at all — a bad client ID, a broken
+    /// update — reach a save through the snapshot it takes first, and they get
+    /// the same fail-safe reading as a broken write: retryable, and never a
+    /// reason to throw work away.
+    pub fn save_fault(&self) -> SaveFault {
+        match self {
+            Self::Unprojectable(_) => SaveFault::Unprojectable,
+            Self::Unsavable(_) => SaveFault::Unsavable,
+            Self::WriteLimit(_) => SaveFault::Limit,
+            Self::VerificationFailed(_) => SaveFault::VerificationFailed,
+            _ => SaveFault::WriteFailed,
+        }
+    }
 }
 
 pub type EditResult<T> = Result<T, EditError>;

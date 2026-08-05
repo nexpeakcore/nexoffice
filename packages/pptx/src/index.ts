@@ -26,10 +26,13 @@ export {
   inspectPresentation,
   isWasmAvailable,
   openPresentation,
+  saveFault,
   wasmVersion,
 } from './wasm/loader';
 export type {
   OpenPresentationOptions,
+  PptxSaveFault,
+  PptxSaveFaultCode,
   PresentationHandle,
   WasmInitInput,
 } from './wasm/loader';

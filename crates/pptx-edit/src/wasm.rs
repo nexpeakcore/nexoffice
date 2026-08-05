@@ -197,13 +197,17 @@ impl PptxDocument {
     }
 
     /// Projects the deck's text edits onto the source parts and returns the
-    /// re-zipped file. Rejects when the deck holds a change the writer cannot
-    /// express, when the written bytes do not read back as the deck they were
-    /// planned from, or when the edit is larger than [`crate::WriteLimits`] allows,
-    /// naming what it cannot write.
+    /// re-zipped file.
+    ///
+    /// A rejection is an `Error` carrying a `code` property — one of
+    /// [`crate::SaveFault::code`] — because these do not mean the same thing to
+    /// the work in the deck, and only `"unprojectable"` names a change the host
+    /// could undo to get the save through. A host that reads the message
+    /// instead of the code cannot tell a writer that will not express an edit
+    /// from a disk that would not take the bytes.
     #[wasm_bindgen(js_name = saveBytes)]
     pub fn save_bytes(&self) -> Result<Vec<u8>, JsValue> {
-        self.session.save_bytes().map_err(js_error)
+        self.session.save_bytes().map_err(save_error)
     }
 
     #[wasm_bindgen(js_name = mediaBytes)]
@@ -556,4 +560,27 @@ fn parse_client_id(client_id: f64) -> Result<u64, JsValue> {
 
 fn js_error(error: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&error.to_string())
+}
+
+/// A save rejection the host can branch on without reading English.
+///
+/// The `reason` is the writer's own account with the variant's prefix stripped,
+/// so a host that shows it does not have to re-parse the message it just
+/// classified by code.
+fn save_error(error: crate::EditError) -> JsValue {
+    let fault = error.save_fault();
+    let message = error.to_string();
+    let reason = match &error {
+        crate::EditError::Unprojectable(reason)
+        | crate::EditError::Unsavable(reason)
+        | crate::EditError::WriteLimit(reason)
+        | crate::EditError::WriteFailed(reason)
+        | crate::EditError::VerificationFailed(reason) => reason.clone(),
+        other => other.to_string(),
+    };
+    let js = js_sys::Error::new(&message);
+    let _ = js_sys::Reflect::set(&js, &"code".into(), &fault.code().into());
+    let _ = js_sys::Reflect::set(&js, &"reason".into(), &reason.into());
+    let _ = js_sys::Reflect::set(&js, &"undoingHelps".into(), &fault.undoing_helps().into());
+    js.into()
 }

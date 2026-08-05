@@ -1,5 +1,5 @@
 pub use pptx_edit::{
-    DeckSnapshot, EditCtx, EditError, EditOrigin, ParagraphSnapshot, PresetShapeDraft,
+    DeckSnapshot, EditCtx, EditError, EditOrigin, ParagraphSnapshot, PresetShapeDraft, SaveFault,
     ShapeAdjustReceipt, ShapeDraft, ShapeFillReceipt, ShapeKind, ShapeReceipt, ShapeRect,
     ShapeSnapshot, ShapeStroke, ShapeStrokeReceipt, SlideReceipt, SlideSnapshot, StorySnapshot,
     TextReceipt, TextRunSnapshot, TextStyle, TextStylePatch, TransformReceipt, UpdateEvent,

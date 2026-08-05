@@ -1,5 +1,5 @@
 use betteroffice_pptx::{
-    DeckSnapshot, EditCtx, Error, Presentation, ShapeDraft, ShapeRect, ShapeSnapshot,
+    DeckSnapshot, EditCtx, Error, Presentation, SaveFault, ShapeDraft, ShapeRect, ShapeSnapshot,
     StorySnapshot, TextStyle, TextStylePatch,
 };
 
@@ -462,12 +462,16 @@ fn a_change_this_slice_cannot_write_refuses_instead_of_dropping_it() {
         let presentation = Presentation::open(FIXTURE).unwrap();
         edit(&presentation);
         match presentation.save() {
+            // The fault, not the wording, is what a caller acts on: a broken
+            // write and a blown budget also arrive as `Error::Edit`, and only
+            // this one means undoing the change gets the save through.
             Err(Error::Edit(error)) => {
-                let message = error.to_string();
-                assert!(
-                    message.starts_with("this deck holds a change the PPTX writer cannot save yet"),
-                    "{label} refused with {message:?}"
+                assert_eq!(
+                    error.save_fault(),
+                    SaveFault::Unprojectable,
+                    "{label} ended with {error}"
                 );
+                assert!(error.save_fault().undoing_helps(), "{label}");
             }
             Err(other) => panic!("{label} failed with {other}"),
             Ok(_) => panic!("{label} was saved instead of refused"),

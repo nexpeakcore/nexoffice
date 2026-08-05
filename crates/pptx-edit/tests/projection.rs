@@ -1,6 +1,6 @@
 use pptx_edit::{
-    DeckSession, EditCtx, EditError, ShapeSnapshot, StorySnapshot, TextStyle, TextStylePatch,
-    WriteLimits,
+    DeckSession, EditCtx, EditError, SaveFault, ShapeSnapshot, StorySnapshot, TextStyle,
+    TextStylePatch, WriteLimits,
 };
 
 const FIXTURE: &[u8] = include_bytes!("../../../apps/demo/public/betteroffice-demo.pptx");
@@ -165,10 +165,29 @@ fn type_as_the_editor_does(session: &DeckSession, story_id: &str, index: u32, te
         .unwrap();
 }
 
+/// The writer's account of a change it cannot express.
+///
+/// Asserting the fault, not just the wording, is the point: a broken write and
+/// a blown budget also arrive with a reason, and reading either as a refusal
+/// would tell the caller that undoing something fixes a save that undoing
+/// cannot reach.
 fn refusal(error: &EditError) -> String {
+    fault_reason(error, SaveFault::Unprojectable)
+}
+
+fn fault_reason(error: &EditError, expected: SaveFault) -> String {
+    assert_eq!(
+        error.save_fault(),
+        expected,
+        "expected a {expected:?} save, got: {error}"
+    );
     match error {
-        EditError::Unprojectable(reason) => reason.clone(),
-        other => panic!("expected a refusal, got {other}"),
+        EditError::Unprojectable(reason)
+        | EditError::Unsavable(reason)
+        | EditError::WriteLimit(reason)
+        | EditError::WriteFailed(reason)
+        | EditError::VerificationFailed(reason) => reason.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -183,11 +202,12 @@ fn a_replica_opened_from_an_update_refuses_to_save() {
     );
 
     let error = replica.project().unwrap_err();
-    assert!(
-        matches!(&error, EditError::Unprojectable(reason)
-            if reason.contains("collaborative update")),
-        "{error}"
-    );
+    let reason = fault_reason(&error, SaveFault::Unsavable);
+    assert!(reason.contains("collaborative update"), "{reason}");
+    // No edit put the replica here and no undo takes it back out, so a host
+    // that offers to abandon edits over this offers a way out that does not
+    // exist.
+    assert!(!error.save_fault().undoing_helps());
 }
 
 #[test]
@@ -238,7 +258,7 @@ fn a_text_deletion_that_empties_a_run_still_projects() {
 }
 
 #[test]
-fn a_splice_that_lands_on_the_wrong_run_is_refused() {
+fn a_splice_that_lands_on_the_wrong_run_fails_verification() {
     let deck = deck_with(r#"<a:p><a:r><a:t>AAA</a:t></a:r><a:r><a:t>BBB</a:t></a:r></a:p>"#);
     let mut package = pptx_parse::parse_pptx(&deck).unwrap();
     let bytes = String::from_utf8(package.part_bytes(SLIDE_PART).unwrap().to_vec()).unwrap();
@@ -254,15 +274,20 @@ fn a_splice_that_lands_on_the_wrong_run_is_refused() {
     assert_eq!(story.plain_text(), "AAABBB");
     type_text(&session, &story.id, 0, "X");
 
-    let reason = refusal(&session.project().unwrap_err());
+    // The writer put the text somewhere the edit did not name. Nothing the
+    // user did causes this and no undo clears it, so it must never be read as
+    // a refusal — the edit is sound and has to survive.
+    let error = session.project().unwrap_err();
+    let reason = fault_reason(&error, SaveFault::VerificationFailed);
     assert!(
         reason.contains("read back as a different deck"),
         "the wrong run was rewritten and the save must say so: {reason}"
     );
+    assert!(!error.save_fault().undoing_helps());
 }
 
 #[test]
-fn a_split_whose_bytes_land_on_the_wrong_run_is_refused() {
+fn a_split_whose_bytes_land_on_the_wrong_run_fails_verification() {
     let deck = deck_with(r#"<a:p><a:r><a:t>AAA</a:t></a:r><a:r><a:t>BBB</a:t></a:r></a:p>"#);
     let mut package = pptx_parse::parse_pptx(&deck).unwrap();
     let bytes = String::from_utf8(package.part_bytes(SLIDE_PART).unwrap().to_vec()).unwrap();
@@ -277,11 +302,13 @@ fn a_split_whose_bytes_land_on_the_wrong_run_is_refused() {
     assert_eq!(story.plain_text(), "AAABBB");
     press_enter(&session, &story.id, 1);
 
-    let reason = refusal(&session.project().unwrap_err());
+    let error = session.project().unwrap_err();
+    let reason = fault_reason(&error, SaveFault::VerificationFailed);
     assert!(
         reason.contains("read back as a different deck"),
-        "a split spliced into the wrong run must be refused, not shipped: {reason}"
+        "a split spliced into the wrong run must be caught, not shipped: {reason}"
     );
+    assert!(!error.save_fault().undoing_helps());
 }
 
 #[test]
@@ -951,18 +978,23 @@ fn a_split_keeps_the_paragraph_level_on_both_halves() {
 }
 
 #[test]
-fn a_run_larger_than_the_write_budget_refuses_the_save() {
+fn a_run_larger_than_the_write_budget_stops_the_save() {
     let session = session_with(r#"<a:p><a:r><a:t>ab</a:t></a:r></a:p>"#);
     let story = first_story(&session);
     let limits = WriteLimits::default();
     let paste = "z".repeat(limits.max_run_text_bytes + 1);
     type_text(&session, &story.id, 0, &paste);
 
-    let reason = refusal(&session.project().unwrap_err());
+    // A budget is not a capability gap: the writer can express this paste, it
+    // is simply too much for one save. Saying so is what lets a host offer to
+    // save less rather than to throw the paste away.
+    let error = session.project().unwrap_err();
+    let reason = fault_reason(&error, SaveFault::Limit);
     assert!(
         reason.contains("bytes into one run"),
-        "an oversized paste must be refused by name: {reason}"
+        "an oversized paste must be stopped by name: {reason}"
     );
+    assert!(!error.save_fault().undoing_helps());
 }
 
 #[test]
@@ -975,23 +1007,25 @@ fn the_write_budgets_bound_the_runs_and_the_bytes_one_save_rewrites() {
     type_text(&session, &story.id, 0, "X");
     type_text(&session, &story.id, 5, "Y");
 
-    let reason = refusal(
+    let reason = fault_reason(
         &session
             .project_with_limits(&WriteLimits {
                 max_run_edits: 1,
                 ..WriteLimits::default()
             })
             .unwrap_err(),
+        SaveFault::Limit,
     );
     assert!(reason.contains("runs one save may rewrite"), "{reason}");
 
-    let reason = refusal(
+    let reason = fault_reason(
         &session
             .project_with_limits(&WriteLimits {
                 max_total_edit_bytes: 5,
                 ..WriteLimits::default()
             })
             .unwrap_err(),
+        SaveFault::Limit,
     );
     assert!(
         reason.contains("bytes of text one save may write"),
@@ -1248,4 +1282,64 @@ fn every_text_story_of_the_demo_deck_saves_after_a_keystroke() {
         "a keystroke must be savable everywhere:\n{}",
         refused.join("\n")
     );
+}
+
+/// The one reading a host may take from a failed save.
+///
+/// A code that drifts, or a new fault that quietly lands on the one the
+/// desktop answers with an offer to abandon edits, is what this pins.
+#[test]
+fn only_a_change_the_writer_cannot_express_is_undone_away() {
+    let faults = [
+        (SaveFault::Unprojectable, "unprojectable", true),
+        (SaveFault::Unsavable, "unsavable", false),
+        (SaveFault::Limit, "limit", false),
+        (SaveFault::WriteFailed, "write-failed", false),
+        (SaveFault::VerificationFailed, "verification-failed", false),
+    ];
+    for (fault, code, undoing_helps) in faults {
+        assert_eq!(fault.code(), code);
+        assert_eq!(fault.undoing_helps(), undoing_helps, "{code}");
+    }
+    let codes: std::collections::BTreeSet<_> =
+        faults.iter().map(|(fault, ..)| fault.code()).collect();
+    assert_eq!(codes.len(), faults.len(), "two faults answer to one code");
+}
+
+/// Errors that are not about writing still reach a save, through the snapshot
+/// the projection takes before it writes anything. Reading one of those as a
+/// refusal would offer to throw away work over a bad client ID.
+#[test]
+fn an_error_the_writer_did_not_raise_is_never_a_refusal() {
+    for error in [
+        EditError::InvalidClientId(0),
+        EditError::Parse("truncated".to_owned()),
+        EditError::InvalidState("no such story".to_owned()),
+        EditError::InvalidUpdate("short".to_owned()),
+        EditError::Observer("listener".to_owned()),
+        EditError::Json("boundary".to_owned()),
+    ] {
+        assert_eq!(error.save_fault(), SaveFault::WriteFailed, "{error}");
+        assert!(!error.save_fault().undoing_helps(), "{error}");
+    }
+}
+
+/// `undoing_helps` is a promise, not a label: taking the named change back out
+/// has to leave a deck that saves.
+#[test]
+fn taking_back_a_refused_change_lets_the_same_save_through() {
+    let session = session_with(r#"<a:p><a:r><a:t>ab</a:t></a:r><a:br/></a:p>"#);
+    let story = first_story(&session);
+    type_text(&session, &story.id, 3, "X");
+
+    let error = session.save_bytes().unwrap_err();
+    assert_eq!(error.save_fault(), SaveFault::Unprojectable, "{error}");
+    assert!(error.save_fault().undoing_helps());
+
+    session
+        .delete_text(&EditCtx::local("test"), &story.id, 3, 4)
+        .unwrap();
+    session
+        .save_bytes()
+        .expect("the deck saves once the change the refusal named is gone");
 }

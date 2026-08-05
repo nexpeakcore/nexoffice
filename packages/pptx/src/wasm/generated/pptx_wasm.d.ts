@@ -32,10 +32,14 @@ export class PptxDocument {
     resizeShapeJson(args: string): string;
     /**
      * Projects the deck's text edits onto the source parts and returns the
-     * re-zipped file. Rejects when the deck holds a change the writer cannot
-     * express, when the written bytes do not read back as the deck they were
-     * planned from, or when the edit is larger than [`crate::WriteLimits`] allows,
-     * naming what it cannot write.
+     * re-zipped file.
+     *
+     * A rejection is an `Error` carrying a `code` property — one of
+     * [`crate::SaveFault::code`] — because these do not mean the same thing to
+     * the work in the deck, and only `"unprojectable"` names a change the host
+     * could undo to get the save through. A host that reads the message
+     * instead of the code cannot tell a writer that will not express an edit
+     * from a disk that would not take the bytes.
      */
     saveBytes(): Uint8Array;
     setShapeAdjustJson(args: string): string;

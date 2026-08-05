@@ -13,8 +13,13 @@
 //! model held in memory, so it alone would trust the byte splice to have landed
 //! on the `<a:t>` the plan named. The bytes are therefore zipped and parsed
 //! back, and the package that reads out of them must equal the package the plan
-//! built. A splice that lands on the wrong run reads back as a different model
-//! and the save is refused.
+//! built.
+//!
+//! A splice that lands on the wrong run reads back as a different model, and
+//! that is not a refusal: the edit was expressible and this writer mis-wrote
+//! it. It carries [`crate::SaveFault::VerificationFailed`], as does every other
+//! way a save can end that the user's own change did not cause, so a host is
+//! never told to abandon work over a bug of ours.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
@@ -76,8 +81,12 @@ impl DeckSession {
     ///
     /// Untouched slides and every non-slide part keep their source bytes, and
     /// a touched slide keeps every byte outside the `<a:t>` elements that
-    /// changed. Returns [`EditError::Unprojectable`] when the deck holds a
-    /// change this writer cannot express.
+    /// changed.
+    ///
+    /// Every way this can fail carries a [`crate::SaveFault`], because they do
+    /// not mean the same thing to the work in the deck: only
+    /// [`EditError::Unprojectable`] names a change the caller could undo to get
+    /// the save through.
     pub fn project(&self) -> EditResult<PptxPackage> {
         self.project_with_limits(&WriteLimits::default())
     }
@@ -108,18 +117,20 @@ impl DeckSession {
     /// spliced, so there is no address to have got wrong.
     fn verified_projection(&self, limits: &WriteLimits) -> EditResult<(PptxPackage, Vec<u8>)> {
         let (package, rewrote_parts) = self.planned_projection(limits)?;
-        let bytes = pptx_parse::write_pptx(&package)
-            .map_err(|error| unprojectable(format!("the deck could not be re-zipped: {error}")))?;
+        let bytes = pptx_parse::write_pptx(&package).map_err(|error| {
+            EditError::WriteFailed(format!("the deck could not be re-zipped: {error}"))
+        })?;
         if !rewrote_parts {
             return Ok((package, bytes));
         }
         let read_back = pptx_parse::parse_pptx(&bytes).map_err(|error| {
-            unprojectable(format!("the rewritten deck did not read back: {error}"))
+            EditError::VerificationFailed(format!("the rewritten deck did not parse: {error}"))
         })?;
         if read_back != package {
-            return Err(unprojectable(
+            return Err(EditError::VerificationFailed(
                 "the rewritten part bytes read back as a different deck, so the text was written \
-                 somewhere other than the runs the edit named",
+                 somewhere other than the runs the edit named"
+                    .to_owned(),
             ));
         }
         Ok((package, bytes))
@@ -131,7 +142,7 @@ impl DeckSession {
             .part_bytes(&package.presentation.part_path)
             .is_none()
         {
-            return Err(EditError::Unprojectable(
+            return Err(EditError::Unsavable(
                 "this replica was opened from a collaborative update, which does not carry the \
                  original package bytes"
                     .to_owned(),
@@ -154,7 +165,7 @@ impl DeckSession {
             let source = package
                 .slides
                 .get(index)
-                .ok_or_else(|| unprojectable("a slide lost its source part"))?;
+                .ok_or_else(|| EditError::WriteFailed("a slide lost its source part".to_owned()))?;
             let context = SlideContext {
                 index,
                 part_path: source.part_path.clone(),
@@ -182,9 +193,9 @@ impl DeckSession {
         for (part_path, edits) in &plan.edits {
             let bytes = package
                 .part_bytes(part_path)
-                .ok_or_else(|| EditError::Unprojectable(format!("part {part_path} is missing")))?;
+                .ok_or_else(|| EditError::WriteFailed(format!("part {part_path} is missing")))?;
             let rewritten = pptx_parse::rewrite_slide_text(part_path, bytes, edits)
-                .map_err(|error| EditError::Unprojectable(error.to_string()))?;
+                .map_err(|error| EditError::WriteFailed(error.to_string()))?;
             package.replace_part(part_path, rewritten);
         }
         for body in plan.bodies {
@@ -194,7 +205,9 @@ impl DeckSession {
                 .and_then(|slide| {
                     text_body_mut(&mut slide.shapes, &body.shape_path, &body.location)
                 })
-                .ok_or_else(|| unprojectable("a rewritten text body left the shape tree"))?;
+                .ok_or_else(|| {
+                    EditError::WriteFailed("a rewritten text body left the shape tree".to_owned())
+                })?;
             *target = body.body;
         }
         Ok((package, rewrote_parts))
@@ -228,7 +241,7 @@ impl<'a> Plan<'a> {
 
     fn charge(&mut self, text: &str, origin: &str) -> EditResult<()> {
         if text.len() > self.limits.max_run_text_bytes {
-            return Err(unprojectable(format!(
+            return Err(EditError::WriteLimit(format!(
                 "{origin}: the edit writes {} bytes into one run, over the {} bytes one run may \
                  hold in a save",
                 text.len(),
@@ -237,14 +250,14 @@ impl<'a> Plan<'a> {
         }
         self.charged_edits += 1;
         if self.charged_edits > self.limits.max_run_edits {
-            return Err(unprojectable(format!(
+            return Err(EditError::WriteLimit(format!(
                 "the save rewrites more than the {} runs one save may rewrite",
                 self.limits.max_run_edits
             )));
         }
         self.charged_bytes += text.len();
         if self.charged_bytes > self.limits.max_total_edit_bytes {
-            return Err(unprojectable(format!(
+            return Err(EditError::WriteLimit(format!(
                 "the save rewrites more than the {} bytes of text one save may write",
                 self.limits.max_total_edit_bytes
             )));
@@ -353,8 +366,11 @@ fn project_body(
         return Ok(());
     }
     let place = describe(context, current);
+    // The baseline is seeded from the package this projection splices into, so
+    // the two disagreeing is the writer contradicting itself rather than
+    // anything the user typed.
     if source.paragraphs.len() != baseline_story.paragraphs.len() {
-        return Err(unprojectable(format!(
+        return Err(EditError::WriteFailed(format!(
             "{place} was seeded from paragraphs the source body does not have"
         )));
     }
@@ -1151,6 +1167,13 @@ fn describe(context: &SlideContext<'_>, shape: &ShapeSnapshot) -> String {
     format!("slide {} shape {:?}", context.index + 1, shape.name)
 }
 
+/// Names a change this writer cannot express yet.
+///
+/// Only reach for this when undoing the change would let the same save
+/// through: it is the one error the desktop answers by offering to abandon
+/// edits. A broken write, a limit, or the writer contradicting itself are
+/// [`EditError::WriteFailed`], [`EditError::WriteLimit`] and
+/// [`EditError::VerificationFailed`].
 fn unprojectable(reason: impl Into<String>) -> EditError {
     EditError::Unprojectable(reason.into())
 }
