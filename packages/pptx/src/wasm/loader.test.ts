@@ -6,6 +6,8 @@ import type {
   ShapePrimitive,
   StorySnapshot,
   TextBoxPrimitive,
+  TextStyle,
+  TextStyleSnapshot,
 } from '../index';
 import { initWasm, openPresentation } from '../index';
 
@@ -89,6 +91,30 @@ describe('PPTX wasm boundary', () => {
     unsubscribe();
   });
 
+  test('saves a text edit into the file and refuses what it cannot write', () => {
+    const editor = openPresentation(fixture, { clientId: 9101 });
+    const snapshot = editor.snapshot();
+    const story = firstStory(snapshot.slides.flatMap((slide) => slide.shapes));
+    const paragraph = story.paragraphs[0];
+
+    const untouched = openPresentation(editor.save(), { clientId: 9102 });
+    expect(untouched.snapshot()).toEqual(snapshot);
+    untouched.dispose();
+
+    editor.insertText(story.id, 0, 'Saved: ', caretStyle(paragraph.runs[0].style));
+    const saved = editor.save();
+    const reopened = openPresentation(saved, { clientId: 9103 });
+    expect(reopened.story(story.id).paragraphs[0].runs[0].text).toBe(
+      `Saved: ${paragraph.runs[0].text}`
+    );
+    expect(reopened.snapshot().slides.length).toBe(snapshot.slides.length);
+    reopened.dispose();
+
+    editor.moveShape(snapshot.slides[0].id, snapshot.slides[0].shapes[0].id, 10, 20);
+    expect(() => editor.save()).toThrow(/cannot save yet/);
+    editor.dispose();
+  });
+
   test('inserts and styles preset shapes with undo and redo', () => {
     const slide = handle.snapshot().slides[0];
     const receipt = handle.addShape(slide.id, {
@@ -144,6 +170,21 @@ describe('PPTX wasm boundary', () => {
     expect(cleared?.stroke).toBeUndefined();
   });
 });
+
+/**
+ * The style a caret carries inside a run. Typing with the run's own style is
+ * what keeps an edit inside one run, which is all `save()` can project today.
+ */
+function caretStyle(style: TextStyleSnapshot): TextStyle {
+  return {
+    bold: style.bold ?? undefined,
+    italic: style.italic ?? undefined,
+    fontSizePt: style.fontSizePt ?? undefined,
+    color: style.color ?? undefined,
+    fontFamily: style.fontFamily ?? undefined,
+    underline: style.underline ?? undefined,
+  };
+}
 
 function shapeSnapshot(shapeId: string) {
   const shape = handle.snapshot().slides[0].shapes.find((candidate) => candidate.id === shapeId);

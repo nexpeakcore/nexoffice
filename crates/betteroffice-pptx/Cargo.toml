@@ -15,3 +15,6 @@ categories = ["parser-implementations", "rendering"]
 pptx-edit.workspace = true
 pptx-parse.workspace = true
 pptx-render.workspace = true
+
+[dev-dependencies]
+ooxml-opc.workspace = true

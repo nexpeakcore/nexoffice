@@ -48,6 +48,13 @@ fn opens_edits_renders_saves_and_reopens() {
     );
     assert!(!rendered.display_list.primitives.is_empty());
 
+    let refusal = presentation.save().unwrap_err().to_string();
+    assert!(
+        refusal.contains("cannot save yet") && refusal.contains("Cobalt rail"),
+        "moving a shape is refused by name: {refusal}"
+    );
+
+    assert!(presentation.undo());
     let saved = presentation.save().unwrap();
     let reopened = Presentation::open(&saved).unwrap();
     assert_eq!(reopened.slides().len(), 3);
