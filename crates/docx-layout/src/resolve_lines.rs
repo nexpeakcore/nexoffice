@@ -27,6 +27,26 @@ fn utf16_slice(s: &str, start: usize, end: usize) -> String {
     String::from_utf16_lossy(&units[start..end])
 }
 
+/// Tabs, images, and fields occupy one UTF-16 unit of a line's run span.
+const ATOMIC_RUN_UTF16_LEN: usize = 1;
+
+/// Whether an atomic run has any extent on this line. A line that ends exactly
+/// where the run starts still names it as `tail_run`; emitting it there would
+/// repeat the object on the following line as well.
+fn atomic_run_is_on_line(run_index: usize, line: &TypesetRow) -> bool {
+    let start = if run_index == line.head_run {
+        line.head_char
+    } else {
+        0
+    };
+    let end = if run_index == line.tail_run {
+        line.tail_char
+    } else {
+        ATOMIC_RUN_UTF16_LEN
+    };
+    end > start
+}
+
 /// Resolves the visible run segments for one measured line.
 pub fn resolve_line_segments(runs: &[Run], line: &TypesetRow) -> Vec<ResolvedSegment> {
     let mut segments: Vec<ResolvedSegment> = Vec::new();
@@ -35,6 +55,13 @@ pub fn resolve_line_segments(runs: &[Run], line: &TypesetRow) -> Vec<ResolvedSeg
         let Some(run) = runs.get(run_index) else {
             continue;
         };
+        // Line breaks carry no ink; the line that ends at one spans it with an
+        // empty slice and still needs the marker.
+        if !matches!(run, Run::Text(_) | Run::LineBreak(_))
+            && !atomic_run_is_on_line(run_index, line)
+        {
+            continue;
+        }
 
         if let Run::Text(text_run) = run {
             let text_len = utf16_len(&text_run.text);

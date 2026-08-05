@@ -266,7 +266,11 @@ impl Filler<'_> {
 
     /// Places an inline image and grows the line by its rendered footprint.
     fn fill_inline_image(&mut self, ri: u32, img: PreparedImage) -> Result<(), MeasureError> {
-        if self.cur.width + img.width > self.cur.available + WRAP_SLACK_PX {
+        // An image wider than an empty line cannot be moved anywhere better:
+        // Word keeps it here and lets it overflow the indent. Wrapping it away
+        // would leave an empty row that still spans this run, and painters
+        // would draw the picture on both rows.
+        if self.cur.width > 0.0 && self.cur.width + img.width > self.cur.available + WRAP_SLACK_PX {
             self.start_new_line(ri, 0)?;
         }
         let fit_scale = if img.width > 0.0 && img.width > self.cur.available {
@@ -345,7 +349,7 @@ impl Filler<'_> {
             }
         }
 
-        if self.cur.width + tab_width > self.cur.available + WRAP_SLACK_PX {
+        if self.cur.width > 0.0 && self.cur.width + tab_width > self.cur.available + WRAP_SLACK_PX {
             // line already full of preceding content
             self.start_new_line(ri, 0)?;
             self.update_max_font(t.font_size_pt, t.metrics_font, 0.0);

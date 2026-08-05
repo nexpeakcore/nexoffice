@@ -2853,6 +2853,8 @@ const REVISION_MERGE_COLOR: &str = "#5f6368";
 const STRUCTURAL_CHANGE_BAR_OFFSET_X: f64 = -10.0;
 const STRUCTURAL_CHANGE_BAR_WIDTH: f64 = 2.0;
 const CELL_STRUCTURAL_BAR_HEIGHT: f64 = 3.0;
+/// Tabs, images, and fields occupy one UTF-16 unit of a line's run span.
+const ATOMIC_RUN_UTF16_LEN: usize = 1;
 const PARAGRAPH_MARK_GLYPH_GAP: f64 = 2.0;
 const PARAGRAPH_MARK_GLYPH_WIDTH: f64 = 8.0;
 
@@ -3504,12 +3506,37 @@ fn slice_utf16_with_total(text: &str, total: usize, start: usize, end: usize) ->
         .collect()
 }
 
+/// Whether an atomic run (one UTF-16 unit wide: tab, image, field) has any
+/// extent on this line. A line that ends exactly where the run starts still
+/// names it as `tailRun`, and painting it there would draw the same object
+/// twice — once per line — at two different pen positions.
+fn atomic_run_is_on_line(run_index: usize, line: &LineIn) -> bool {
+    let start = if run_index == line.head_run {
+        line.head_char
+    } else {
+        0
+    };
+    let end = if run_index == line.tail_run {
+        line.tail_char
+    } else {
+        ATOMIC_RUN_UTF16_LEN
+    };
+    end > start
+}
+
 fn resolve_line_segments<'a>(runs: &'a [RunIn], line: &LineIn) -> Vec<ResolvedSegment<'a>> {
     let mut out = Vec::new();
     for run_index in line.head_run..=line.tail_run {
         let Some(run) = runs.get(run_index) else {
             continue;
         };
+        // Line breaks carry no ink; their position is read off the closing
+        // line, which spans them with an empty slice.
+        if !matches!(run, RunIn::Text(_) | RunIn::LineBreak(_))
+            && !atomic_run_is_on_line(run_index, line)
+        {
+            continue;
+        }
         match run {
             RunIn::Text(t) => {
                 let total = utf16_len(&t.text);
