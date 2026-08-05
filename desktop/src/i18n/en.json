@@ -101,6 +101,12 @@
       "openFile": "Open File"
     }
   },
+  "exportStale": {
+    "message": "Export {name} as it was opened?",
+    "detail": "This presentation has changed since you opened it, but presentation edits can't be saved or exported yet. The PDF will contain the file as it was opened — your edits won't appear in it.",
+    "cancel": "Cancel",
+    "confirm": "Export as Opened"
+  },
   "status": {
     "ready": "Ready",
     "newDocument": "New document",
@@ -120,6 +126,7 @@
     "exportedPagesOne": "Exported {path} (1 page)",
     "exportedPagesMany": "Exported {path} ({pages} pages)",
     "truncatedSuffix": " — truncated at page limit",
+    "asOpenedSuffix": " — the presentation as it was opened; your edits aren't included",
     "wordCount": "Words: {words} · Chars: {characters} · Page {page}/{pages}",
     "wordCountSlides": "Words: {words} · Chars: {characters} · Slide {slide}/{slides}",
     "frozeTopRow": "Frozen top row",
@@ -134,7 +141,7 @@
     "spellingOk": "Spelling OK",
     "loadingDictionary": "Loading dictionary…",
     "dictError": "Dict error",
-    "presentationSaveUnsupported": "Presentation edits can't be saved yet"
+    "presentationSaveUnsupported": "Edited — presentation edits can't be saved yet"
   },
   "spellPanel": {
     "title": "Spell Check",

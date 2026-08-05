@@ -22,11 +22,15 @@ import {
 } from '../i18n/index.js'
 import { checkForUpdatesManually, installDownloadedUpdate, setupAutoUpdater } from './updater.js'
 import {
+  ALL_EDIT_CAPABILITIES,
   EXTENSIONS,
   IPC,
   kindFromPath,
   PRINT_PAGE_CAP,
+  readEditCapabilities,
+  sameEditCapabilities,
   type DocumentKind,
+  type EditCapabilities,
   type ExportPdfRequest,
   type ExportPdfResult,
   type MenuAction,
@@ -44,6 +48,7 @@ let mainWindow: BrowserWindow | null = null
 let rendererReady = false
 let quitting = false
 let activeDocumentKind: DocumentKind | null = null
+let activeEditCapabilities: EditCapabilities = ALL_EDIT_CAPABILITIES
 const pendingOpenPaths: string[] = []
 const grantedPaths = new Set<string>()
 
@@ -235,6 +240,7 @@ function rebuildMenu(): void {
     locale: activeLocale,
     dispatch: sendMenuAction,
     documentKind: activeDocumentKind,
+    editCapabilities: activeEditCapabilities,
     recents: getRecents(),
     onOpenRecent: (filePath) => void openRecentPath(filePath),
     onClearRecents: () => {
@@ -505,6 +511,20 @@ function registerIpc(): void {
     if (kind !== null && kind !== 'docx' && kind !== 'xlsx' && kind !== 'pptx') return
     if (kind === activeDocumentKind) return
     activeDocumentKind = kind
+    // Only the pptx editor reports narrower capabilities, so leaving its last
+    // report in place would disable the Edit menu over the next document.
+    if (kind !== 'pptx') activeEditCapabilities = ALL_EDIT_CAPABILITIES
+    rebuildMenu()
+  })
+
+  // The renderer only sends this when a capability actually flips, but the
+  // menu is rebuilt from scratch here, so the comparison is repeated rather
+  // than trusted: a caret moving inside a paragraph must not rebuild a menu.
+  ipcMain.on(IPC.editCapabilities, (event, capabilities: EditCapabilities) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) return
+    const next = readEditCapabilities(capabilities)
+    if (!next || sameEditCapabilities(next, activeEditCapabilities)) return
+    activeEditCapabilities = next
     rebuildMenu()
   })
 

@@ -101,6 +101,12 @@
       "openFile": "Buka Berkas"
     }
   },
+  "exportStale": {
+    "message": "Ekspor {name} seperti saat dibuka?",
+    "detail": "Presentasi ini berubah sejak dibuka, tetapi suntingan presentasi belum dapat disimpan atau diekspor. PDF akan berisi berkas seperti saat dibuka — suntingan Anda tidak akan muncul di dalamnya.",
+    "cancel": "Batal",
+    "confirm": "Ekspor seperti saat dibuka"
+  },
   "status": {
     "ready": "Siap",
     "newDocument": "Dokumen baru",
@@ -120,6 +126,7 @@
     "exportedPagesOne": "{path} diekspor (1 halaman)",
     "exportedPagesMany": "{path} diekspor ({pages} halaman)",
     "truncatedSuffix": " — terpotong pada batas halaman",
+    "asOpenedSuffix": " — presentasi seperti saat dibuka; suntingan Anda tidak disertakan",
     "wordCount": "Kata: {words} · Karakter: {characters} · Halaman {page}/{pages}",
     "wordCountSlides": "Kata: {words} · Karakter: {characters} · Slide {slide}/{slides}",
     "frozeTopRow": "Baris atas dibekukan",
@@ -134,7 +141,7 @@
     "spellingOk": "Ejaan benar",
     "loadingDictionary": "Memuat kamus…",
     "dictError": "Kesalahan kamus",
-    "presentationSaveUnsupported": "Suntingan presentasi belum dapat disimpan"
+    "presentationSaveUnsupported": "Disunting — suntingan presentasi belum dapat disimpan"
   },
   "spellPanel": {
     "title": "Periksa Ejaan",

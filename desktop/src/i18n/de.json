@@ -101,6 +101,12 @@
       "openFile": "Datei öffnen"
     }
   },
+  "exportStale": {
+    "message": "{name} im geöffneten Zustand exportieren?",
+    "detail": "Diese Präsentation hat sich seit dem Öffnen geändert, aber Präsentationsänderungen können noch nicht gespeichert oder exportiert werden. Das PDF enthält die Datei im geöffneten Zustand — Ihre Änderungen erscheinen darin nicht.",
+    "cancel": "Abbrechen",
+    "confirm": "Wie geöffnet exportieren"
+  },
   "status": {
     "ready": "Bereit",
     "newDocument": "Neues Dokument",
@@ -120,6 +126,7 @@
     "exportedPagesOne": "{path} exportiert (1 Seite)",
     "exportedPagesMany": "{path} exportiert ({pages} Seiten)",
     "truncatedSuffix": " — beim Seitenlimit gekürzt",
+    "asOpenedSuffix": " — die Präsentation im geöffneten Zustand; Ihre Änderungen sind nicht enthalten",
     "wordCount": "Wörter: {words} · Zeichen: {characters} · Seite {page}/{pages}",
     "wordCountSlides": "Wörter: {words} · Zeichen: {characters} · Folie {slide}/{slides}",
     "frozeTopRow": "Oberste Zeile fixiert",
@@ -134,7 +141,7 @@
     "spellingOk": "Rechtschreibung OK",
     "loadingDictionary": "Wörterbuch wird geladen…",
     "dictError": "Wörterbuchfehler",
-    "presentationSaveUnsupported": "Präsentationsänderungen können noch nicht gespeichert werden"
+    "presentationSaveUnsupported": "Bearbeitet — Präsentationsänderungen können noch nicht gespeichert werden"
   },
   "spellPanel": {
     "title": "Rechtschreibprüfung",

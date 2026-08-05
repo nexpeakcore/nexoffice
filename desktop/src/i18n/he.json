@@ -101,6 +101,12 @@
       "openFile": "פתח קובץ"
     }
   },
+  "exportStale": {
+    "message": "לייצא את {name} כפי שנפתח?",
+    "detail": "המצגת הזו השתנתה מאז שפתחת אותה, אך עדיין לא ניתן לשמור או לייצא שינויים במצגת. קובץ ה-PDF יכיל את הקובץ כפי שנפתח — השינויים שלך לא יופיעו בו.",
+    "cancel": "ביטול",
+    "confirm": "ייצא כפי שנפתח"
+  },
   "status": {
     "ready": "מוכן",
     "newDocument": "מסמך חדש",
@@ -120,6 +126,7 @@
     "exportedPagesOne": "{path} יוצא (עמוד אחד)",
     "exportedPagesMany": "{path} יוצא ({pages} עמודים)",
     "truncatedSuffix": " — קוצץ במגבלת העמודים",
+    "asOpenedSuffix": " — המצגת כפי שנפתחה; השינויים שלך אינם כלולים",
     "wordCount": "מילים: {words} · תווים: {characters} · עמוד {page}/{pages}",
     "wordCountSlides": "מילים: {words} · תווים: {characters} · שקופית {slide}/{slides}",
     "frozeTopRow": "השורה העליונה הוקפאה",
@@ -134,7 +141,7 @@
     "spellingOk": "האיות תקין",
     "loadingDictionary": "טוען מילון…",
     "dictError": "שגיאת מילון",
-    "presentationSaveUnsupported": "עדיין לא ניתן לשמור שינויים במצגת"
+    "presentationSaveUnsupported": "נערך — עדיין לא ניתן לשמור שינויים במצגת"
   },
   "spellPanel": {
     "title": "בדיקת איות",

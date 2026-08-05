@@ -101,6 +101,12 @@
       "openFile": "打开文件"
     }
   },
+  "exportStale": {
+    "message": "按打开时的内容导出 {name}？",
+    "detail": "此演示文稿自打开后已更改，但演示文稿的编辑尚无法保存或导出。PDF 将包含打开时的文件内容 — 您的编辑不会出现在其中。",
+    "cancel": "取消",
+    "confirm": "按打开时的内容导出"
+  },
   "status": {
     "ready": "就绪",
     "newDocument": "新建文档",
@@ -120,6 +126,7 @@
     "exportedPagesOne": "已导出 {path}（1 页）",
     "exportedPagesMany": "已导出 {path}（{pages} 页）",
     "truncatedSuffix": " — 已在页数限制处截断",
+    "asOpenedSuffix": " — 打开时的演示文稿内容；不包含您的编辑",
     "wordCount": "字数：{words} · 字符：{characters} · 第 {page}/{pages} 页",
     "wordCountSlides": "字数：{words} · 字符：{characters} · 第 {slide}/{slides} 张幻灯片",
     "frozeTopRow": "已冻结首行",
@@ -134,7 +141,7 @@
     "spellingOk": "拼写正确",
     "loadingDictionary": "正在加载词典…",
     "dictError": "词典错误",
-    "presentationSaveUnsupported": "演示文稿的编辑尚无法保存"
+    "presentationSaveUnsupported": "已编辑 — 演示文稿的编辑尚无法保存"
   },
   "spellPanel": {
     "title": "拼写检查",

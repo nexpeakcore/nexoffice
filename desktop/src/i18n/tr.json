@@ -101,6 +101,12 @@
       "openFile": "Dosya Aç"
     }
   },
+  "exportStale": {
+    "message": "{name} açıldığı haliyle dışa aktarılsın mı?",
+    "detail": "Bu sunu açıldığından beri değişti, ancak sunu düzenlemeleri henüz kaydedilemiyor veya dışa aktarılamıyor. PDF, dosyanın açıldığı halini içerecek — düzenlemeleriniz onda görünmeyecek.",
+    "cancel": "İptal",
+    "confirm": "Açıldığı haliyle dışa aktar"
+  },
   "status": {
     "ready": "Hazır",
     "newDocument": "Yeni belge",
@@ -120,6 +126,7 @@
     "exportedPagesOne": "{path} dışa aktarıldı (1 sayfa)",
     "exportedPagesMany": "{path} dışa aktarıldı ({pages} sayfa)",
     "truncatedSuffix": " — sayfa sınırında kısaltıldı",
+    "asOpenedSuffix": " — sunu açıldığı haliyle; düzenlemeleriniz dahil değil",
     "wordCount": "Sözcük: {words} · Karakter: {characters} · Sayfa {page}/{pages}",
     "wordCountSlides": "Sözcük: {words} · Karakter: {characters} · Slayt {slide}/{slides}",
     "frozeTopRow": "Üst satır donduruldu",
@@ -134,7 +141,7 @@
     "spellingOk": "Yazım doğru",
     "loadingDictionary": "Sözlük yükleniyor…",
     "dictError": "Sözlük hatası",
-    "presentationSaveUnsupported": "Sunu düzenlemeleri henüz kaydedilemiyor"
+    "presentationSaveUnsupported": "Düzenlendi — sunu düzenlemeleri henüz kaydedilemiyor"
   },
   "spellPanel": {
     "title": "Yazım Denetimi",

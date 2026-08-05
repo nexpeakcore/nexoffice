@@ -101,6 +101,12 @@
       "openFile": "Ouvrir un fichier"
     }
   },
+  "exportStale": {
+    "message": "Exporter {name} tel qu'il a été ouvert ?",
+    "detail": "Cette présentation a changé depuis son ouverture, mais les modifications de présentation ne peuvent pas encore être enregistrées ni exportées. Le PDF contiendra le fichier tel qu'il a été ouvert — vos modifications n'y apparaîtront pas.",
+    "cancel": "Annuler",
+    "confirm": "Exporter tel qu'ouvert"
+  },
   "status": {
     "ready": "Prêt",
     "newDocument": "Nouveau document",
@@ -120,6 +126,7 @@
     "exportedPagesOne": "{path} exporté (1 page)",
     "exportedPagesMany": "{path} exporté ({pages} pages)",
     "truncatedSuffix": " — tronqué à la limite de pages",
+    "asOpenedSuffix": " — la présentation telle qu'elle a été ouverte ; vos modifications ne sont pas incluses",
     "wordCount": "Mots : {words} · Caractères : {characters} · Page {page}/{pages}",
     "wordCountSlides": "Mots : {words} · Caractères : {characters} · Diapositive {slide}/{slides}",
     "frozeTopRow": "Première ligne figée",
@@ -134,7 +141,7 @@
     "spellingOk": "Orthographe OK",
     "loadingDictionary": "Chargement du dictionnaire…",
     "dictError": "Erreur de dictionnaire",
-    "presentationSaveUnsupported": "Les modifications de présentation ne peuvent pas encore être enregistrées"
+    "presentationSaveUnsupported": "Modifié — les modifications de présentation ne peuvent pas encore être enregistrées"
   },
   "spellPanel": {
     "title": "Vérification orthographique",

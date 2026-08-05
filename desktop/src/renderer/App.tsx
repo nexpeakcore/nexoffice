@@ -1,10 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { DocumentKind, MenuAction, OpenedDocument, WebEditAction } from '../shared/ipc.js'
+import {
+  ALL_EDIT_CAPABILITIES,
+  sameEditCapabilities,
+  type DocumentKind,
+  type EditCapabilities,
+  type MenuAction,
+  type OpenedDocument,
+  type WebEditAction,
+} from '../shared/ipc.js'
 import { SpellCheckPanel } from './components/SpellCheckPanel.js'
 import { UpdateChip } from './components/UpdateChip.js'
 import { DocxEditorView, type DocxEditorViewRef } from './editors/DocxEditorView.js'
 import { PptxEditorView, type PptxEditorViewRef } from './editors/PptxEditorView.js'
 import { XlsxEditorView, type XlsxEditorViewRef } from './editors/XlsxEditorView.js'
+import {
+  canSave,
+  editCapabilities,
+  exportSuffixKeys,
+  exportedStatusKey,
+  hasUnsavableEdits,
+  type TextSelectionState,
+} from './services/documentPolicy.js'
 import { spellCheckService, type Misspelling } from './services/spellcheck.js'
 import type { EditorStats } from './services/textStats.js'
 import { useI18n } from './i18n.js'
@@ -25,16 +41,7 @@ interface DocumentState extends Omit<OpenedDocument, 'kind' | 'data'> {
 interface StatusMessage {
   key: string
   vars?: Record<string, string | number>
-  suffixKey?: string
-}
-
-// The pptx engine keeps edits in its CRDT and never projects them back into
-// PresentationML, so there is no serializer to write an edited deck with.
-// Saving the bytes it opened with would clear a dirty flag over a file that
-// still holds the original content, so a presentation is never dirty, never
-// saved, and says so in the footer instead.
-function canSave(kind: DocumentKind): boolean {
-  return kind !== 'pptx'
+  suffixKeys?: string[]
 }
 
 const ZOOM_MIN = 0.5
@@ -52,6 +59,11 @@ export function App() {
   const [misspellings, setMisspellings] = useState<Misspelling[]>([])
   const [docStats, setDocStats] = useState({ words: 0, characters: 0, page: 1, pages: 1 })
   const [editRevision, setEditRevision] = useState(0)
+  const [changedSinceOpen, setChangedSinceOpen] = useState(false)
+  const [staleExportTarget, setStaleExportTarget] = useState<DocumentState | null>(null)
+  const changedSinceOpenRef = useRef(false)
+  const pptxSelectionRef = useRef<TextSelectionState | null>(null)
+  const sentEditCapabilitiesRef = useRef<EditCapabilities>(ALL_EDIT_CAPABILITIES)
   const xlsxRef = useRef<XlsxEditorViewRef>(null)
   const pptxRef = useRef<PptxEditorViewRef>(null)
   const documentRef = useRef<DocumentState | null>(null)
@@ -66,9 +78,29 @@ export function App() {
 
   const documentKind = document?.kind ?? null
 
+  // The menu lives in the main process and is rebuilt whole, so a caret moving
+  // inside one paragraph must not reach it: only a flip in what the verbs can
+  // act on is sent.
+  const publishEditCapabilities = useCallback(() => {
+    const next = editCapabilities(documentRef.current?.kind ?? null, pptxSelectionRef.current)
+    if (sameEditCapabilities(next, sentEditCapabilitiesRef.current)) return
+    sentEditCapabilitiesRef.current = next
+    window.nexoffice.setEditCapabilities(next)
+  }, [])
+
   useEffect(() => {
     window.nexoffice.setDocumentKind(documentKind)
-  }, [documentKind])
+    if (documentKind !== 'pptx') pptxSelectionRef.current = null
+    publishEditCapabilities()
+  }, [documentKind, publishEditCapabilities])
+
+  const handlePptxSelectionChange = useCallback(
+    (state: TextSelectionState) => {
+      pptxSelectionRef.current = state
+      publishEditCapabilities()
+    },
+    [publishEditCapabilities],
+  )
 
   const isDocx = document?.kind === 'docx'
   const isPptx = document?.kind === 'pptx'
@@ -138,11 +170,36 @@ export function App() {
     }, 700)
   }, [])
 
+  // "Changed since open" is tracked separately from `dirty` because a document
+  // whose kind cannot be saved must never be dirty — `ensureSaved` would loop
+  // on a save it can never complete — yet Export PDF still has to say that the
+  // bytes it renders are the ones the document opened with.
+  const markChangedSinceOpen = useCallback(() => {
+    if (changedSinceOpenRef.current) return
+    changedSinceOpenRef.current = true
+    setChangedSinceOpen(true)
+  }, [])
+
+  const clearChangedSinceOpen = useCallback(() => {
+    changedSinceOpenRef.current = false
+    setChangedSinceOpen(false)
+    setStaleExportTarget(null)
+  }, [])
+
   const markEdited = useCallback(() => {
     editGenerationRef.current += 1
+    markChangedSinceOpen()
     setDocument((prev) => (prev && !prev.dirty ? { ...prev, dirty: true } : prev))
     scheduleEditRevision()
-  }, [scheduleEditRevision])
+  }, [markChangedSinceOpen, scheduleEditRevision])
+
+  // A deck's edits refresh proofing and arm the export notice, but never mark
+  // it dirty: with no writer they could never be saved away again, and a
+  // document that stays dirty forever cannot be closed.
+  const markDeckEdited = useCallback(() => {
+    markChangedSinceOpen()
+    scheduleEditRevision()
+  }, [markChangedSinceOpen, scheduleEditRevision])
 
   const getCurrentBytes = useCallback(async (current: DocumentState): Promise<Uint8Array> => {
     if (current.kind === 'docx') {
@@ -267,15 +324,20 @@ export function App() {
       return
     }
     savedGenerationRef.current = editGenerationRef.current
+    clearChangedSinceOpen()
     documentIdRef.current += 1
     const { data, ...rest } = opened
     const next: DocumentState = { ...rest, kind, seed: data, dirty: false, id: documentIdRef.current }
     // In-flight save completions compare against documentRef, so the switch
     // must be visible before React commits the state update.
     documentRef.current = next
+    // The editor that reported it is being remounted, so nothing is selected
+    // until it says otherwise.
+    pptxSelectionRef.current = null
+    publishEditCapabilities()
     setDocument(next)
     setStatus({ key: 'status.opened', vars: { name: opened.name } })
-  }, [])
+  }, [clearChangedSinceOpen, publishEditCapabilities])
 
   const openDocument = useCallback(async () => {
     if (!(await ensureSaved())) return
@@ -376,6 +438,47 @@ export function App() {
     editor.setZoom(next)
   }, [])
 
+  const runPdfExport = useCallback(
+    (target: DocumentState, asOpened: boolean) => {
+      setStatus({ key: 'status.exportingPdf' })
+      void getCurrentBytes(target)
+        .then((data) => window.nexoffice.exportPdf(target.name, target.kind, data))
+        .then((result) => {
+          if (!result.path) {
+            setStatus({ key: 'status.pdfCanceled' })
+            return
+          }
+          const suffixKeys = exportSuffixKeys({ truncated: result.truncated === true, asOpened })
+          setStatus({
+            key: exportedStatusKey(result.pages),
+            vars: { path: result.path, pages: result.pages ?? 0 },
+            ...(suffixKeys.length > 0 ? { suffixKeys } : {}),
+          })
+        })
+        .catch((error: unknown) =>
+          setStatus({
+            key: 'status.pdfFailed',
+            vars: { message: error instanceof Error ? error.message : String(error) },
+          }),
+        )
+    },
+    [getCurrentBytes],
+  )
+
+  const cancelStaleExport = useCallback(() => {
+    setStaleExportTarget(null)
+    setStatus({ key: 'status.pdfCanceled' })
+  }, [])
+
+  useEffect(() => {
+    if (!staleExportTarget) return
+    const handle = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') cancelStaleExport()
+    }
+    window.addEventListener('keydown', handle)
+    return () => window.removeEventListener('keydown', handle)
+  }, [staleExportTarget, cancelStaleExport])
+
   useEffect(() => {
     const handle = (action: MenuAction) => {
       switch (action) {
@@ -383,6 +486,7 @@ export function App() {
           void ensureSaved().then((proceed) => {
             if (!proceed) return
             savedGenerationRef.current = editGenerationRef.current
+            clearChangedSinceOpen()
             documentRef.current = null
             setDocument(null)
             setStatus({ key: 'status.newDocument' })
@@ -403,32 +507,14 @@ export function App() {
             setStatus({ key: 'status.openFirst' })
             break
           }
-          setStatus({ key: 'status.exportingPdf' })
-          void getCurrentBytes(current)
-            .then((data) => window.nexoffice.exportPdf(current.name, current.kind, data))
-            .then((result) => {
-              if (!result.path) {
-                setStatus({ key: 'status.pdfCanceled' })
-                return
-              }
-              const key =
-                result.pages == null
-                  ? 'status.exported'
-                  : result.pages === 1
-                    ? 'status.exportedPagesOne'
-                    : 'status.exportedPagesMany'
-              setStatus({
-                key,
-                vars: { path: result.path, pages: result.pages ?? 0 },
-                ...(result.truncated ? { suffixKey: 'status.truncatedSuffix' } : {}),
-              })
-            })
-            .catch((error: unknown) =>
-              setStatus({
-                key: 'status.pdfFailed',
-                vars: { message: error instanceof Error ? error.message : String(error) },
-              }),
-            )
+          // Nothing can serialize this document's edits, so the export would
+          // silently render the file as it was opened; the user confirms that
+          // before a PDF contradicting the screen is written.
+          if (hasUnsavableEdits(current.kind, changedSinceOpenRef.current)) {
+            setStaleExportTarget(current)
+            break
+          }
+          runPdfExport(current, false)
           break
         }
         case 'edit:undo':
@@ -516,7 +602,8 @@ export function App() {
     openDocument,
     saveDocument,
     ensureSaved,
-    getCurrentBytes,
+    clearChangedSinceOpen,
+    runPdfExport,
     runEditAction,
     applyZoom,
     proofingEditor,
@@ -527,9 +614,10 @@ export function App() {
   }, [])
 
   const misspelledCount = misspellings.length
+  const unsavableEdits = hasUnsavableEdits(documentKind, changedSinceOpen)
 
   return (
-    <div className="flex h-full flex-col bg-neutral-100">
+    <div className="relative flex h-full flex-col bg-neutral-100">
       <header className="drag-region flex h-11 shrink-0 items-center justify-center border-b border-neutral-200 bg-white">
         <span className="text-sm font-medium text-neutral-700">
           {document ? `${document.name}${document.dirty ? t('app.edited') : ''}` : 'NexOffice'}
@@ -549,10 +637,12 @@ export function App() {
                 onSaveRequest={(bytes) => void saveDocument(false, bytes)}
               />
             ) : (
-              // A deck's edits refresh proofing but never mark it dirty: with
-              // no writer they could never be saved away again, and a document
-              // that stays dirty forever cannot be closed.
-              <PptxEditorView ref={pptxRef} document={document} onChange={scheduleEditRevision} />
+              <PptxEditorView
+                ref={pptxRef}
+                document={document}
+                onChange={markDeckEdited}
+                onSelectionStateChange={handlePptxSelectionChange}
+              />
             )
           ) : (
             <section className="flex w-full items-center justify-center">
@@ -581,9 +671,13 @@ export function App() {
       </div>
 
       <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-neutral-200 bg-white px-3 text-xs text-neutral-500">
-        <span>{`${t(status.key, status.vars)}${status.suffixKey ? t(status.suffixKey) : ''}`}</span>
-        {isPptx && (
-          <span className="text-amber-600">{t('footer.presentationSaveUnsupported')}</span>
+        <span>
+          {`${t(status.key, status.vars)}${(status.suffixKeys ?? []).map((key) => t(key)).join('')}`}
+        </span>
+        {unsavableEdits && (
+          <span className="hidden text-neutral-400 sm:inline">
+            {t('footer.presentationSaveUnsupported')}
+          </span>
         )}
         {hasProofing && (
           <>
@@ -622,6 +716,43 @@ export function App() {
           <UpdateChip beforeRestart={ensureSaved} />
         </span>
       </footer>
+
+      {staleExportTarget && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-neutral-900/40 p-6">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="stale-export-title"
+            className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl"
+          >
+            <h2 id="stale-export-title" className="text-sm font-semibold text-neutral-900">
+              {t('exportStale.message', { name: staleExportTarget.name })}
+            </h2>
+            <p className="mt-2 text-sm text-neutral-600">{t('exportStale.detail')}</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                autoFocus
+                onClick={cancelStaleExport}
+                className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100"
+              >
+                {t('exportStale.cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = staleExportTarget
+                  setStaleExportTarget(null)
+                  runPdfExport(target, true)
+                }}
+                className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-700"
+              >
+                {t('exportStale.confirm')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

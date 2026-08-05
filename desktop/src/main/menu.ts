@@ -6,7 +6,7 @@ import {
   type LocaleCode,
   type Translator,
 } from '../i18n/index.js'
-import type { DocumentKind, MenuAction } from '../shared/ipc.js'
+import type { DocumentKind, EditCapabilities, MenuAction } from '../shared/ipc.js'
 
 type Dispatch = (action: MenuAction) => void
 
@@ -15,6 +15,7 @@ export interface MenuContext {
   locale: LocaleCode
   dispatch: Dispatch
   documentKind: DocumentKind | null
+  editCapabilities: EditCapabilities
   recents: readonly string[]
   onOpenRecent: (path: string) => void
   onClearRecents: () => void
@@ -69,6 +70,10 @@ export function buildMenu(context: MenuContext): Menu {
   // deck opened with, so it stays available for every kind.
   const canSave = context.documentKind !== 'pptx'
   const canExportPdf = context.documentKind !== null
+  // What the focused editor says its clipboard verbs can act on right now: the
+  // pptx editor has no shape clipboard, so cut, copy, paste and delete would
+  // silently do nothing over a shape selection.
+  const edits = context.editCapabilities
 
   const appMenu: MenuItemConstructorOptions[] = isMac
     ? [
@@ -134,25 +139,46 @@ export function buildMenu(context: MenuContext): Menu {
           click: send('edit:redo'),
         },
         { type: 'separator' },
-        { label: t('menu.edit.cut'), accelerator: 'CmdOrCtrl+X', click: send('edit:cut') },
-        { label: t('menu.edit.copy'), accelerator: 'CmdOrCtrl+C', click: send('edit:copy') },
-        { label: t('menu.edit.paste'), accelerator: 'CmdOrCtrl+V', click: send('edit:paste') },
+        {
+          label: t('menu.edit.cut'),
+          accelerator: 'CmdOrCtrl+X',
+          enabled: edits.cut,
+          click: send('edit:cut'),
+        },
+        {
+          label: t('menu.edit.copy'),
+          accelerator: 'CmdOrCtrl+C',
+          enabled: edits.copy,
+          click: send('edit:copy'),
+        },
+        {
+          label: t('menu.edit.paste'),
+          accelerator: 'CmdOrCtrl+V',
+          enabled: edits.paste,
+          click: send('edit:paste'),
+        },
         ...(isMac
           ? ([
-              { role: 'pasteAndMatchStyle', label: t('menu.edit.pasteAndMatchStyle') },
-              { label: t('menu.edit.delete'), click: send('edit:delete') },
+              {
+                role: 'pasteAndMatchStyle',
+                label: t('menu.edit.pasteAndMatchStyle'),
+                enabled: edits.paste,
+              },
+              { label: t('menu.edit.delete'), enabled: edits.delete, click: send('edit:delete') },
               {
                 label: t('menu.edit.selectAll'),
                 accelerator: 'CmdOrCtrl+A',
+                enabled: edits.selectAll,
                 click: send('edit:selectAll'),
               },
             ] as MenuItemConstructorOptions[])
           : ([
-              { label: t('menu.edit.delete'), click: send('edit:delete') },
+              { label: t('menu.edit.delete'), enabled: edits.delete, click: send('edit:delete') },
               { type: 'separator' },
               {
                 label: t('menu.edit.selectAll'),
                 accelerator: 'CmdOrCtrl+A',
+                enabled: edits.selectAll,
                 click: send('edit:selectAll'),
               },
             ] as MenuItemConstructorOptions[])),

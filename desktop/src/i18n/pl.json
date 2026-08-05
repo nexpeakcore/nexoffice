@@ -101,6 +101,12 @@
       "openFile": "Otwórz plik"
     }
   },
+  "exportStale": {
+    "message": "Wyeksportować {name} w wersji z chwili otwarcia?",
+    "detail": "Ta prezentacja zmieniła się od momentu otwarcia, ale zmian w prezentacji nie można jeszcze zapisać ani wyeksportować. Plik PDF będzie zawierać prezentację w wersji z chwili otwarcia — Twoje zmiany się w nim nie pojawią.",
+    "cancel": "Anuluj",
+    "confirm": "Eksportuj wersję z otwarcia"
+  },
   "status": {
     "ready": "Gotowe",
     "newDocument": "Nowy dokument",
@@ -120,6 +126,7 @@
     "exportedPagesOne": "Wyeksportowano {path} (1 strona)",
     "exportedPagesMany": "Wyeksportowano {path} (strony: {pages})",
     "truncatedSuffix": " — skrócono na limicie stron",
+    "asOpenedSuffix": " — prezentacja w wersji z chwili otwarcia; Twoje zmiany nie są uwzględnione",
     "wordCount": "Słowa: {words} · Znaki: {characters} · Strona {page}/{pages}",
     "wordCountSlides": "Słowa: {words} · Znaki: {characters} · Slajd {slide}/{slides}",
     "frozeTopRow": "Zablokowano górny wiersz",
@@ -134,7 +141,7 @@
     "spellingOk": "Pisownia OK",
     "loadingDictionary": "Ładowanie słownika…",
     "dictError": "Błąd słownika",
-    "presentationSaveUnsupported": "Zmian w prezentacji nie można jeszcze zapisać"
+    "presentationSaveUnsupported": "Edytowano — zmian w prezentacji nie można jeszcze zapisać"
   },
   "spellPanel": {
     "title": "Sprawdzanie pisowni",
