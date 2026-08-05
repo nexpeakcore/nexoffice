@@ -1,44 +1,16 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { PptxEditor, type PptxEditorApi } from '@betteroffice/pptx-react'
-import type { DeckSnapshot, PptxFontFace, ShapeSnapshot } from '@betteroffice/pptx'
 import {
-  loadBundledFontBytes,
-  resolveLastResortFace,
-  resolveMetricCompatFace,
-} from '@betteroffice/docx-fonts'
+  PptxEditor,
+  type PptxEditorApi,
+  type PptxEditorSelectionState,
+} from '@betteroffice/pptx-react'
+import type { DeckSnapshot, PptxFontFace, ShapeSnapshot } from '@betteroffice/pptx'
 import { en as pptxEn, locales as pptxLocales, type PartialLocaleStrings } from '@betteroffice/pptx-i18n'
+import { loadBaseFontFaces } from '../services/presentationFonts.js'
 import { countCharacters, countWords, type EditorStats } from '../services/textStats.js'
 import { useI18n } from '../i18n.js'
 
 const editorLocales = pptxLocales as Record<string, PartialLocaleStrings>
-
-// The pptx renderer resolves a run's family against its registered faces and
-// falls back to the first one registered, so Arial leads and the families a
-// deck is most likely to name follow, each as its own metric-compatible face.
-const FONT_FAMILIES = ['Arial', 'Calibri', 'Cambria', 'Times New Roman', 'Courier New'] as const
-const FONT_STYLES = [
-  { bold: false, italic: false },
-  { bold: true, italic: false },
-  { bold: false, italic: true },
-  { bold: true, italic: true },
-] as const
-
-let bundledFonts: Promise<PptxFontFace[]> | null = null
-
-function presentationFonts(): Promise<PptxFontFace[]> {
-  bundledFonts ??= Promise.all(
-    FONT_FAMILIES.flatMap((family) =>
-      FONT_STYLES.map(async ({ bold, italic }) => {
-        const face =
-          resolveMetricCompatFace(family, bold, italic) ??
-          resolveLastResortFace(family, bold, italic)
-        const bytes = await loadBundledFontBytes(face)
-        return { family, bold, italic, bytes: new Uint8Array(bytes.slice(0)) }
-      }),
-    ),
-  )
-  return bundledFonts
-}
 
 // Everything a deck's text lives in already crosses the wasm boundary inside
 // the snapshot the editor lays out from, so word count and spell check read it
@@ -67,9 +39,17 @@ function deckText(snapshot: DeckSnapshot): string {
 
 const TEXT_REFRESH_DELAY_MS = 500
 
+const NO_SELECTION: PptxEditorSelectionState = {
+  hasTextSelection: false,
+  hasTextRange: false,
+  hasShapeSelection: false,
+  canSelectAll: false,
+}
+
 export interface PptxEditorViewRef {
   getText: () => string
   getStats: () => EditorStats
+  getSelectionState: () => PptxEditorSelectionState
   undo: () => void
   redo: () => void
   cut: () => Promise<void>
@@ -92,10 +72,11 @@ interface EditorDocument {
 interface PptxEditorViewProps {
   document: EditorDocument
   onChange?: () => void
+  onSelectionStateChange?: (state: PptxEditorSelectionState) => void
 }
 
 export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>(
-  function PptxEditorView({ document, onChange }, ref) {
+  function PptxEditorView({ document, onChange, onSelectionStateChange }, ref) {
     const { locale, t } = useI18n()
     const [fonts, setFonts] = useState<PptxFontFace[] | null>(null)
     const [error, setError] = useState<string | null>(null)
@@ -104,8 +85,11 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
     const wordsRef = useRef(0)
     const slidesRef = useRef(1)
     const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+    const selectionRef = useRef<PptxEditorSelectionState>(NO_SELECTION)
     const onChangeRef = useRef(onChange)
     onChangeRef.current = onChange
+    const onSelectionStateChangeRef = useRef(onSelectionStateChange)
+    onSelectionStateChangeRef.current = onSelectionStateChange
 
     // Walking every story is cheap next to laying a slide out, but an edit
     // arrives per keystroke, so the walk waits for a pause the way docx does.
@@ -119,6 +103,7 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
       textRef.current = ''
       wordsRef.current = 0
       slidesRef.current = 1
+      selectionRef.current = NO_SELECTION
       return () => {
         if (refreshTimer.current) clearTimeout(refreshTimer.current)
       }
@@ -126,7 +111,7 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
 
     useEffect(() => {
       let canceled = false
-      presentationFonts().then(
+      loadBaseFontFaces().then(
         (loaded) => { if (!canceled) setFonts(loaded) },
         (err: unknown) => {
           if (!canceled) setError(err instanceof Error ? err.message : String(err))
@@ -137,6 +122,7 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
 
     useImperativeHandle(ref, () => ({
       getText: () => textRef.current,
+      getSelectionState: () => apiRef.current?.getSelectionState() ?? selectionRef.current,
       getStats: () => ({
         words: wordsRef.current,
         characters: countCharacters(textRef.current),
@@ -185,6 +171,12 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
         onReady={(api: PptxEditorApi) => {
           apiRef.current = api
           applySnapshot(api.handle.snapshot())
+          selectionRef.current = api.getSelectionState()
+          onSelectionStateChangeRef.current?.(selectionRef.current)
+        }}
+        onSelectionStateChange={(state: PptxEditorSelectionState) => {
+          selectionRef.current = state
+          onSelectionStateChangeRef.current?.(state)
         }}
         onChange={(snapshot: DeckSnapshot) => {
           onChangeRef.current?.()
