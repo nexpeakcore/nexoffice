@@ -87,6 +87,11 @@
       "message": "Ekspor PDF terpotong",
       "detail": "Dokumen melebihi batas ekspor {cap} halaman; hanya {pages} halaman pertama yang diekspor."
     },
+    "pdfSkipped": {
+      "message": "Beberapa slide tidak dapat diekspor",
+      "detailOne": "Slide {slides} tidak dapat dirender dan tidak disertakan dalam PDF. {pages} halaman lainnya telah diekspor.",
+      "detailMany": "{count} slide tidak dapat dirender dan tidak disertakan dalam PDF: {slides}. {pages} halaman lainnya telah diekspor."
+    },
     "pdfFailed": {
       "title": "Ekspor PDF Gagal"
     },
@@ -126,6 +131,8 @@
     "exportedPagesOne": "{path} diekspor (1 halaman)",
     "exportedPagesMany": "{path} diekspor ({pages} halaman)",
     "truncatedSuffix": " — terpotong pada batas halaman",
+    "skippedSuffixOne": " — 1 slide tidak dapat dirender dan dilewati",
+    "skippedSuffixMany": " — {slides} slide tidak dapat dirender dan dilewati",
     "asOpenedSuffix": " — presentasi seperti saat dibuka; suntingan Anda tidak disertakan",
     "wordCount": "Kata: {words} · Karakter: {characters} · Halaman {page}/{pages}",
     "wordCountSlides": "Kata: {words} · Karakter: {characters} · Slide {slide}/{slides}",

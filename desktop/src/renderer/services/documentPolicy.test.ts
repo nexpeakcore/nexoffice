@@ -4,7 +4,7 @@ import { ALL_EDIT_CAPABILITIES } from '../../shared/ipc.js'
 import {
   canSave,
   editCapabilities,
-  exportSuffixKeys,
+  exportSuffixes,
   exportedStatusKey,
   hasUnsavableEdits,
 } from './documentPolicy.js'
@@ -115,27 +115,46 @@ describe('exportedStatusKey', () => {
   })
 })
 
-describe('exportSuffixKeys', () => {
+describe('exportSuffixes', () => {
   test('is empty for a complete, current export', () => {
-    expect(exportSuffixKeys({ truncated: false, asOpened: false })).toEqual([])
+    expect(exportSuffixes({ truncated: false, skipped: 0, asOpened: false })).toEqual([])
   })
 
   test('reports truncation', () => {
-    expect(exportSuffixKeys({ truncated: true, asOpened: false })).toEqual([
-      'status.truncatedSuffix',
+    expect(exportSuffixes({ truncated: true, skipped: 0, asOpened: false })).toEqual([
+      { key: 'status.truncatedSuffix' },
     ])
   })
 
   test('reports that the export is the document as opened', () => {
-    expect(exportSuffixKeys({ truncated: false, asOpened: true })).toEqual([
-      'status.asOpenedSuffix',
+    expect(exportSuffixes({ truncated: false, skipped: 0, asOpened: true })).toEqual([
+      { key: 'status.asOpenedSuffix' },
     ])
   })
 
-  test('keeps both notices rather than dropping one', () => {
-    expect(exportSuffixKeys({ truncated: true, asOpened: true })).toEqual([
-      'status.truncatedSuffix',
-      'status.asOpenedSuffix',
+  test('reports a single skipped slide without a count', () => {
+    expect(exportSuffixes({ truncated: false, skipped: 1, asOpened: false })).toEqual([
+      { key: 'status.skippedSuffixOne' },
+    ])
+  })
+
+  test('counts several skipped slides', () => {
+    expect(exportSuffixes({ truncated: false, skipped: 3, asOpened: false })).toEqual([
+      { key: 'status.skippedSuffixMany', vars: { slides: 3 } },
+    ])
+  })
+
+  test('never reports skipped slides as truncation', () => {
+    expect(exportSuffixes({ truncated: false, skipped: 2, asOpened: false })).not.toContainEqual({
+      key: 'status.truncatedSuffix',
+    })
+  })
+
+  test('keeps every notice rather than dropping one', () => {
+    expect(exportSuffixes({ truncated: true, skipped: 2, asOpened: true })).toEqual([
+      { key: 'status.truncatedSuffix' },
+      { key: 'status.skippedSuffixMany', vars: { slides: 2 } },
+      { key: 'status.asOpenedSuffix' },
     ])
   })
 })
@@ -150,7 +169,12 @@ describe('translated keys', () => {
       exportedStatusKey(null),
       exportedStatusKey(1),
       exportedStatusKey(7),
-      ...exportSuffixKeys({ truncated: true, asOpened: true }),
+      ...exportSuffixes({ truncated: true, skipped: 1, asOpened: true }).map(
+        (suffix) => suffix.key,
+      ),
+      ...exportSuffixes({ truncated: false, skipped: 4, asOpened: false }).map(
+        (suffix) => suffix.key,
+      ),
     ]
     for (const key of keys) expect(t(key)).not.toBe(key)
   })

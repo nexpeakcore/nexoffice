@@ -49,7 +49,7 @@ function DocxCapture({
           height: parseFloat(canvas.style.height) || canvas.height,
         }))
         if (pages.length === 0) throw new Error('No document pages were rendered')
-        onCaptured({ pages, padding: 0, truncated })
+        onCaptured({ pages, padding: 0, truncated, skippedPages: [] })
       } catch (error) {
         onError(error)
       }
@@ -149,6 +149,7 @@ function PrintPages({ set }: { set: PageSet }) {
             ok: true,
             pages: set.pages.length,
             truncated: set.truncated,
+            skippedPages: set.skippedPages,
           })
         }),
       )

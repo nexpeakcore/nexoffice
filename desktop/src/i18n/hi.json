@@ -87,6 +87,11 @@
       "message": "PDF निर्यात छोटा किया गया",
       "detail": "दस्तावेज़ {cap}-पृष्ठ निर्यात सीमा से अधिक है; केवल पहले {pages} पृष्ठ निर्यात किए गए।"
     },
+    "pdfSkipped": {
+      "message": "कुछ स्लाइड निर्यात नहीं की जा सकीं",
+      "detailOne": "स्लाइड {slides} रेंडर नहीं हो सकी और PDF में शामिल नहीं है। बाकी {pages} पृष्ठ निर्यात कर दिए गए।",
+      "detailMany": "{count} स्लाइड रेंडर नहीं हो सकीं और PDF में शामिल नहीं हैं: {slides}। बाकी {pages} पृष्ठ निर्यात कर दिए गए।"
+    },
     "pdfFailed": {
       "title": "PDF निर्यात विफल"
     },
@@ -126,6 +131,8 @@
     "exportedPagesOne": "{path} निर्यात किया गया (1 पृष्ठ)",
     "exportedPagesMany": "{path} निर्यात किया गया ({pages} पृष्ठ)",
     "truncatedSuffix": " — पृष्ठ सीमा पर छोटा किया गया",
+    "skippedSuffixOne": " — 1 स्लाइड रेंडर नहीं हो सकी और छोड़ दी गई",
+    "skippedSuffixMany": " — {slides} स्लाइड रेंडर नहीं हो सकीं और छोड़ दी गईं",
     "asOpenedSuffix": " — प्रस्तुति जैसी खोली गई थी; आपके संपादन शामिल नहीं हैं",
     "wordCount": "शब्द: {words} · वर्ण: {characters} · पृष्ठ {page}/{pages}",
     "wordCountSlides": "शब्द: {words} · वर्ण: {characters} · स्लाइड {slide}/{slides}",

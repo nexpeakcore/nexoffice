@@ -87,6 +87,11 @@
       "message": "Export PDF tronqué",
       "detail": "Le document dépasse la limite d'export de {cap} pages ; seules les {pages} premières pages ont été exportées."
     },
+    "pdfSkipped": {
+      "message": "Certaines diapositives n'ont pas pu être exportées",
+      "detailOne": "La diapositive {slides} n'a pas pu être rendue et ne figure pas dans le PDF. Les {pages} autres pages ont été exportées.",
+      "detailMany": "{count} diapositives n'ont pas pu être rendues et ne figurent pas dans le PDF : {slides}. Les {pages} autres pages ont été exportées."
+    },
     "pdfFailed": {
       "title": "Échec de l'export PDF"
     },
@@ -126,6 +131,8 @@
     "exportedPagesOne": "{path} exporté (1 page)",
     "exportedPagesMany": "{path} exporté ({pages} pages)",
     "truncatedSuffix": " — tronqué à la limite de pages",
+    "skippedSuffixOne": " — 1 diapositive n'a pas pu être rendue et a été omise",
+    "skippedSuffixMany": " — {slides} diapositives n'ont pas pu être rendues et ont été omises",
     "asOpenedSuffix": " — la présentation telle qu'elle a été ouverte ; vos modifications ne sont pas incluses",
     "wordCount": "Mots : {words} · Caractères : {characters} · Page {page}/{pages}",
     "wordCountSlides": "Mots : {words} · Caractères : {characters} · Diapositive {slide}/{slides}",

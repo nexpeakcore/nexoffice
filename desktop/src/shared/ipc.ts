@@ -53,11 +53,15 @@ export interface ExportPdfRequest {
   data: Uint8Array
 }
 
+// `truncated` and `skipped` are separate outcomes and never stand in for each
+// other: the export stopped at the page cap, or individual pages failed to
+// render and were left out. An export can be both, or neither.
 export interface ExportPdfResult {
   path: string | null
   canceled: boolean
   pages?: number
   truncated?: boolean
+  skipped?: number
 }
 
 export interface PrintJob {
@@ -66,7 +70,7 @@ export interface PrintJob {
 }
 
 export type PrintRenderResult =
-  | { ok: true; pages: number; truncated: boolean }
+  | { ok: true; pages: number; truncated: boolean; skippedPages: number[] }
   | { ok: false; error: string }
 
 export type WebEditAction = 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'delete' | 'selectAll'

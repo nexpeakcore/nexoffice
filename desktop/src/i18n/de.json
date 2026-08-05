@@ -87,6 +87,11 @@
       "message": "PDF-Export gekürzt",
       "detail": "Das Dokument überschreitet das Exportlimit von {cap} Seiten; nur die ersten {pages} Seiten wurden exportiert."
     },
+    "pdfSkipped": {
+      "message": "Einige Folien konnten nicht exportiert werden",
+      "detailOne": "Folie {slides} konnte nicht gerendert werden und fehlt im PDF. Die übrigen {pages} Seiten wurden exportiert.",
+      "detailMany": "{count} Folien konnten nicht gerendert werden und fehlen im PDF: {slides}. Die übrigen {pages} Seiten wurden exportiert."
+    },
     "pdfFailed": {
       "title": "PDF-Export fehlgeschlagen"
     },
@@ -126,6 +131,8 @@
     "exportedPagesOne": "{path} exportiert (1 Seite)",
     "exportedPagesMany": "{path} exportiert ({pages} Seiten)",
     "truncatedSuffix": " — beim Seitenlimit gekürzt",
+    "skippedSuffixOne": " — 1 Folie konnte nicht gerendert werden und fehlt",
+    "skippedSuffixMany": " — {slides} Folien konnten nicht gerendert werden und fehlen",
     "asOpenedSuffix": " — die Präsentation im geöffneten Zustand; Ihre Änderungen sind nicht enthalten",
     "wordCount": "Wörter: {words} · Zeichen: {characters} · Seite {page}/{pages}",
     "wordCountSlides": "Wörter: {words} · Zeichen: {characters} · Folie {slide}/{slides}",

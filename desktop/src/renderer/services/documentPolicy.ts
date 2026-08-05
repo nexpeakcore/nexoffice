@@ -57,9 +57,25 @@ export function exportedStatusKey(pages: number | null | undefined): string {
   return pages === 1 ? 'status.exportedPagesOne' : 'status.exportedPagesMany'
 }
 
-export function exportSuffixKeys(result: { truncated: boolean; asOpened: boolean }): string[] {
-  const keys: string[] = []
-  if (result.truncated) keys.push('status.truncatedSuffix')
-  if (result.asOpened) keys.push('status.asOpenedSuffix')
-  return keys
+export interface StatusSuffix {
+  key: string
+  vars?: Record<string, string | number>
+}
+
+// Stopping at the page cap and failing to render a page are different things
+// that go wrong, so an export that hit one never borrows the other's wording,
+// and an export that hit both says both.
+export function exportSuffixes(result: {
+  truncated: boolean
+  skipped: number
+  asOpened: boolean
+}): StatusSuffix[] {
+  const suffixes: StatusSuffix[] = []
+  if (result.truncated) suffixes.push({ key: 'status.truncatedSuffix' })
+  if (result.skipped === 1) suffixes.push({ key: 'status.skippedSuffixOne' })
+  else if (result.skipped > 1) {
+    suffixes.push({ key: 'status.skippedSuffixMany', vars: { slides: result.skipped } })
+  }
+  if (result.asOpened) suffixes.push({ key: 'status.asOpenedSuffix' })
+  return suffixes
 }

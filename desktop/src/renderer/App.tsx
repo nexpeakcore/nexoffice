@@ -16,9 +16,10 @@ import { XlsxEditorView, type XlsxEditorViewRef } from './editors/XlsxEditorView
 import {
   canSave,
   editCapabilities,
-  exportSuffixKeys,
+  exportSuffixes,
   exportedStatusKey,
   hasUnsavableEdits,
+  type StatusSuffix,
   type TextSelectionState,
 } from './services/documentPolicy.js'
 import { spellCheckService, type Misspelling } from './services/spellcheck.js'
@@ -41,7 +42,7 @@ interface DocumentState extends Omit<OpenedDocument, 'kind' | 'data'> {
 interface StatusMessage {
   key: string
   vars?: Record<string, string | number>
-  suffixKeys?: string[]
+  suffixes?: StatusSuffix[]
 }
 
 const ZOOM_MIN = 0.5
@@ -57,7 +58,7 @@ export function App() {
   const [spellLoading, setSpellLoading] = useState(true)
   const [spellError, setSpellError] = useState<string | null>(null)
   const [misspellings, setMisspellings] = useState<Misspelling[]>([])
-  const [docStats, setDocStats] = useState({ words: 0, characters: 0, page: 1, pages: 1 })
+  const [docStats, setDocStats] = useState<EditorStats | null>(null)
   const [editRevision, setEditRevision] = useState(0)
   const [changedSinceOpen, setChangedSinceOpen] = useState(false)
   const [staleExportTarget, setStaleExportTarget] = useState<DocumentState | null>(null)
@@ -111,7 +112,7 @@ export function App() {
   // Read through the ref rather than a captured editor: the ticker and the
   // spell-check pass must always see whichever editor is mounted now.
   const proofingEditor = useCallback(
-    (): { getText: () => string; getStats: () => EditorStats } | null => {
+    (): { getText: () => string; getStats: () => EditorStats | null } | null => {
       const kind = documentRef.current?.kind
       if (kind === 'docx') return docxRef.current
       if (kind === 'pptx') return pptxRef.current
@@ -126,6 +127,7 @@ export function App() {
       const stats = proofingEditor()?.getStats()
       if (!stats) return
       setDocStats((prev) =>
+        prev &&
         prev.words === stats.words &&
         prev.characters === stats.characters &&
         prev.page === stats.page &&
@@ -156,7 +158,7 @@ export function App() {
       setMisspellings(spellCheckService.check(text))
     }, 800)
     return () => clearTimeout(timer)
-  }, [spellLoading, spellError, hasProofing, proofingEditor, document?.path, editRevision, docStats.words])
+  }, [spellLoading, spellError, hasProofing, proofingEditor, document?.path, editRevision, docStats?.words])
 
   const getEditorText = useCallback(() => proofingEditor()?.getText() ?? '', [proofingEditor])
 
@@ -184,6 +186,13 @@ export function App() {
     changedSinceOpenRef.current = false
     setChangedSinceOpen(false)
     setStaleExportTarget(null)
+  }, [])
+
+  // An editor that fails to open reports no stats, and the ticker keeps the
+  // last value it saw — which would be the previous document's.
+  const clearStats = useCallback(() => {
+    setDocStats(null)
+    setMisspellings([])
   }, [])
 
   const markEdited = useCallback(() => {
@@ -325,6 +334,7 @@ export function App() {
     }
     savedGenerationRef.current = editGenerationRef.current
     clearChangedSinceOpen()
+    clearStats()
     documentIdRef.current += 1
     const { data, ...rest } = opened
     const next: DocumentState = { ...rest, kind, seed: data, dirty: false, id: documentIdRef.current }
@@ -337,7 +347,7 @@ export function App() {
     publishEditCapabilities()
     setDocument(next)
     setStatus({ key: 'status.opened', vars: { name: opened.name } })
-  }, [clearChangedSinceOpen, publishEditCapabilities])
+  }, [clearChangedSinceOpen, clearStats, publishEditCapabilities])
 
   const openDocument = useCallback(async () => {
     if (!(await ensureSaved())) return
@@ -448,11 +458,15 @@ export function App() {
             setStatus({ key: 'status.pdfCanceled' })
             return
           }
-          const suffixKeys = exportSuffixKeys({ truncated: result.truncated === true, asOpened })
+          const suffixes = exportSuffixes({
+            truncated: result.truncated === true,
+            skipped: result.skipped ?? 0,
+            asOpened,
+          })
           setStatus({
             key: exportedStatusKey(result.pages),
             vars: { path: result.path, pages: result.pages ?? 0 },
-            ...(suffixKeys.length > 0 ? { suffixKeys } : {}),
+            ...(suffixes.length > 0 ? { suffixes } : {}),
           })
         })
         .catch((error: unknown) =>
@@ -672,7 +686,7 @@ export function App() {
 
       <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-neutral-200 bg-white px-3 text-xs text-neutral-500">
         <span>
-          {`${t(status.key, status.vars)}${(status.suffixKeys ?? []).map((key) => t(key)).join('')}`}
+          {`${t(status.key, status.vars)}${(status.suffixes ?? []).map((suffix) => t(suffix.key, suffix.vars)).join('')}`}
         </span>
         {unsavableEdits && (
           <span className="hidden text-neutral-400 sm:inline">
@@ -681,6 +695,7 @@ export function App() {
         )}
         {hasProofing && (
           <>
+            {docStats && (
             <span className="hidden text-neutral-400 sm:inline">
               {isPptx
                 ? t('footer.statsSlides', {
@@ -696,6 +711,7 @@ export function App() {
                     pages: docStats.pages,
                   })}
             </span>
+            )}
             {!spellLoading && !spellError && (
               <button
                 onClick={() => setSpellPanelOpen((prev) => !prev)}

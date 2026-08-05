@@ -81,22 +81,20 @@ export function loadPresentationFaceBytes(face: BundledFontFace): Promise<Uint8A
 }
 
 /**
- * A DOM family carrying one face and nothing else, so asking it for bold or
- * italic leaves the browser to synthesize them. Chrome's synthetic bold and
- * oblique keep the real face's advances, which is what lets text the engine
- * measured with this face paint at the width layout gave it while still looking
- * bold. Registered lazily and shared: aliases are keyed by face file, not by
- * the family a deck happened to ask for.
+ * A DOM family carrying one face and nothing else, so text pinned to it paints
+ * from that face whatever weight or style is asked for: the face's own weight
+ * matches exactly, and anything else the browser synthesizes. Chrome's synthetic
+ * bold and oblique keep the real face's advances, which is what lets text the
+ * engine measured with this face paint at the width layout gave it while still
+ * looking bold. Registered lazily and shared: aliases are keyed by face file,
+ * not by the family a deck happened to ask for.
  */
 export function metricAliasFamily(face: BundledFontFace): string {
   return `NexOffice Metric ${face.file}`
 }
 
 export function registerMetricAlias(face: BundledFontFace): Promise<void> {
-  return registerBundledFontFace(
-    { ...face, weight: 400, style: 'normal' },
-    metricAliasFamily(face),
-  )
+  return registerBundledFontFace(face, metricAliasFamily(face))
 }
 
 export function baseFontRequests(): PresentationFontRequest[] {

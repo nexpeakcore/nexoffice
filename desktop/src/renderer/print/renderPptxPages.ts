@@ -130,12 +130,18 @@ function registerFonts(
   return faces
 }
 
-// A run whose family the engine never received — a theme default, a family past
-// the face cap, a face that failed to load — is measured with the fallback face
-// but still reports its own bold and italic, so the canvas would paint a heavier
-// face than the advances were taken from and overflow its box. Repointing those
-// runs at the alias of the face the engine really used restores the advances,
-// and the weight the run asked for survives as a synthesized one.
+// A display-list run names the family the engine resolved it to and the bold and
+// italic the deck asked for, and the canvas re-resolves that triple through the
+// CSS font matcher — which is free to land somewhere else. It does whenever the
+// engine fell back for a run (a theme default, a family past the face cap, a
+// face that failed to load): the run keeps its own weight, so bold text paints
+// from the heavier face the advances were never taken from. It also does for a
+// family CSS reads as something other than a face name — a generic keyword like
+// `monospace`, anything holding a comma — where even a regular run paints in
+// whatever the browser picks instead. Every run is therefore pinned to the alias
+// of the face the engine really measured, which carries that one face and no
+// other: the advances match at any weight, and a weight the face does not have
+// survives as a synthesized one.
 function alignRunFaces(list: SlideDisplayList, faces: Map<number, RegisteredFace>): void {
   for (const primitive of list.primitives) {
     if (primitive.kind !== 'textBox') continue
@@ -143,7 +149,6 @@ function alignRunFaces(list: SlideDisplayList, faces: Map<number, RegisteredFace
       for (const run of line.runs) {
         const face = faces.get(run.fontId)
         if (!face) continue
-        if (run.bold === face.bold && run.italic === face.italic) continue
         run.fontFamily = face.metricFamily
       }
     }
@@ -240,20 +245,20 @@ export async function renderPptxPages(data: Uint8Array): Promise<PageSet> {
 
     const count = Math.min(total, PRINT_PAGE_CAP)
     const pages: PageImage[] = []
-    let skipped = 0
+    const skippedPages: number[] = []
     for (let index = 0; index < count; index += 1) {
       try {
         pages.push(
           await renderSlide(handle, faces, canvas, context, resolveImage, index, count),
         )
       } catch (error) {
-        skipped += 1
+        skippedPages.push(index + 1)
         console.warn(`Skipped slide ${index + 1} of ${total}`, error)
       }
     }
     if (pages.length === 0) throw new Error('No slide could be rendered')
 
-    return { pages, padding: 0, truncated: total > PRINT_PAGE_CAP || skipped > 0 }
+    return { pages, padding: 0, truncated: total > PRINT_PAGE_CAP, skippedPages }
   } finally {
     handle.dispose()
   }

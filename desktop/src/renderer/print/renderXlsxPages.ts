@@ -84,7 +84,7 @@ export async function renderXlsxPages(data: Uint8Array): Promise<PageSet> {
       }
     }
 
-    return { pages, padding: PAGE_PADDING, truncated }
+    return { pages, padding: PAGE_PADDING, truncated, skippedPages: [] }
   } finally {
     handle.dispose()
   }

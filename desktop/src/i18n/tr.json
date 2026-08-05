@@ -87,6 +87,11 @@
       "message": "PDF dışa aktarma kısaltıldı",
       "detail": "Belge {cap} sayfalık dışa aktarma sınırını aşıyor; yalnızca ilk {pages} sayfa dışa aktarıldı."
     },
+    "pdfSkipped": {
+      "message": "Bazı slaytlar dışa aktarılamadı",
+      "detailOne": "{slides}. slayt işlenemedi ve PDF'e eklenmedi. Diğer {pages} sayfa dışa aktarıldı.",
+      "detailMany": "{count} slayt işlenemedi ve PDF'e eklenmedi: {slides}. Diğer {pages} sayfa dışa aktarıldı."
+    },
     "pdfFailed": {
       "title": "PDF Dışa Aktarma Başarısız"
     },
@@ -126,6 +131,8 @@
     "exportedPagesOne": "{path} dışa aktarıldı (1 sayfa)",
     "exportedPagesMany": "{path} dışa aktarıldı ({pages} sayfa)",
     "truncatedSuffix": " — sayfa sınırında kısaltıldı",
+    "skippedSuffixOne": " — 1 slayt işlenemedi ve atlandı",
+    "skippedSuffixMany": " — {slides} slayt işlenemedi ve atlandı",
     "asOpenedSuffix": " — sunu açıldığı haliyle; düzenlemeleriniz dahil değil",
     "wordCount": "Sözcük: {words} · Karakter: {characters} · Sayfa {page}/{pages}",
     "wordCountSlides": "Sözcük: {words} · Karakter: {characters} · Slayt {slide}/{slides}",

@@ -87,6 +87,11 @@
       "message": "PDF export truncated",
       "detail": "The document exceeds the {cap}-page export limit; only the first {pages} pages were exported."
     },
+    "pdfSkipped": {
+      "message": "Some slides couldn't be exported",
+      "detailOne": "Slide {slides} couldn't be rendered and was left out of the PDF. The other {pages} pages were exported.",
+      "detailMany": "{count} slides couldn't be rendered and were left out of the PDF: {slides}. The other {pages} pages were exported."
+    },
     "pdfFailed": {
       "title": "PDF Export Failed"
     },
@@ -126,6 +131,8 @@
     "exportedPagesOne": "Exported {path} (1 page)",
     "exportedPagesMany": "Exported {path} ({pages} pages)",
     "truncatedSuffix": " — truncated at page limit",
+    "skippedSuffixOne": " — 1 slide couldn't be rendered and was left out",
+    "skippedSuffixMany": " — {slides} slides couldn't be rendered and were left out",
     "asOpenedSuffix": " — the presentation as it was opened; your edits aren't included",
     "wordCount": "Words: {words} · Chars: {characters} · Page {page}/{pages}",
     "wordCountSlides": "Words: {words} · Chars: {characters} · Slide {slide}/{slides}",

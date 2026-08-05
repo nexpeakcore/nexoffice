@@ -48,7 +48,7 @@ const NO_SELECTION: PptxEditorSelectionState = {
 
 export interface PptxEditorViewRef {
   getText: () => string
-  getStats: () => EditorStats
+  getStats: () => EditorStats | null
   getSelectionState: () => PptxEditorSelectionState
   undo: () => void
   redo: () => void
@@ -86,6 +86,7 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
     const slidesRef = useRef(1)
     const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
     const selectionRef = useRef<PptxEditorSelectionState>(NO_SELECTION)
+    const readyRef = useRef(false)
     const onChangeRef = useRef(onChange)
     onChangeRef.current = onChange
     const onSelectionStateChangeRef = useRef(onSelectionStateChange)
@@ -100,6 +101,7 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
     }, [])
 
     useEffect(() => {
+      readyRef.current = false
       textRef.current = ''
       wordsRef.current = 0
       slidesRef.current = 1
@@ -123,12 +125,15 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
     useImperativeHandle(ref, () => ({
       getText: () => textRef.current,
       getSelectionState: () => apiRef.current?.getSelectionState() ?? selectionRef.current,
-      getStats: () => ({
-        words: wordsRef.current,
-        characters: countCharacters(textRef.current),
-        page: (apiRef.current?.getSlideIndex() ?? 0) + 1,
-        pages: slidesRef.current,
-      }),
+      getStats: () =>
+        readyRef.current
+          ? {
+              words: wordsRef.current,
+              characters: countCharacters(textRef.current),
+              page: (apiRef.current?.getSlideIndex() ?? 0) + 1,
+              pages: slidesRef.current,
+            }
+          : null,
       undo: () => apiRef.current?.undo(),
       redo: () => apiRef.current?.redo(),
       cut: () => apiRef.current?.cutSelection() ?? Promise.resolve(),
@@ -170,6 +175,7 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
         i18n={editorLocales[locale] ?? pptxEn}
         onReady={(api: PptxEditorApi) => {
           apiRef.current = api
+          readyRef.current = true
           applySnapshot(api.handle.snapshot())
           selectionRef.current = api.getSelectionState()
           onSelectionStateChangeRef.current?.(selectionRef.current)
@@ -178,6 +184,7 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
           selectionRef.current = state
           onSelectionStateChangeRef.current?.(state)
         }}
+        onError={(err: Error) => setError(err.message)}
         onChange={(snapshot: DeckSnapshot) => {
           onChangeRef.current?.()
           if (refreshTimer.current) clearTimeout(refreshTimer.current)

@@ -87,6 +87,11 @@
       "message": "Exportação de PDF truncada",
       "detail": "O documento excede o limite de exportação de {cap} páginas; apenas as primeiras {pages} páginas foram exportadas."
     },
+    "pdfSkipped": {
+      "message": "Alguns slides não puderam ser exportados",
+      "detailOne": "O slide {slides} não pôde ser renderizado e ficou de fora do PDF. As outras {pages} páginas foram exportadas.",
+      "detailMany": "{count} slides não puderam ser renderizados e ficaram de fora do PDF: {slides}. As outras {pages} páginas foram exportadas."
+    },
     "pdfFailed": {
       "title": "Falha na exportação de PDF"
     },
@@ -126,6 +131,8 @@
     "exportedPagesOne": "{path} exportado (1 página)",
     "exportedPagesMany": "{path} exportado ({pages} páginas)",
     "truncatedSuffix": " — truncado no limite de páginas",
+    "skippedSuffixOne": " — 1 slide não pôde ser renderizado e ficou de fora",
+    "skippedSuffixMany": " — {slides} slides não puderam ser renderizados e ficaram de fora",
     "asOpenedSuffix": " — a apresentação como foi aberta; suas edições não estão incluídas",
     "wordCount": "Palavras: {words} · Caracteres: {characters} · Página {page}/{pages}",
     "wordCountSlides": "Palavras: {words} · Caracteres: {characters} · Slide {slide}/{slides}",

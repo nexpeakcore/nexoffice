@@ -87,6 +87,11 @@
       "message": "ייצוא ה-PDF קוצץ",
       "detail": "המסמך חורג ממגבלת הייצוא של {cap} עמודים; רק {pages} העמודים הראשונים יוצאו."
     },
+    "pdfSkipped": {
+      "message": "לא ניתן היה לייצא חלק מהשקופיות",
+      "detailOne": "שקופית {slides} לא עברה עיבוד ולא נכללה ב-PDF. שאר {pages} העמודים יוצאו.",
+      "detailMany": "{count} שקופיות לא עברו עיבוד ולא נכללו ב-PDF: {slides}. שאר {pages} העמודים יוצאו."
+    },
     "pdfFailed": {
       "title": "ייצוא ה-PDF נכשל"
     },
@@ -126,6 +131,8 @@
     "exportedPagesOne": "{path} יוצא (עמוד אחד)",
     "exportedPagesMany": "{path} יוצא ({pages} עמודים)",
     "truncatedSuffix": " — קוצץ במגבלת העמודים",
+    "skippedSuffixOne": " — שקופית אחת לא עברה עיבוד והושמטה",
+    "skippedSuffixMany": " — {slides} שקופיות לא עברו עיבוד והושמטו",
     "asOpenedSuffix": " — המצגת כפי שנפתחה; השינויים שלך אינם כלולים",
     "wordCount": "מילים: {words} · תווים: {characters} · עמוד {page}/{pages}",
     "wordCountSlides": "מילים: {words} · תווים: {characters} · שקופית {slide}/{slides}",

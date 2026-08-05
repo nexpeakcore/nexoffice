@@ -87,6 +87,11 @@
       "message": "PDF 导出被截断",
       "detail": "文档超过 {cap} 页的导出限制；仅导出了前 {pages} 页。"
     },
+    "pdfSkipped": {
+      "message": "部分幻灯片无法导出",
+      "detailOne": "第 {slides} 张幻灯片无法渲染，未包含在 PDF 中。其余 {pages} 页已导出。",
+      "detailMany": "有 {count} 张幻灯片无法渲染，未包含在 PDF 中：{slides}。其余 {pages} 页已导出。"
+    },
     "pdfFailed": {
       "title": "PDF 导出失败"
     },
@@ -126,6 +131,8 @@
     "exportedPagesOne": "已导出 {path}（1 页）",
     "exportedPagesMany": "已导出 {path}（{pages} 页）",
     "truncatedSuffix": " — 已在页数限制处截断",
+    "skippedSuffixOne": " — 1 张幻灯片无法渲染，已跳过",
+    "skippedSuffixMany": " — {slides} 张幻灯片无法渲染，已跳过",
     "asOpenedSuffix": " — 打开时的演示文稿内容；不包含您的编辑",
     "wordCount": "字数：{words} · 字符：{characters} · 第 {page}/{pages} 页",
     "wordCountSlides": "字数：{words} · 字符：{characters} · 第 {slide}/{slides} 张幻灯片",
