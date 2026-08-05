@@ -526,6 +526,29 @@ mod tests {
     }
 
     #[test]
+    fn two_edits_naming_the_same_run_are_refused() {
+        for (label, second) in [("different text", "second"), ("the same text", "first")] {
+            let result = rewrite_slide_run_text(
+                "slide1.xml",
+                SLIDE.as_bytes(),
+                &[
+                    edit(&[0], TextBodyLocation::Shape, 0, "first"),
+                    edit(&[0], TextBodyLocation::Shape, 0, second),
+                ],
+            );
+            let Err(error @ PptxError::MissingTextTarget { .. }) = result else {
+                panic!("{label} was accepted: {result:?}");
+            };
+            let message = error.to_string();
+            assert!(message.contains("duplicate edit for"), "{message}");
+            assert!(
+                message.contains("shape 0 text body paragraph 0 run 0"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
     fn an_empty_edit_list_returns_the_source_bytes() {
         assert_eq!(
             rewrite_slide_run_text("slide1.xml", SLIDE.as_bytes(), &[]).unwrap(),

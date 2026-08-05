@@ -3,6 +3,8 @@ use pptx_edit::{DeckSession, EditCtx, EditError, StorySnapshot, TextStyle, Write
 const FIXTURE: &[u8] = include_bytes!("../../../apps/demo/public/betteroffice-demo.pptx");
 
 const SLIDE_PART: &str = "ppt/slides/slide1.xml";
+const SECOND_SLIDE_PART: &str = "ppt/slides/slide2.xml";
+const THIRD_SLIDE_PART: &str = "ppt/slides/slide3.xml";
 
 /// A slide whose only shape holds the paragraphs a test asks for, so a case can
 /// be built out of exact `<a:r>`/`<a:br>`/`<a:fld>` sequences instead of
@@ -32,8 +34,22 @@ fn deck_with(paragraphs: &str) -> Vec<u8> {
     pptx_parse::write_pptx(&package).unwrap()
 }
 
+/// [`deck_with`] for the first two slides, so a save can be asked to rewrite
+/// more than one part while the third slide stays as the fixture wrote it.
+fn deck_with_slides(first: &str, second: &str) -> Vec<u8> {
+    let mut package = pptx_parse::parse_pptx(FIXTURE).unwrap();
+    assert!(package.replace_part(SLIDE_PART, slide_xml(first).into_bytes()));
+    assert!(package.replace_part(SECOND_SLIDE_PART, slide_xml(second).into_bytes()));
+    pptx_parse::write_pptx(&package).unwrap()
+}
+
 fn session_with(paragraphs: &str) -> DeckSession {
     DeckSession::open(&deck_with(paragraphs), 77).unwrap()
+}
+
+fn part_text(deck: &[u8], part: &str) -> String {
+    let package = pptx_parse::parse_pptx(deck).unwrap();
+    String::from_utf8(package.part_bytes(part).unwrap().to_vec()).unwrap()
 }
 
 fn first_story(session: &DeckSession) -> StorySnapshot {
@@ -45,6 +61,19 @@ fn first_story(session: &DeckSession) -> StorySnapshot {
         .flat_map(|slide| slide.shapes.iter())
         .find_map(|shape| shape.text_stories.first().cloned())
         .expect("the fixture has a text story")
+}
+
+/// Every story of the deck in slide order, so a test can address the body of a
+/// slide other than the first.
+fn stories(session: &DeckSession) -> Vec<StorySnapshot> {
+    session
+        .snapshot()
+        .unwrap()
+        .slides
+        .iter()
+        .flat_map(|slide| slide.shapes.clone())
+        .flat_map(|shape| shape.text_stories)
+        .collect()
 }
 
 fn type_text(session: &DeckSession, story_id: &str, index: u32, text: &str) {
@@ -206,6 +235,172 @@ fn an_edit_inside_a_line_break_is_still_refused() {
         reason.contains("the change lands on line break"),
         "removing the break itself is still unprojectable: {reason}"
     );
+}
+
+#[test]
+fn an_edit_taking_text_from_both_sides_of_a_line_break_is_refused_by_name() {
+    let session =
+        session_with(r#"<a:p><a:r><a:t>ab</a:t></a:r><a:br/><a:r><a:t>cd</a:t></a:r></a:p>"#);
+    let story = first_story(&session);
+    assert_eq!(story.plain_text(), "ab\ncd");
+    session
+        .delete_text(&EditCtx::local("test"), &story.id, 1, 4)
+        .unwrap();
+    assert_eq!(session.story(&story.id).unwrap().plain_text(), "ad");
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("the change spans more than one run"),
+        "text taken from both sides of a break has no single-run rewrite: {reason}"
+    );
+}
+
+#[test]
+fn an_edit_that_lands_on_a_field_is_refused_by_name() {
+    let session = session_with(concat!(
+        r#"<a:p><a:r><a:t>page </a:t></a:r>"#,
+        r#"<a:fld id="{4B0A}" type="slidenum"><a:t>3</a:t></a:fld>"#,
+        r#"<a:r><a:t>/9</a:t></a:r></a:p>"#,
+    ));
+    let story = first_story(&session);
+    assert_eq!(story.plain_text(), "page 3/9");
+    session
+        .delete_text(&EditCtx::local("test"), &story.id, 5, 6)
+        .unwrap();
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("the change lands on field 2"),
+        "a field's text belongs to PowerPoint, not to the writer: {reason}"
+    );
+}
+
+#[test]
+fn an_edit_that_spans_two_runs_is_refused_by_name() {
+    let session = session_with(r#"<a:p><a:r><a:t>ab</a:t></a:r><a:r><a:t>cd</a:t></a:r></a:p>"#);
+    let story = first_story(&session);
+    assert_eq!(story.plain_text(), "abcd");
+    session
+        .delete_text(&EditCtx::local("test"), &story.id, 1, 3)
+        .unwrap();
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("the change spans more than one run"),
+        "a change wider than one run has no single-run rewrite: {reason}"
+    );
+}
+
+#[test]
+fn a_deletion_inside_a_run_rewrites_only_that_runs_text() {
+    let paragraphs = r#"<a:p><a:r><a:rPr b="1"/><a:t>abcdef</a:t></a:r></a:p>"#;
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    session
+        .delete_text(&EditCtx::local("test"), &story.id, 2, 4)
+        .unwrap();
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace("<a:t>abcdef</a:t>", "<a:t>abef</a:t>"),
+        "a partial deletion moves no byte outside its own <a:t>"
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 131)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "abef"
+    );
+}
+
+#[test]
+fn the_runs_around_an_edit_keep_their_entities_and_their_whitespace() {
+    let paragraphs = concat!(
+        r#"<a:p><a:r><a:t>Ben &amp; Co</a:t></a:r>"#,
+        r#"<a:r><a:rPr b="1"/><a:t>target</a:t></a:r>"#,
+        r#"<a:r><a:t xml:space="preserve">   </a:t></a:r></a:p>"#,
+    );
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    assert_eq!(story.plain_text(), "Ben & Cotarget   ");
+    let style = story.paragraphs[0]
+        .runs
+        .iter()
+        .find(|run| run.text == "target")
+        .expect("the edited run")
+        .style
+        .clone();
+    session
+        .insert_text(
+            &EditCtx::local("test"),
+            &story.id,
+            "Ben & Cotar".chars().count() as u32,
+            "X",
+            &style,
+        )
+        .unwrap();
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace("<a:t>target</a:t>", "<a:t>tarXget</a:t>"),
+        "the runs on either side keep their entity and their spaces byte for byte"
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 141)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "Ben & CotarXget   "
+    );
+}
+
+#[test]
+fn one_save_rewrites_several_paragraphs_across_several_slides() {
+    let first = concat!(
+        r#"<a:p><a:r><a:t>alpha</a:t></a:r></a:p>"#,
+        r#"<a:p><a:r><a:t>beta</a:t></a:r></a:p>"#,
+    );
+    let second = r#"<a:p><a:r><a:t>gamma</a:t></a:r></a:p>"#;
+    let deck = deck_with_slides(first, second);
+    let session = DeckSession::open(&deck, 151).unwrap();
+    let stories = stories(&session);
+    let (front, back) = (stories[0].clone(), stories[1].clone());
+    assert_eq!(front.plain_text(), "alpha\nbeta");
+    assert_eq!(back.plain_text(), "gamma");
+
+    type_text(&session, &front.id, 0, "1");
+    type_text(&session, &front.id, 7, "2");
+    type_text(&session, &back.id, 0, "3");
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(first)
+            .replace("<a:t>alpha</a:t>", "<a:t>1alpha</a:t>")
+            .replace("<a:t>beta</a:t>", "<a:t>2beta</a:t>"),
+        "both paragraphs of one body are rewritten in place"
+    );
+    assert_eq!(
+        part_text(&bytes, SECOND_SLIDE_PART),
+        slide_xml(second).replace("<a:t>gamma</a:t>", "<a:t>3gamma</a:t>")
+    );
+    assert_eq!(
+        part_text(&bytes, THIRD_SLIDE_PART),
+        part_text(&deck, THIRD_SLIDE_PART),
+        "the slide no edit named keeps its source bytes"
+    );
+
+    let reopened = DeckSession::open(&bytes, 161).unwrap();
+    assert_eq!(
+        reopened.story(&front.id).unwrap().plain_text(),
+        "1alpha\n2beta"
+    );
+    assert_eq!(reopened.story(&back.id).unwrap().plain_text(), "3gamma");
 }
 
 #[test]

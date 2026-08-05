@@ -152,6 +152,72 @@ fn an_edit_inside_one_run_of_a_multi_run_paragraph_is_expressible() {
     assert_eq!(reparsed.paragraphs[0].runs.len(), paragraph.runs.len());
 }
 
+#[test]
+fn one_save_carries_edits_from_two_paragraphs_and_two_slides() {
+    let presentation = Presentation::open(FIXTURE).unwrap();
+    let (title, first_style) = story_holding(&presentation, "Office files,");
+    let (_, second_style) = story_holding(&presentation, "without the office.");
+    let (heading, heading_style) = story_holding(&presentation, "ONE NATIVE STACK");
+    assert_ne!(title, heading, "the two edits land on different slides");
+    let second_line = presentation
+        .story(&title)
+        .unwrap()
+        .plain_text()
+        .find("without the office.")
+        .expect("both paragraphs live in one body") as u32;
+
+    presentation
+        .insert_text(&context(), &title, 0, "Now: ", &first_style)
+        .unwrap();
+    presentation
+        .insert_text(
+            &context(),
+            &title,
+            second_line + "Now: ".len() as u32,
+            "just ",
+            &second_style,
+        )
+        .unwrap();
+    presentation
+        .insert_text(&context(), &heading, 0, "TOP ", &heading_style)
+        .unwrap();
+
+    let saved = presentation.save().unwrap();
+    let before = parts(FIXTURE);
+    let after = parts(&saved);
+    assert_eq!(before.len(), after.len());
+    for ((source_path, source_bytes), (saved_path, saved_bytes)) in before.iter().zip(&after) {
+        assert_eq!(source_path, saved_path);
+        let edited = match source_path.as_str() {
+            "ppt/slides/slide1.xml" => Some(
+                String::from_utf8(source_bytes.clone())
+                    .unwrap()
+                    .replace("<a:t>Office files,", "<a:t>Now: Office files,")
+                    .replace("<a:t>without the office.", "<a:t>just without the office."),
+            ),
+            "ppt/slides/slide2.xml" => Some(
+                String::from_utf8(source_bytes.clone())
+                    .unwrap()
+                    .replace("<a:t>ONE NATIVE STACK", "<a:t>TOP ONE NATIVE STACK"),
+            ),
+            _ => None,
+        };
+        match edited {
+            Some(expected) => assert_eq!(
+                String::from_utf8(saved_bytes.clone()).unwrap(),
+                expected,
+                "{source_path} differs outside the runs the edits named"
+            ),
+            None => assert_eq!(source_bytes, saved_bytes, "{source_path} was rewritten"),
+        }
+    }
+
+    let reopened = Presentation::open(&saved).unwrap();
+    let text = plain_text(&reopened);
+    assert!(text.contains("Now: Office files,\njust without the office."));
+    assert!(text.contains("TOP ONE NATIVE STACK"));
+}
+
 type Refusal = (&'static str, Box<dyn Fn(&Presentation)>);
 
 #[test]
