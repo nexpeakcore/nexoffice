@@ -4,6 +4,9 @@ import {
   createClipboardQueue,
   cutTextSelection,
   deleteTextSelection,
+  limitPasteText,
+  PASTE_CHARACTER_LIMIT,
+  PASTE_LINE_LIMIT,
   pasteTextSelection,
   sameTextSelection,
   textRangeOf,
@@ -50,6 +53,7 @@ function createHost(initial: {
     commits: [] as (ClipboardTextSelection | null)[],
     errors: [] as unknown[],
     ops: [] as string[],
+    pasteLimits: [] as number[],
   };
   const host: ClipboardHost = {
     selection: () => state.selection,
@@ -85,8 +89,14 @@ function createHost(initial: {
       }))(text);
     },
     reportError: (value) => state.errors.push(value),
+    reportPasteLimit: (dropped) => state.pasteLimits.push(dropped),
   };
   return { host, state };
+}
+
+/** The ops a paste actually sent to the engine, with the clipboard read dropped. */
+function engineOps(ops: readonly string[]): string[] {
+  return ops.filter((op) => op !== 'read' && op !== 'write');
 }
 
 describe('pptx clipboard ranges', () => {
@@ -232,6 +242,131 @@ describe('pptx clipboard paste', () => {
   });
 });
 
+describe('pptx clipboard paste limits', () => {
+  it('leaves a paste under the caps byte for byte alone', async () => {
+    const { host, state } = createHost({
+      text: '',
+      selection: range(0, 0),
+      read: () => Promise.resolve('Héllo, wörld! \t— ok\r\nsecond\tline'),
+    });
+
+    await pasteTextSelection(host);
+
+    expect(state.ops).toEqual([
+      'read',
+      'insert(0,Héllo, wörld! \t— ok)',
+      'break(19)',
+      'insert(20,second\tline)',
+    ]);
+    expect(state.pasteLimits).toEqual([]);
+    expect(state.errors).toEqual([]);
+  });
+
+  it('pastes text sitting exactly on the character cap whole and says nothing', async () => {
+    const clipboard = 'a'.repeat(PASTE_CHARACTER_LIMIT);
+    const { host, state } = createHost({
+      text: '',
+      selection: range(0, 0),
+      read: () => Promise.resolve(clipboard),
+    });
+
+    await pasteTextSelection(host);
+
+    expect(state.text).toBe(clipboard);
+    expect(state.pasteLimits).toEqual([]);
+    expect(state.commits).toEqual([range(PASTE_CHARACTER_LIMIT, PASTE_CHARACTER_LIMIT)]);
+  });
+
+  it('drops the one character past the cap and reports exactly that', async () => {
+    const clipboard = 'a'.repeat(PASTE_CHARACTER_LIMIT + 1);
+    const { host, state } = createHost({
+      text: '',
+      selection: range(0, 0),
+      read: () => Promise.resolve(clipboard),
+    });
+
+    await pasteTextSelection(host);
+
+    expect(state.text).toBe('a'.repeat(PASTE_CHARACTER_LIMIT));
+    expect(state.pasteLimits).toEqual([1]);
+    expect(state.commits).toEqual([range(PASTE_CHARACTER_LIMIT, PASTE_CHARACTER_LIMIT)]);
+  });
+
+  it('bounds the ops a multi-megabyte clipboard can turn into', async () => {
+    const clipboard = Array.from({ length: 60_000 }, () => 'lorem ipsum dolor sit').join('\n');
+    const { host, state } = createHost({
+      text: '',
+      selection: range(0, 0),
+      read: () => Promise.resolve(clipboard),
+    });
+
+    await pasteTextSelection(host);
+
+    expect(clipboard.length).toBeGreaterThan(1_000_000);
+    expect(engineOps(state.ops).length).toBeLessThanOrEqual(PASTE_LINE_LIMIT * 2);
+    expect(state.text.length).toBeLessThanOrEqual(PASTE_CHARACTER_LIMIT);
+    expect(state.pasteLimits).toEqual([clipboard.length - state.text.length]);
+    expect(state.errors).toEqual([]);
+  });
+
+  it('caps by line count even when the text is well under the character cap', async () => {
+    const clipboard = '\n'.repeat(PASTE_LINE_LIMIT + 100);
+    const { host, state } = createHost({
+      text: '',
+      selection: range(0, 0),
+      read: () => Promise.resolve(clipboard),
+    });
+
+    await pasteTextSelection(host);
+
+    expect(clipboard.length).toBeLessThan(PASTE_CHARACTER_LIMIT);
+    expect(engineOps(state.ops).length).toBe(PASTE_LINE_LIMIT - 1);
+    expect(state.text).toBe('\n'.repeat(PASTE_LINE_LIMIT - 1));
+    expect(state.pasteLimits).toEqual([clipboard.length - (PASTE_LINE_LIMIT - 1)]);
+  });
+
+  it('takes the stranded carriage return when the cap lands inside a CRLF', async () => {
+    const clipboard = `${'a'.repeat(PASTE_CHARACTER_LIMIT - 1)}\r\ntail`;
+    const { host, state } = createHost({
+      text: '',
+      selection: range(0, 0),
+      read: () => Promise.resolve(clipboard),
+    });
+
+    await pasteTextSelection(host);
+
+    expect(state.text).toBe('a'.repeat(PASTE_CHARACTER_LIMIT - 1));
+    expect(engineOps(state.ops)).toEqual([`insert(0,${'a'.repeat(PASTE_CHARACTER_LIMIT - 1)})`]);
+    expect(state.pasteLimits).toEqual([6]);
+  });
+
+  it('replaces the selection before capping, so the cap cannot resurrect old text', async () => {
+    const clipboard = 'b'.repeat(PASTE_CHARACTER_LIMIT + 50);
+    const { host, state } = createHost({
+      text: 'Hello world',
+      selection: range(6, 11),
+      read: () => Promise.resolve(clipboard),
+    });
+
+    await pasteTextSelection(host);
+
+    expect(state.text).toBe(`Hello ${'b'.repeat(PASTE_CHARACTER_LIMIT)}`);
+    expect(state.pasteLimits).toEqual([50]);
+  });
+
+  it('measures the cut against the original text', () => {
+    expect(limitPasteText('short')).toEqual({ text: 'short', droppedCharacters: 0 });
+    expect(limitPasteText('')).toEqual({ text: '', droppedCharacters: 0 });
+    expect(limitPasteText('a\r\nb')).toEqual({ text: 'a\r\nb', droppedCharacters: 0 });
+
+    const over = 'x'.repeat(PASTE_CHARACTER_LIMIT + 7);
+    expect(limitPasteText(over)).toEqual({
+      text: 'x'.repeat(PASTE_CHARACTER_LIMIT),
+      droppedCharacters: 7,
+    });
+  });
+});
+
 describe('pptx clipboard queue', () => {
   it('runs queued pastes one at a time, each from the caret the last left', async () => {
     const first = deferred<string>();
@@ -258,6 +393,38 @@ describe('pptx clipboard queue', () => {
     expect(state.text).toBe('aXYb');
     expect(state.ops).toEqual(['read', 'insert(1,X)', 'read', 'insert(2,Y)']);
     expect(state.commits).toEqual([range(2, 2), range(3, 3)]);
+  });
+
+  it('serializes two oversized pastes, each capped on its own', async () => {
+    const first = deferred<string>();
+    const second = deferred<string>();
+    const reads = [first.promise, second.promise];
+    const { host, state } = createHost({
+      text: '',
+      selection: range(0, 0),
+      read: () => reads.shift() ?? Promise.resolve(''),
+    });
+    const enqueue = createClipboardQueue();
+
+    const pasteA = enqueue(() => pasteTextSelection(host));
+    const pasteB = enqueue(() => pasteTextSelection(host));
+    await Promise.resolve();
+
+    expect(state.ops).toEqual(['read']);
+
+    first.resolve('a'.repeat(PASTE_CHARACTER_LIMIT + 3));
+    await pasteA;
+    second.resolve('b'.repeat(PASTE_CHARACTER_LIMIT + 4));
+    await pasteB;
+
+    expect(state.text).toBe(
+      `${'a'.repeat(PASTE_CHARACTER_LIMIT)}${'b'.repeat(PASTE_CHARACTER_LIMIT)}`
+    );
+    expect(state.pasteLimits).toEqual([3, 4]);
+    expect(state.commits).toEqual([
+      range(PASTE_CHARACTER_LIMIT, PASTE_CHARACTER_LIMIT),
+      range(PASTE_CHARACTER_LIMIT * 2, PASTE_CHARACTER_LIMIT * 2),
+    ]);
   });
 
   it('keeps running queued tasks after one rejects', async () => {

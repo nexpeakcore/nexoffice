@@ -1416,6 +1416,9 @@ function PptxEditorContent({
     readClipboard: () => navigator.clipboard.readText(),
     writeClipboard: (text) => navigator.clipboard.writeText(text),
     reportError,
+    reportPasteLimit: (droppedCharacters) => {
+      reportError(new Error(t('errors.pasteTooLarge', { dropped: droppedCharacters })));
+    },
   };
 
   const deleteSelectedText = () => deleteTextSelection(clipboardHost);

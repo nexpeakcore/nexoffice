@@ -38,9 +38,74 @@ export interface ClipboardHost {
   readClipboard: () => Promise<string>;
   writeClipboard: (text: string) => Promise<void>;
   reportError: (value: unknown) => void;
+  /**
+   * Tells the user a paste was cut short, given how many characters were left
+   * out. Called only when {@link limitPasteText} actually drops something, and
+   * always before the caret commits, so the banner is up by the time the
+   * shortened text appears.
+   */
+  reportPasteLimit: (droppedCharacters: number) => void;
 }
 
 export type ClipboardQueue = (task: () => Promise<void>) => Promise<void>;
+
+/**
+ * Ceiling on the characters one paste may insert.
+ *
+ * A paste costs one engine op per line plus one per break between them, and
+ * every op is a synchronous wasm round-trip whose cost grows with the story it
+ * is inserting into — so an unbounded clipboard freezes the renderer for as
+ * long as it takes, with no frame in between to paint or cancel. The engine
+ * exposes no way to batch those ops into one undo step either, so an unbounded
+ * paste is also an unbounded number of undo presses to take back.
+ *
+ * Both caps are far past any real slide: a text-heavy slide runs a few hundred
+ * characters over a dozen or so lines, so this bounds the damage without
+ * standing in the way of anything a deck would plausibly hold.
+ */
+export const PASTE_CHARACTER_LIMIT = 10_000;
+
+/**
+ * Ceiling on the paragraphs one paste may create. Needed alongside the
+ * character cap because ops scale with lines, not length: 10,000 newlines are
+ * only 10,000 characters but would still be 20,000 ops.
+ */
+export const PASTE_LINE_LIMIT = 500;
+
+const LINE_BREAK = /\r\n|\r|\n/;
+
+export interface LimitedPasteText {
+  text: string;
+  droppedCharacters: number;
+}
+
+/**
+ * Cuts clipboard text down to what one paste is allowed to insert, reporting
+ * how much was left out so the caller can say so.
+ *
+ * The cut is an index into the original string rather than a re-join of parsed
+ * lines, so text under the caps comes through byte for byte — including which
+ * flavour of line ending it arrived with. A cut that lands between a `\r` and
+ * its `\n` takes the stranded `\r` with it, which would otherwise read as one
+ * more empty paragraph than the text actually had.
+ */
+export function limitPasteText(clipboard: string): LimitedPasteText {
+  let cut = Math.min(clipboard.length, PASTE_CHARACTER_LIMIT, lineLimitIndex(clipboard));
+  if (cut >= clipboard.length) return { text: clipboard, droppedCharacters: 0 };
+  if (clipboard[cut - 1] === '\r') cut -= 1;
+  return { text: clipboard.slice(0, cut), droppedCharacters: clipboard.length - cut };
+}
+
+/** The index at which keeping more text would exceed {@link PASTE_LINE_LIMIT}. */
+function lineLimitIndex(clipboard: string): number {
+  const breaks = new RegExp(LINE_BREAK.source, 'g');
+  let lines = 1;
+  for (let match = breaks.exec(clipboard); match; match = breaks.exec(clipboard)) {
+    lines += 1;
+    if (lines > PASTE_LINE_LIMIT) return match.index;
+  }
+  return clipboard.length;
+}
 
 export function textRangeOf(
   selection: ClipboardTextSelection | null
@@ -115,29 +180,35 @@ export function deleteTextSelection(host: ClipboardHost): void {
 
 /**
  * Replaces the selection with the clipboard's plain text, one engine op per
- * line and paragraph break. The wasm engine exposes no way to batch ops into
- * one undo step, so each of those is its own step today; the loop at least
- * stays a single synchronous burst, with no await between the delete and the
- * inserts for another action to slip into.
+ * line and paragraph break, up to {@link limitPasteText}'s caps.
+ *
+ * The insert loop stays one synchronous burst on purpose. Yielding between
+ * chunks to let the renderer paint would hand the story to whatever else runs
+ * in that gap — typing, a remote edit, another queued paste — and every index
+ * after `range.start` is computed against the story as it was, so the rest of
+ * the paste would land in the wrong place. Bounding the work is what keeps
+ * that burst short; the queue only stops two pastes from interleaving.
  */
 export async function pasteTextSelection(host: ClipboardHost): Promise<void> {
   const target = host.selection();
   const range = textRangeOf(target);
   if (!target || !range) return;
-  let clipboard: string;
+  let raw: string;
   try {
-    clipboard = await host.readClipboard();
+    raw = await host.readClipboard();
   } catch {
     return;
   }
-  if (!clipboard) return;
+  if (!raw) return;
   if (!sameTextSelection(target, host.selection())) return;
+  const { text: clipboard, droppedCharacters } = limitPasteText(raw);
+  if (droppedCharacters > 0) host.reportPasteLimit(droppedCharacters);
   try {
     if (range.start !== range.end) {
       host.deleteText(target.storyId, range.start, range.end);
     }
     let index = range.start;
-    for (const [lineIndex, line] of clipboard.split(/\r\n|\r|\n/).entries()) {
+    for (const [lineIndex, line] of clipboard.split(LINE_BREAK).entries()) {
       if (lineIndex > 0) {
         host.insertParagraphBreak(target.storyId, index);
         index += 1;
