@@ -83,6 +83,12 @@
       "dontSave": "不保存",
       "cancel": "取消"
     },
+    "saveRefused": {
+      "message": "NexOffice 尚无法将此更改保存到 {name}",
+      "detail": "{message}\n\n未写入任何内容，磁盘上的文件保持不变。如果不保存就继续，此更改将丢失。",
+      "discard": "放弃该更改",
+      "keepEditing": "继续编辑"
+    },
     "pdfTruncated": {
       "message": "PDF 导出被截断",
       "detail": "文档超过 {cap} 页的导出限制；仅导出了前 {pages} 页。"
@@ -108,7 +114,7 @@
   },
   "exportStale": {
     "message": "按打开时的内容导出 {name}？",
-    "detail": "此演示文稿自打开后已更改，但演示文稿的编辑尚无法保存或导出。PDF 将包含打开时的文件内容 — 您的编辑不会出现在其中。",
+    "detail": "NexOffice 尚无法写入此演示文稿中的某项更改，因此 PDF 只能包含打开时的文件内容 — 该更改不会出现在其中。",
     "cancel": "取消",
     "confirm": "按打开时的内容导出"
   },
@@ -121,7 +127,7 @@
     "saved": "已保存 {path}",
     "saveCanceled": "已取消保存",
     "saveFailed": "保存失败：{message}",
-    "presentationSaveUnsupported": "尚不支持保存演示文稿 — 编辑仅保留在本次会话中",
+    "saveRefused": "未保存 — {message}",
     "openFirst": "请先打开一个文档",
     "openWordFirst": "请先打开一个 Word 文档",
     "exportingPdf": "正在导出 PDF…",
@@ -133,7 +139,7 @@
     "truncatedSuffix": " — 已在页数限制处截断",
     "skippedSuffixOne": " — 1 张幻灯片无法渲染，已跳过",
     "skippedSuffixMany": " — {slides} 张幻灯片无法渲染，已跳过",
-    "asOpenedSuffix": " — 打开时的演示文稿内容；不包含您的编辑",
+    "asOpenedSuffix": " — 打开时的演示文稿内容；不包含 NexOffice 无法写入的更改",
     "wordCount": "字数：{words} · 字符：{characters} · 第 {page}/{pages} 页",
     "wordCountSlides": "字数：{words} · 字符：{characters} · 第 {slide}/{slides} 张幻灯片",
     "frozeTopRow": "已冻结首行",
@@ -148,7 +154,7 @@
     "spellingOk": "拼写正确",
     "loadingDictionary": "正在加载词典…",
     "dictError": "词典错误",
-    "presentationSaveUnsupported": "已编辑 — 演示文稿的编辑尚无法保存"
+    "saveRefused": "此更改尚无法保存"
   },
   "spellPanel": {
     "title": "拼写检查",

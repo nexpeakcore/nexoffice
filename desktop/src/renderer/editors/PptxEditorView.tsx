@@ -47,6 +47,10 @@ const NO_SELECTION: PptxEditorSelectionState = {
 }
 
 export interface PptxEditorViewRef {
+  // Projects the deck's edits back onto the parts it was opened with. Throws,
+  // naming the change, when the deck holds something the PresentationML writer
+  // cannot express — the caller must show that message rather than replace it.
+  save: () => Uint8Array | null
   getText: () => string
   getStats: () => EditorStats | null
   getSelectionState: () => PptxEditorSelectionState
@@ -123,6 +127,7 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
     }, [])
 
     useImperativeHandle(ref, () => ({
+      save: () => apiRef.current?.handle.save() ?? null,
       getText: () => textRef.current,
       getSelectionState: () => apiRef.current?.getSelectionState() ?? selectionRef.current,
       getStats: () =>

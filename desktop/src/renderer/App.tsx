@@ -14,12 +14,13 @@ import { DocxEditorView, type DocxEditorViewRef } from './editors/DocxEditorView
 import { PptxEditorView, type PptxEditorViewRef } from './editors/PptxEditorView.js'
 import { XlsxEditorView, type XlsxEditorViewRef } from './editors/XlsxEditorView.js'
 import {
-  canSave,
   editCapabilities,
   exportSuffixes,
   exportedStatusKey,
-  hasUnsavableEdits,
-  type StatusSuffix,
+  saveOutcomeStatus,
+  unsavedStep,
+  type SaveOutcome,
+  type StatusMessage,
   type TextSelectionState,
 } from './services/documentPolicy.js'
 import { spellCheckService, type Misspelling } from './services/spellcheck.js'
@@ -39,10 +40,18 @@ interface DocumentState extends Omit<OpenedDocument, 'kind' | 'data'> {
   seed: Uint8Array
 }
 
-interface StatusMessage {
-  key: string
-  vars?: Record<string, string | number>
-  suffixes?: StatusSuffix[]
+// The bytes to write, or the writer's account of the change it cannot express.
+// A refusal is carried rather than thrown so it never reads as a failed write:
+// nothing went wrong, the file on disk is simply still correct.
+type Serialized =
+  | { ok: true; bytes: Uint8Array }
+  | { ok: false; refusal: string }
+
+// The document a PDF export asked about, alongside the refusal that makes the
+// question necessary.
+interface StaleExport {
+  document: DocumentState
+  refusal: string
 }
 
 const ZOOM_MIN = 0.5
@@ -60,9 +69,9 @@ export function App() {
   const [misspellings, setMisspellings] = useState<Misspelling[]>([])
   const [docStats, setDocStats] = useState<EditorStats | null>(null)
   const [editRevision, setEditRevision] = useState(0)
-  const [changedSinceOpen, setChangedSinceOpen] = useState(false)
-  const [staleExportTarget, setStaleExportTarget] = useState<DocumentState | null>(null)
-  const changedSinceOpenRef = useRef(false)
+  const [refusal, setRefusal] = useState<string | null>(null)
+  const [staleExportTarget, setStaleExportTarget] = useState<StaleExport | null>(null)
+  const refusalRef = useRef<string | null>(null)
   const pptxSelectionRef = useRef<TextSelectionState | null>(null)
   const sentEditCapabilitiesRef = useRef<EditCapabilities>(ALL_EDIT_CAPABILITIES)
   const xlsxRef = useRef<XlsxEditorViewRef>(null)
@@ -105,8 +114,6 @@ export function App() {
 
   const isDocx = document?.kind === 'docx'
   const isPptx = document?.kind === 'pptx'
-  // Word count and spell check only read text, so a deck qualifies even though
-  // its edits can never be written back.
   const hasProofing = isDocx || isPptx
 
   // Read through the ref rather than a captured editor: the ticker and the
@@ -172,20 +179,14 @@ export function App() {
     }, 700)
   }, [])
 
-  // "Changed since open" is tracked separately from `dirty` because a document
-  // whose kind cannot be saved must never be dirty — `ensureSaved` would loop
-  // on a save it can never complete — yet Export PDF still has to say that the
-  // bytes it renders are the ones the document opened with.
-  const markChangedSinceOpen = useCallback(() => {
-    if (changedSinceOpenRef.current) return
-    changedSinceOpenRef.current = true
-    setChangedSinceOpen(true)
-  }, [])
-
-  const clearChangedSinceOpen = useCallback(() => {
-    changedSinceOpenRef.current = false
-    setChangedSinceOpen(false)
-    setStaleExportTarget(null)
+  // The last thing the writer said it could not express, or null while the
+  // open document projects cleanly. It outlives the status line on purpose:
+  // the refusal arrives after the change was already made, so the footer keeps
+  // saying so until a projection succeeds rather than letting the notice scroll
+  // away behind the next status.
+  const noteRefusal = useCallback((message: string | null) => {
+    refusalRef.current = message
+    setRefusal(message)
   }, [])
 
   // An editor that fails to open reports no stats, and the ticker keeps the
@@ -197,31 +198,43 @@ export function App() {
 
   const markEdited = useCallback(() => {
     editGenerationRef.current += 1
-    markChangedSinceOpen()
     setDocument((prev) => (prev && !prev.dirty ? { ...prev, dirty: true } : prev))
     scheduleEditRevision()
-  }, [markChangedSinceOpen, scheduleEditRevision])
+  }, [scheduleEditRevision])
 
-  // A deck's edits refresh proofing and arm the export notice, but never mark
-  // it dirty: with no writer they could never be saved away again, and a
-  // document that stays dirty forever cannot be closed.
-  const markDeckEdited = useCallback(() => {
-    markChangedSinceOpen()
-    scheduleEditRevision()
-  }, [markChangedSinceOpen, scheduleEditRevision])
-
-  const getCurrentBytes = useCallback(async (current: DocumentState): Promise<Uint8Array> => {
-    if (current.kind === 'docx') {
-      const buffer = await docxRef.current?.save()
-      if (buffer) return new Uint8Array(buffer)
-    } else if (current.kind === 'xlsx') {
-      const bytes = xlsxRef.current?.save()
-      if (bytes) return bytes
-    }
-    // No editor yet (still loading, or a kind whose engine cannot serialize)
-    // means the bytes the document opened with are the only ones there are.
-    return current.seed
-  }, [])
+  // Every route to bytes runs through here — save, Save As and PDF export —
+  // so one projection attempt decides all three, and the sticky refusal notice
+  // is refreshed by whichever of them the user reached for.
+  const serializeDocument = useCallback(
+    async (current: DocumentState): Promise<Serialized> => {
+      if (current.kind === 'docx') {
+        const buffer = await docxRef.current?.save()
+        if (buffer) return { ok: true, bytes: new Uint8Array(buffer) }
+      } else if (current.kind === 'xlsx') {
+        const bytes = xlsxRef.current?.save()
+        if (bytes) return { ok: true, bytes }
+      } else {
+        try {
+          const bytes = pptxRef.current?.save()
+          if (bytes) {
+            noteRefusal(null)
+            return { ok: true, bytes }
+          }
+        } catch (error) {
+          // The pptx writer refuses by name. Whatever it said is the only
+          // account of the change that cannot be written, so it is passed on
+          // untouched instead of being folded into a generic failure.
+          const message = error instanceof Error ? error.message : String(error)
+          noteRefusal(message)
+          return { ok: false, refusal: message }
+        }
+      }
+      // No editor yet (still loading) means the bytes the document opened with
+      // are the only ones there are.
+      return { ok: true, bytes: current.seed }
+    },
+    [noteRefusal],
+  )
 
   const performSave = useCallback(
     async (
@@ -229,7 +242,11 @@ export function App() {
       forceDialog: boolean,
       bytesOverride: Uint8Array | undefined,
       overrideGeneration: number,
-    ): Promise<boolean> => {
+    ): Promise<SaveOutcome> => {
+      const finish = (outcome: SaveOutcome): SaveOutcome => {
+        setStatus(saveOutcomeStatus(outcome))
+        return outcome
+      }
       // The saved document is identified by the id captured at enqueue time;
       // a queued save picks up path renames from earlier saves via documentRef,
       // but never crosses over to a different document opened in the meantime.
@@ -238,27 +255,30 @@ export function App() {
       const current = targetIsCurrent ? live : target
       // The editor only holds the current document, so a queued save whose
       // document was replaced before it ran has nothing valid to serialize.
-      if (!bytesOverride && !targetIsCurrent) return false
+      if (!bytesOverride && !targetIsCurrent) return { status: 'canceled' }
       // Override bytes were serialized when the save was requested, so they
       // only cover edits up to that point; freshly serialized bytes cover
       // everything up to now.
       const generation = bytesOverride ? overrideGeneration : editGenerationRef.current
       try {
-        const data = bytesOverride ?? (await getCurrentBytes(current))
+        let data = bytesOverride
+        if (!data) {
+          const serialized = await serializeDocument(current)
+          // Nothing was written, so the document stays dirty and the file on
+          // disk stays the one that is still correct.
+          if (!serialized.ok) return finish({ status: 'refused', message: serialized.refusal })
+          data = serialized.bytes
+        }
         const save = forceDialog ? window.nexoffice.saveFileAs : window.nexoffice.saveFile
         const result = await save(current.path, current.kind, data)
-        if (result.canceled || !result.path) {
-          setStatus({ key: 'status.saveCanceled' })
-          return false
-        }
+        if (result.canceled || !result.path) return finish({ status: 'canceled' })
         const savedPath = result.path
         const savedName = savedPath.split(/[\\/]/).pop() ?? current.name
         if (documentRef.current?.id !== target.id) {
           // The write targeted the captured document's own path, which stays
           // correct; the document open now is a different one, so its state
           // (path, name, bytes, dirty flag, generations) must not be touched.
-          setStatus({ key: 'status.saved', vars: { path: savedPath } })
-          return true
+          return finish({ status: 'saved', path: savedPath })
         }
         savedGenerationRef.current = Math.max(savedGenerationRef.current, generation)
         const dirty = editGenerationRef.current !== savedGenerationRef.current
@@ -273,17 +293,15 @@ export function App() {
             ? { ...prev, path: savedPath, name: savedName, dirty }
             : prev,
         )
-        setStatus({ key: 'status.saved', vars: { path: savedPath } })
-        return true
+        return finish({ status: 'saved', path: savedPath })
       } catch (error) {
-        setStatus({
-          key: 'status.saveFailed',
-          vars: { message: error instanceof Error ? error.message : String(error) },
+        return finish({
+          status: 'failed',
+          message: error instanceof Error ? error.message : String(error),
         })
-        return false
       }
     },
-    [getCurrentBytes],
+    [serializeDocument],
   )
 
   // Saves are chained so serialize→write pairs never interleave: a slow older
@@ -291,13 +309,9 @@ export function App() {
   const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve())
 
   const saveDocument = useCallback(
-    (forceDialog: boolean, bytesOverride?: Uint8Array): Promise<boolean> => {
+    (forceDialog: boolean, bytesOverride?: Uint8Array): Promise<SaveOutcome> => {
       const target = documentRef.current
-      if (!target) return Promise.resolve(false)
-      if (!canSave(target.kind)) {
-        setStatus({ key: 'status.presentationSaveUnsupported' })
-        return Promise.resolve(false)
-      }
+      if (!target) return Promise.resolve<SaveOutcome>({ status: 'canceled' })
       const generationAtRequest = editGenerationRef.current
       const queued = saveQueueRef.current.then(
         () => performSave(target, forceDialog, bytesOverride, generationAtRequest),
@@ -321,7 +335,14 @@ export function App() {
       const choice = await window.nexoffice.confirmUnsaved(current.name)
       if (choice === 'cancel') return false
       if (choice === 'discard') return true
-      if (!(await saveDocument(false))) return false
+      const step = unsavedStep(await saveDocument(false))
+      if (step.step === 'stop') return false
+      // The writer cannot express this change, so asking for the save again
+      // would only refuse again. Leaving without it has to stay possible, and
+      // the prompt says in the same breath that the change is what gets lost.
+      if (step.step === 'escape') {
+        return (await window.nexoffice.confirmSaveRefused(current.name, step.message)) === 'discard'
+      }
     }
     return true
   }, [hasUnsavedEdits, saveDocument])
@@ -333,7 +354,8 @@ export function App() {
       return
     }
     savedGenerationRef.current = editGenerationRef.current
-    clearChangedSinceOpen()
+    noteRefusal(null)
+    setStaleExportTarget(null)
     clearStats()
     documentIdRef.current += 1
     const { data, ...rest } = opened
@@ -347,7 +369,7 @@ export function App() {
     publishEditCapabilities()
     setDocument(next)
     setStatus({ key: 'status.opened', vars: { name: opened.name } })
-  }, [clearChangedSinceOpen, clearStats, publishEditCapabilities])
+  }, [clearStats, noteRefusal, publishEditCapabilities])
 
   const openDocument = useCallback(async () => {
     if (!(await ensureSaved())) return
@@ -449,10 +471,10 @@ export function App() {
   }, [])
 
   const runPdfExport = useCallback(
-    (target: DocumentState, asOpened: boolean) => {
+    (target: DocumentState, data: Uint8Array, asOpened: boolean) => {
       setStatus({ key: 'status.exportingPdf' })
-      void getCurrentBytes(target)
-        .then((data) => window.nexoffice.exportPdf(target.name, target.kind, data))
+      void window.nexoffice
+        .exportPdf(target.name, target.kind, data)
         .then((result) => {
           if (!result.path) {
             setStatus({ key: 'status.pdfCanceled' })
@@ -476,7 +498,26 @@ export function App() {
           }),
         )
     },
-    [getCurrentBytes],
+    [],
+  )
+
+  // The export renders whatever the document can be written as, so it matches
+  // the screen wherever the writer can express the edits. Only a refusal sends
+  // it back to the bytes the file was opened with, and then the user is asked
+  // first rather than handed a PDF that contradicts what they are looking at.
+  const exportPdf = useCallback(
+    (target: DocumentState) => {
+      setStatus({ key: 'status.exportingPdf' })
+      void serializeDocument(target).then((serialized) => {
+        if (serialized.ok) {
+          runPdfExport(target, serialized.bytes, false)
+          return
+        }
+        setStatus(saveOutcomeStatus({ status: 'refused', message: serialized.refusal }))
+        setStaleExportTarget({ document: target, refusal: serialized.refusal })
+      })
+    },
+    [runPdfExport, serializeDocument],
   )
 
   const cancelStaleExport = useCallback(() => {
@@ -500,7 +541,8 @@ export function App() {
           void ensureSaved().then((proceed) => {
             if (!proceed) return
             savedGenerationRef.current = editGenerationRef.current
-            clearChangedSinceOpen()
+            noteRefusal(null)
+            setStaleExportTarget(null)
             documentRef.current = null
             setDocument(null)
             setStatus({ key: 'status.newDocument' })
@@ -521,14 +563,7 @@ export function App() {
             setStatus({ key: 'status.openFirst' })
             break
           }
-          // Nothing can serialize this document's edits, so the export would
-          // silently render the file as it was opened; the user confirms that
-          // before a PDF contradicting the screen is written.
-          if (hasUnsavableEdits(current.kind, changedSinceOpenRef.current)) {
-            setStaleExportTarget(current)
-            break
-          }
-          runPdfExport(current, false)
+          exportPdf(current)
           break
         }
         case 'edit:undo':
@@ -616,8 +651,8 @@ export function App() {
     openDocument,
     saveDocument,
     ensureSaved,
-    clearChangedSinceOpen,
-    runPdfExport,
+    noteRefusal,
+    exportPdf,
     runEditAction,
     applyZoom,
     proofingEditor,
@@ -628,7 +663,6 @@ export function App() {
   }, [])
 
   const misspelledCount = misspellings.length
-  const unsavableEdits = hasUnsavableEdits(documentKind, changedSinceOpen)
 
   return (
     <div className="relative flex h-full flex-col bg-neutral-100">
@@ -654,7 +688,7 @@ export function App() {
               <PptxEditorView
                 ref={pptxRef}
                 document={document}
-                onChange={markDeckEdited}
+                onChange={markEdited}
                 onSelectionStateChange={handlePptxSelectionChange}
               />
             )
@@ -688,10 +722,14 @@ export function App() {
         <span>
           {`${t(status.key, status.vars)}${(status.suffixes ?? []).map((suffix) => t(suffix.key, suffix.vars)).join('')}`}
         </span>
-        {unsavableEdits && (
-          <span className="hidden text-neutral-400 sm:inline">
-            {t('footer.presentationSaveUnsupported')}
-          </span>
+        {refusal && (
+          <button
+            type="button"
+            onClick={() => setStatus({ key: 'status.saveRefused', vars: { message: refusal } })}
+            className="rounded px-1.5 py-0.5 text-amber-600 hover:bg-amber-50"
+          >
+            {t('footer.saveRefused')}
+          </button>
         )}
         {hasProofing && (
           <>
@@ -742,9 +780,10 @@ export function App() {
             className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl"
           >
             <h2 id="stale-export-title" className="text-sm font-semibold text-neutral-900">
-              {t('exportStale.message', { name: staleExportTarget.name })}
+              {t('exportStale.message', { name: staleExportTarget.document.name })}
             </h2>
             <p className="mt-2 text-sm text-neutral-600">{t('exportStale.detail')}</p>
+            <p className="mt-2 text-sm text-neutral-500">{staleExportTarget.refusal}</p>
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
@@ -757,9 +796,9 @@ export function App() {
               <button
                 type="button"
                 onClick={() => {
-                  const target = staleExportTarget
+                  const target = staleExportTarget.document
                   setStaleExportTarget(null)
-                  runPdfExport(target, true)
+                  runPdfExport(target, target.seed, true)
                 }}
                 className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-700"
               >

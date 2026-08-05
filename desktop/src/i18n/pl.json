@@ -83,6 +83,12 @@
       "dontSave": "Nie zapisuj",
       "cancel": "Anuluj"
     },
+    "saveRefused": {
+      "message": "NexOffice nie może jeszcze zapisać tej zmiany w {name}",
+      "detail": "{message}\n\nNic nie zostało zapisane, więc plik na dysku pozostaje bez zmian. Jeśli przejdziesz dalej bez zapisywania, ta zmiana zostanie utracona.",
+      "discard": "Odrzuć zmianę",
+      "keepEditing": "Edytuj dalej"
+    },
     "pdfTruncated": {
       "message": "Eksport PDF skrócony",
       "detail": "Dokument przekracza limit eksportu {cap} stron; wyeksportowano tylko pierwsze {pages} stron."
@@ -108,7 +114,7 @@
   },
   "exportStale": {
     "message": "Wyeksportować {name} w wersji z chwili otwarcia?",
-    "detail": "Ta prezentacja zmieniła się od momentu otwarcia, ale zmian w prezentacji nie można jeszcze zapisać ani wyeksportować. Plik PDF będzie zawierać prezentację w wersji z chwili otwarcia — Twoje zmiany się w nim nie pojawią.",
+    "detail": "NexOffice nie potrafi jeszcze zapisać jednej ze zmian w tej prezentacji, więc plik PDF może zawierać tylko wersję z chwili otwarcia — ta zmiana się w nim nie pojawi.",
     "cancel": "Anuluj",
     "confirm": "Eksportuj wersję z otwarcia"
   },
@@ -121,7 +127,7 @@
     "saved": "Zapisano {path}",
     "saveCanceled": "Zapisywanie anulowane",
     "saveFailed": "Zapisywanie nie powiodło się: {message}",
-    "presentationSaveUnsupported": "Zapisywanie prezentacji nie jest jeszcze obsługiwane — zmiany pozostają w tej sesji",
+    "saveRefused": "Nie zapisano — {message}",
     "openFirst": "Najpierw otwórz dokument",
     "openWordFirst": "Najpierw otwórz dokument Word",
     "exportingPdf": "Eksportowanie PDF…",
@@ -133,7 +139,7 @@
     "truncatedSuffix": " — skrócono na limicie stron",
     "skippedSuffixOne": " — 1 slajdu nie udało się wyrenderować i został pominięty",
     "skippedSuffixMany": " — nie udało się wyrenderować slajdów ({slides}) i zostały pominięte",
-    "asOpenedSuffix": " — prezentacja w wersji z chwili otwarcia; Twoje zmiany nie są uwzględnione",
+    "asOpenedSuffix": " — prezentacja w wersji z chwili otwarcia; zmiana, której NexOffice nie potrafi zapisać, nie jest uwzględniona",
     "wordCount": "Słowa: {words} · Znaki: {characters} · Strona {page}/{pages}",
     "wordCountSlides": "Słowa: {words} · Znaki: {characters} · Slajd {slide}/{slides}",
     "frozeTopRow": "Zablokowano górny wiersz",
@@ -148,7 +154,7 @@
     "spellingOk": "Pisownia OK",
     "loadingDictionary": "Ładowanie słownika…",
     "dictError": "Błąd słownika",
-    "presentationSaveUnsupported": "Edytowano — zmian w prezentacji nie można jeszcze zapisać"
+    "saveRefused": "Tej zmiany nie można jeszcze zapisać"
   },
   "spellPanel": {
     "title": "Sprawdzanie pisowni",

@@ -83,6 +83,12 @@
       "dontSave": "Don't Save",
       "cancel": "Cancel"
     },
+    "saveRefused": {
+      "message": "NexOffice can't save this change to {name} yet",
+      "detail": "{message}\n\nNothing was written, so the file on disk is unchanged. If you continue without saving, this change is lost.",
+      "discard": "Discard the Change",
+      "keepEditing": "Keep Editing"
+    },
     "pdfTruncated": {
       "message": "PDF export truncated",
       "detail": "The document exceeds the {cap}-page export limit; only the first {pages} pages were exported."
@@ -108,7 +114,7 @@
   },
   "exportStale": {
     "message": "Export {name} as it was opened?",
-    "detail": "This presentation has changed since you opened it, but presentation edits can't be saved or exported yet. The PDF will contain the file as it was opened — your edits won't appear in it.",
+    "detail": "NexOffice can't write one of the changes in this presentation yet, so the PDF can only contain the file as it was opened — that change won't appear in it.",
     "cancel": "Cancel",
     "confirm": "Export as Opened"
   },
@@ -121,7 +127,7 @@
     "saved": "Saved {path}",
     "saveCanceled": "Save canceled",
     "saveFailed": "Save failed: {message}",
-    "presentationSaveUnsupported": "Saving presentations isn't supported yet — edits stay in this session",
+    "saveRefused": "Not saved — {message}",
     "openFirst": "Open a document first",
     "openWordFirst": "Open a Word document first",
     "exportingPdf": "Exporting PDF…",
@@ -133,7 +139,7 @@
     "truncatedSuffix": " — truncated at page limit",
     "skippedSuffixOne": " — 1 slide couldn't be rendered and was left out",
     "skippedSuffixMany": " — {slides} slides couldn't be rendered and were left out",
-    "asOpenedSuffix": " — the presentation as it was opened; your edits aren't included",
+    "asOpenedSuffix": " — the presentation as it was opened; the change NexOffice can't write isn't included",
     "wordCount": "Words: {words} · Chars: {characters} · Page {page}/{pages}",
     "wordCountSlides": "Words: {words} · Chars: {characters} · Slide {slide}/{slides}",
     "frozeTopRow": "Frozen top row",
@@ -148,7 +154,7 @@
     "spellingOk": "Spelling OK",
     "loadingDictionary": "Loading dictionary…",
     "dictError": "Dict error",
-    "presentationSaveUnsupported": "Edited — presentation edits can't be saved yet"
+    "saveRefused": "This change can't be saved yet"
   },
   "spellPanel": {
     "title": "Spell Check",

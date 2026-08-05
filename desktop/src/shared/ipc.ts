@@ -6,6 +6,7 @@ export const IPC = {
   saveFileAs: 'dialog:saveFileAs',
   exportPdf: 'dialog:exportPdf',
   confirmUnsaved: 'dialog:confirmUnsaved',
+  confirmSaveRefused: 'dialog:confirmSaveRefused',
   readFile: 'fs:readFile',
   platform: 'app:platform',
   menuAction: 'menu:action',
@@ -28,6 +29,11 @@ export const PRINT_PAGE_CAP = 100
 export type DocumentKind = 'docx' | 'xlsx' | 'pptx'
 
 export type UnsavedChoice = 'save' | 'discard' | 'cancel'
+
+// The way out of a save the writer refused. Retrying is not offered: the same
+// change would be refused again, so the only choices are to leave the change
+// behind or to keep the document open and edit it into something writable.
+export type RefusedChoice = 'discard' | 'cancel'
 
 export interface OpenedDocument {
   path: string

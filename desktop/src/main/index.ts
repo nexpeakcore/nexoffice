@@ -37,6 +37,7 @@ import {
   type OpenedDocument,
   type PrintJob,
   type PrintRenderResult,
+  type RefusedChoice,
   type SaveRequest,
   type SaveResult,
   type UnsavedChoice,
@@ -465,6 +466,28 @@ function registerIpc(): void {
     })
     return response === 0 ? 'save' : response === 1 ? 'discard' : 'cancel'
   })
+
+  // Shown only after a save the writer refused, so the buttons are the two
+  // moves that exist: leave the change behind, or keep the document open. The
+  // refusal names what could not be written and is quoted whole — it is the
+  // only thing that tells the user which change to take back.
+  ipcMain.handle(
+    IPC.confirmSaveRefused,
+    async (_event, request: { name: string; message: string }): Promise<RefusedChoice> => {
+      const owner = mainWindow
+      if (!owner || owner.isDestroyed()) return 'cancel'
+
+      const { response } = await dialog.showMessageBox(owner, {
+        type: 'warning',
+        buttons: [t('dialog.saveRefused.discard'), t('dialog.saveRefused.keepEditing')],
+        defaultId: 1,
+        cancelId: 1,
+        message: t('dialog.saveRefused.message', { name: request.name }),
+        detail: t('dialog.saveRefused.detail', { message: request.message }),
+      })
+      return response === 0 ? 'discard' : 'cancel'
+    },
+  )
 
   ipcMain.handle(IPC.exportPdf, async (_event, request: ExportPdfRequest): Promise<ExportPdfResult> => {
     const owner = mainWindow
