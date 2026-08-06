@@ -1,6 +1,7 @@
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { access, readFile, writeFile } from 'node:fs/promises'
 import { app, BrowserWindow, dialog, ipcMain, protocol, screen, shell, type Rectangle } from 'electron'
+import { closeDecision } from './closePolicy.js'
 import { buildMenu } from './menu.js'
 import {
   addRecent,
@@ -50,6 +51,8 @@ let rendererReady = false
 let quitting = false
 /** Whether a close is already waiting on the renderer's answer. */
 let closeRequested = false
+/** Whether the renderer has stopped answering input, per Electron. */
+let rendererUnresponsive = false
 let activeDocumentKind: DocumentKind | null = null
 let activeEditCapabilities: EditCapabilities = ALL_EDIT_CAPABILITIES
 const pendingOpenPaths: string[] = []
@@ -201,28 +204,46 @@ function createWindow(): BrowserWindow {
 
   // Vetoing the close is how the renderer gets to ask about unsaved work, and
   // it is also how the app becomes impossible to quit if the renderer never
-  // answers. Two things end the wait rather than one:
+  // answers. The wait ends when the renderer has demonstrably stopped
+  // answering — not when the user asks a second time, and not on a timer.
   //
-  // A second attempt forces it. The first close asks; a user whose window will
-  // not shut tries again, and that insistence is taken at face value. No timer
-  // is used instead, because the renderer is legitimately blocked for as long
-  // as the save prompt is on screen — a clock cannot tell that apart from a
-  // wedge, and guessing wrong throws the document away.
-  //
-  // A dead renderer forces it too: it can never answer, so waiting on it is
-  // waiting on nothing.
+  // Both of the cheaper rules lose documents. A second attempt cannot be told
+  // apart from impatience: a save takes seconds on a large deck, and a user who
+  // presses again during one would have the window destroyed mid-write. A
+  // timer cannot be told apart from a prompt sitting on screen waiting to be
+  // read. `unresponsive` is the one signal that means the renderer itself has
+  // stopped, so it is the only one allowed to end the wait.
   window.on('close', (event) => {
-    if (!rendererReady || window.webContents.isDestroyed()) return
-    if (closeRequested) return
+    const decision = closeDecision({
+      rendererReady,
+      webContentsDestroyed: window.webContents.isDestroyed(),
+      closeRequested,
+      rendererUnresponsive,
+    })
+    if (decision === 'close') return
     event.preventDefault()
+    if (decision === 'wait') return
     closeRequested = true
     window.webContents.send(IPC.closeRequest)
   })
 
-  window.webContents.on('render-process-gone', () => {
+  window.webContents.on('unresponsive', () => {
+    rendererUnresponsive = true
+  })
+  window.webContents.on('responsive', () => {
+    rendererUnresponsive = false
+  })
+
+  // A dead renderer will never answer the handshake, so the window stops
+  // waiting on one. It is not destroyed here: quitting the app out from under
+  // the user with no word of why is its own failure, and on Windows and Linux
+  // destroying the last window quits. Marking it not-ready is enough — the
+  // next close goes straight through.
+  window.webContents.on('render-process-gone', (_event, details) => {
+    if (details.reason === 'clean-exit') return
     rendererReady = false
+    rendererUnresponsive = false
     closeRequested = false
-    if (!window.isDestroyed()) window.destroy()
   })
 
   window.on('closed', () => {
@@ -230,6 +251,7 @@ function createWindow(): BrowserWindow {
       mainWindow = null
       rendererReady = false
       closeRequested = false
+      rendererUnresponsive = false
     }
   })
 

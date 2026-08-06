@@ -255,7 +255,10 @@ export function App() {
       const current = targetIsCurrent ? live : target
       // The editor only holds the current document, so a queued save whose
       // document was replaced before it ran has nothing valid to serialize.
-      if (!bytesOverride && !targetIsCurrent) return { status: 'canceled' }
+      // Reported like any other outcome rather than returned in silence: this
+      // answers a close, and a close that stops with nothing on the status line
+      // looks like the app ignoring the request.
+      if (!bytesOverride && !targetIsCurrent) return finish({ status: 'canceled' })
       // Override bytes were serialized when the save was requested, so they
       // only cover edits up to that point; freshly serialized bytes cover
       // everything up to now.
@@ -308,19 +311,24 @@ export function App() {
   // write can otherwise land after a newer one and put stale bytes on disk.
   const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve())
 
+  // Everything that projects the document runs through here, exports included.
+  // Two projections at once would not only interleave their writes: both
+  // refresh the sticky refusal notice, so whichever finished last decided
+  // whether the footer claimed a refusal, regardless of which one was refused.
+  const enqueue = useCallback(<T,>(operation: () => Promise<T>): Promise<T> => {
+    const queued = saveQueueRef.current.then(operation, operation)
+    saveQueueRef.current = queued
+    return queued
+  }, [])
+
   const saveDocument = useCallback(
     (forceDialog: boolean, bytesOverride?: Uint8Array): Promise<SaveOutcome> => {
       const target = documentRef.current
       if (!target) return Promise.resolve<SaveOutcome>({ status: 'canceled' })
       const generationAtRequest = editGenerationRef.current
-      const queued = saveQueueRef.current.then(
-        () => performSave(target, forceDialog, bytesOverride, generationAtRequest),
-        () => performSave(target, forceDialog, bytesOverride, generationAtRequest),
-      )
-      saveQueueRef.current = queued
-      return queued
+      return enqueue(() => performSave(target, forceDialog, bytesOverride, generationAtRequest))
     },
-    [performSave],
+    [enqueue, performSave],
   )
 
   const hasUnsavedEdits = useCallback(
@@ -411,7 +419,13 @@ export function App() {
       if (closingRef.current) return
       closingRef.current = true
       void ensureSaved()
-        .then((proceed) => window.nexoffice.resolveClose(proceed))
+        // A throw leaves the main process waiting on an answer that is never
+        // coming, and the window unclosable with it. Keeping the document open
+        // is the safe reading of "the ask itself broke".
+        .then(
+          (proceed) => window.nexoffice.resolveClose(proceed),
+          () => window.nexoffice.resolveClose(false),
+        )
         .finally(() => {
           closingRef.current = false
         })
@@ -521,7 +535,7 @@ export function App() {
   const exportPdf = useCallback(
     (target: DocumentState) => {
       setStatus({ key: 'status.exportingPdf' })
-      void serializeDocument(target)
+      void enqueue(() => serializeDocument(target))
         .then((serialized) => {
           // Serializing reads whatever the editor holds now, and the editor
           // only ever holds the current document. Exporting what came back
@@ -546,7 +560,7 @@ export function App() {
           })
         })
     },
-    [runPdfExport, serializeDocument],
+    [enqueue, runPdfExport, serializeDocument],
   )
 
   const cancelStaleExport = useCallback(() => {
@@ -691,6 +705,9 @@ export function App() {
   }, [])
 
   const misspelledCount = misspellings.length
+  const statusText = `${t(status.key, status.vars)}${(status.suffixes ?? [])
+    .map((suffix) => t(suffix.key, suffix.vars))
+    .join('')}`
 
   return (
     <div className="relative flex h-full flex-col bg-neutral-100">
@@ -747,14 +764,17 @@ export function App() {
       </div>
 
       <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-neutral-200 bg-white px-3 text-xs text-neutral-500">
-        <span>
-          {`${t(status.key, status.vars)}${(status.suffixes ?? []).map((suffix) => t(suffix.key, suffix.vars)).join('')}`}
+        {/* A refusal names a slide, a shape and what changed, which runs well
+            past this row. It gives up its own width rather than pushing the
+            word count, the page indicator and its own notice out of sight. */}
+        <span className="min-w-0 truncate" title={statusText}>
+          {statusText}
         </span>
         {refusal && (
           <button
             type="button"
             onClick={() => setStatus({ key: 'status.saveRefused', vars: { message: refusal } })}
-            className="rounded px-1.5 py-0.5 text-amber-600 hover:bg-amber-50"
+            className="shrink-0 rounded px-1.5 py-0.5 text-amber-700 hover:bg-amber-50"
           >
             {t('footer.saveRefused')}
           </button>
