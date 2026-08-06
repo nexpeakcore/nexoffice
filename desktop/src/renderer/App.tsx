@@ -24,6 +24,7 @@ import {
   type StatusMessage,
   type TextSelectionState,
 } from './services/documentPolicy.js'
+import { shareInFlight } from './services/singleFlight.js'
 import { spellCheckService, type Misspelling } from './services/spellcheck.js'
 import type { EditorStats } from './services/textStats.js'
 import { useI18n } from './i18n.js'
@@ -327,7 +328,7 @@ export function App() {
     [],
   )
 
-  const ensureSaved = useCallback(async (): Promise<boolean> => {
+  const askAboutUnsaved = useCallback(async (): Promise<boolean> => {
     while (hasUnsavedEdits()) {
       const current = documentRef.current
       if (!current) return true
@@ -345,6 +346,19 @@ export function App() {
     }
     return true
   }, [hasUnsavedEdits, saveDocument])
+
+  // Every way into the app that replaces the open document asks this first —
+  // the Open command, a file dropped on the dock icon, the window closing —
+  // and they can arrive while an earlier ask is still on screen. Opening a
+  // second prompt over the first asks about the same document twice and takes
+  // the answers in whichever order the dialogs happen to close, so callers
+  // that overlap wait on the ask already running and share its answer.
+  const unsavedAskRef = useRef<Promise<boolean> | null>(null)
+
+  const ensureSaved = useCallback(
+    (): Promise<boolean> => shareInFlight(unsavedAskRef, askAboutUnsaved),
+    [askAboutUnsaved],
+  )
 
   const applyOpenedDocument = useCallback((opened: OpenedDocument) => {
     const kind = opened.kind
@@ -509,6 +523,11 @@ export function App() {
       setStatus({ key: 'status.exportingPdf' })
       void serializeDocument(target)
         .then((serialized) => {
+          // Serializing reads whatever the editor holds now, and the editor
+          // only ever holds the current document. Exporting what came back
+          // after a switch would write one deck's slides into the other's PDF,
+          // under the other's name.
+          if (documentRef.current?.id !== target.id) return
           if (serialized.ok) {
             runPdfExport(target, serialized.bytes, false)
             return
@@ -519,12 +538,13 @@ export function App() {
         // Serializing is the one step of an export that can fail before the
         // exporter is ever reached: every editor projects through wasm, and a
         // rejection there would otherwise leave the footer exporting forever.
-        .catch((error: unknown) =>
+        .catch((error: unknown) => {
+          if (documentRef.current?.id !== target.id) return
           setStatus({
             key: 'status.pdfFailed',
             vars: { message: error instanceof Error ? error.message : String(error) },
-          }),
-        )
+          })
+        })
     },
     [runPdfExport, serializeDocument],
   )
