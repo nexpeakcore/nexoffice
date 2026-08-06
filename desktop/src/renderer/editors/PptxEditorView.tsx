@@ -6,7 +6,11 @@ import {
 } from '@betteroffice/pptx-react'
 import type { DeckSnapshot, PptxFontFace, ShapeSnapshot } from '@betteroffice/pptx'
 import { en as pptxEn, locales as pptxLocales, type PartialLocaleStrings } from '@betteroffice/pptx-i18n'
-import { loadBaseFontFaces } from '../services/presentationFonts.js'
+import {
+  baseFontRequests,
+  loadBaseFontFaces,
+  registerDeckFonts,
+} from '../services/presentationFonts.js'
 import { countCharacters, countWords, type EditorStats } from '../services/textStats.js'
 import { useI18n } from '../i18n.js'
 
@@ -192,9 +196,17 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
         onReady={(api: PptxEditorApi) => {
           apiRef.current = api
           readyRef.current = true
-          applySnapshot(api.handle.snapshot())
+          const snapshot = api.handle.snapshot()
+          applySnapshot(snapshot)
           selectionRef.current = api.getSelectionState()
           onSelectionStateChangeRef.current?.(selectionRef.current)
+          // The deck opened on the base faces, because which families it names
+          // is only knowable once it is parsed. Anything else it asks for —
+          // a CJK family, an alias — arrives now, and the layout is redone so
+          // the screen measures that text with the same face the PDF will.
+          void registerDeckFonts(api.handle, snapshot, baseFontRequests()).then((added) => {
+            if (added > 0 && apiRef.current === api) api.refresh()
+          })
         }}
         onSelectionStateChange={(state: PptxEditorSelectionState) => {
           selectionRef.current = state

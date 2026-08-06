@@ -4,18 +4,14 @@ import {
   openPresentation,
   paintSlide,
   type CanvasImageResolver,
-  type DeckSnapshot,
   type PresentationHandle,
-  type ShapeSnapshot,
   type SlideDisplayList,
 } from '@betteroffice/pptx'
 import { PRINT_PAGE_CAP } from '../../shared/ipc.js'
 import {
-  baseFontRequests,
   loadPresentationFaceBytes,
-  MAX_PRESENTATION_FONT_FACES,
+  collectFontRequests,
   metricAliasFamily,
-  normalizeFontFamily,
   registerMetricAlias,
   resolvePresentationFace,
   type PresentationFontRequest,
@@ -38,44 +34,6 @@ const RASTER_PIXEL_BUDGET = 100_000_000
 // tiles the deck across default paper, and at the extreme `printToPDF` never
 // returns. A slide past this prints scaled to fit, aspect ratio intact.
 const MAX_PAGE_EDGE = 2_560
-
-function addFontRequest(
-  requests: Map<string, PresentationFontRequest>,
-  family: string,
-  bold: boolean,
-  italic: boolean,
-): void {
-  if (requests.size >= MAX_PRESENTATION_FONT_FACES) return
-  const normalized = normalizeFontFamily(family)
-  if (normalized === null) return
-  const key = `${normalized.toLowerCase()}|${bold ? 1 : 0}|${italic ? 1 : 0}`
-  if (!requests.has(key)) requests.set(key, { family: normalized, bold, italic })
-}
-
-function collectShapeFonts(shape: ShapeSnapshot, requests: Map<string, PresentationFontRequest>): void {
-  for (const story of shape.textStories) {
-    for (const paragraph of story.paragraphs) {
-      for (const run of paragraph.runs) {
-        const family = run.style.fontFamily
-        if (family === null) continue
-        addFontRequest(requests, family, run.style.bold ?? false, run.style.italic ?? false)
-      }
-    }
-  }
-  for (const child of shape.children) collectShapeFonts(child, requests)
-}
-
-function collectFontRequests(snapshot: DeckSnapshot): PresentationFontRequest[] {
-  const requests = new Map<string, PresentationFontRequest>()
-  for (const request of baseFontRequests()) {
-    addFontRequest(requests, request.family, request.bold, request.italic)
-  }
-  for (const slide of snapshot.slides) {
-    for (const shape of slide.shapes) collectShapeFonts(shape, requests)
-    if (requests.size >= MAX_PRESENTATION_FONT_FACES) break
-  }
-  return [...requests.values()]
-}
 
 interface LoadedFont {
   request: PresentationFontRequest
