@@ -11,7 +11,7 @@ permissions:
 jobs:
   packages:
     name: Package gate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, nexoffice]
     steps:
       - uses: actions/checkout@v7
 
@@ -51,7 +51,7 @@ jobs:
 
   audit:
     name: Security audit
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, nexoffice]
     steps:
       - uses: actions/checkout@v7
 
@@ -71,7 +71,7 @@ jobs:
 
   rust:
     name: Rust gate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, nexoffice]
     steps:
       - uses: actions/checkout@v7
 
