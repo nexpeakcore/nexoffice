@@ -32,8 +32,8 @@ pub struct DocUndoManager {
 /// - `wasm32-unknown-unknown` has no ambient clock, so the JS boundary's own `Date.now` is used.
 ///   It has to be a real clock: a counter that advances a full capture window per reading puts
 ///   every keystroke outside the previous one's window, and taking back a five-letter word then
-///   costs five presses. That is what
-///   [`crate::tests::a_clock_past_the_window_leaves_one_undo_step_per_keystroke`] pins.
+///   costs five presses. `a_clock_past_the_window_leaves_one_undo_step_per_keystroke` in this
+///   crate's tests pins that.
 /// - Built for wasm without the `wasm` feature there is no JS to ask, so the counter remains, and
 ///   with it the ungrouped behaviour. Nothing ships from that configuration.
 ///
