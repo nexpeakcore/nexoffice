@@ -2284,7 +2284,7 @@ fn cell_format_entry(format: &CellFormat) -> Result<(String, String), String> {
     let payload = serde_json::to_string(format)
         .map_err(|error| format!("cannot encode cell format: {error}"))?;
     let digest = Sha256::digest(payload.as_bytes());
-    Ok((format!("{digest:x}"), payload))
+    Ok((hex_digest(&digest), payload))
 }
 
 fn authored_content_equal(left: Option<&Cell>, right: Option<&Cell>) -> bool {
@@ -3243,7 +3243,7 @@ fn fingerprint_model_with_schema(
         }
     }
     let digest = hasher.finalize();
-    let fingerprint = format!("{digest:x}");
+    let fingerprint = hex_digest(&digest);
     let mut client_bytes = [0_u8; 8];
     client_bytes.copy_from_slice(&digest[..8]);
     let mut bootstrap_client_id = u64::from_be_bytes(client_bytes) & MAX_SAFE_CLIENT_ID;
@@ -3670,5 +3670,39 @@ mod tests {
         let (restored, structure) = authority.strict_materialize().unwrap();
         assert_eq!(restored, model);
         assert_eq!(structure.shared_types["sheet:1"], retained);
+    }
+}
+
+/// Lowercase hex of a digest.
+///
+/// sha2 0.11 returns an `Array` where 0.10 returned a `GenericArray`, and only
+/// the latter formatted with `{:x}`. These strings are persisted — content
+/// fingerprints and generated ids — so the encoding has to stay byte for byte
+/// what the old formatter produced, which is what the test below pins.
+pub(crate) fn hex_digest(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+#[cfg(test)]
+mod hex_digest_tests {
+    use super::hex_digest;
+    use sha2::{Digest, Sha256};
+
+    /// The published SHA-256 of "abc", lowercase and unseparated — the exact
+    /// shape `{:x}` gave, so a fingerprint written before this change still
+    /// matches one written after.
+    #[test]
+    fn matches_the_formatter_it_replaced() {
+        assert_eq!(
+            hex_digest(&Sha256::digest(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(hex_digest(&[0x00, 0x0f, 0xff]), "000fff");
+        assert_eq!(hex_digest(&[]), "");
     }
 }

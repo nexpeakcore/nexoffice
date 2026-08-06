@@ -97,7 +97,7 @@ pub fn parse_docx_s8_projection(data: &[u8]) -> Result<S8Projection, ParseError>
         .collect();
     let charts = parse_chart_parts(&all_xml, &mut budget)?;
     let mut smart_art = create_smart_art_context(&all_xml);
-    let digest = format!("{:x}", Sha256::digest(data));
+    let digest = crate::canonical::hex_digest(&Sha256::digest(data));
     let mut ids = HexIdAllocator::from_sha256(&digest)?;
 
     let mut body = match find_part(&parts, "word/document.xml") {

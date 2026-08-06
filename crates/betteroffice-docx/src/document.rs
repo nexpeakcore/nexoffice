@@ -31,7 +31,7 @@ impl Document {
         );
         Ok(Self {
             original: bytes.to_vec(),
-            seed: format!("{:x}", Sha256::digest(bytes)),
+            seed: hex_digest(&Sha256::digest(bytes)),
             model,
         })
     }
@@ -357,4 +357,35 @@ fn find_paragraph_mut<'a>(
 
 fn utf16_len(text: &str) -> u32 {
     text.encode_utf16().count() as u32
+}
+
+/// Lowercase hex of a digest.
+///
+/// sha2 0.11 returns an `Array` where 0.10 returned a `GenericArray`, and only
+/// the latter formatted with `{:x}`. This string is the document seed, which is
+/// persisted, so the encoding has to stay byte for byte what the old formatter
+/// produced — see the test below.
+fn hex_digest(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+#[cfg(test)]
+mod hex_digest_tests {
+    use super::hex_digest;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn matches_the_formatter_it_replaced() {
+        assert_eq!(
+            hex_digest(&Sha256::digest(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(hex_digest(&[0x00, 0x0f, 0xff]), "000fff");
+        assert_eq!(hex_digest(&[]), "");
+    }
 }
