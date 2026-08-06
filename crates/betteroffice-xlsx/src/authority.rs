@@ -1213,6 +1213,16 @@ fn undo_clock() -> Arc<dyn Clock> {
                 .unwrap_or_default()
         })
     }
+    // Deliberately not a real clock, and not a limitation to be fixed later.
+    // A workbook commits one edit per cell, on Enter or Tab, and a spreadsheet
+    // user expects one press to take back one cell — not every cell they
+    // happened to fill in the same half second. Advancing past the capture
+    // window on every reading keeps each committed edit its own undo step.
+    // Callers that want several edits taken back together say so explicitly,
+    // through the batch entry point.
+    //
+    // The text editors are the opposite case: a keystroke there is an op, and
+    // they group by real time. See `docx-edit::undo` and `pptx-edit::undo`.
     #[cfg(all(target_family = "wasm", target_os = "unknown"))]
     {
         use std::sync::atomic::{AtomicU64, Ordering};

@@ -29,10 +29,16 @@ pub struct DocUndoManager {
 /// The default clock for [`EditingDoc::undo_scope`].
 ///
 /// - Native targets read the system clock, matching yrs's own default.
-/// - `wasm32-unknown-unknown` has no ambient clock; the fallback advances a monotonic counter by
-///   a full capture window per reading, so every transaction forms its own undo group (safe but
-///   ungrouped). Hosts that want real 500 ms grouping inject `Date.now` through
-///   [`EditingDoc::undo_scope_with_clock`].
+/// - `wasm32-unknown-unknown` has no ambient clock, so the JS boundary's own `Date.now` is used.
+///   It has to be a real clock: a counter that advances a full capture window per reading puts
+///   every keystroke outside the previous one's window, and taking back a five-letter word then
+///   costs five presses. That is what
+///   [`crate::tests::a_clock_past_the_window_leaves_one_undo_step_per_keystroke`] pins.
+/// - Built for wasm without the `wasm` feature there is no JS to ask, so the counter remains, and
+///   with it the ungrouped behaviour. Nothing ships from that configuration.
+///
+/// A host with a better clock than either still injects it through
+/// [`EditingDoc::undo_scope_with_clock`].
 pub(crate) fn default_clock() -> Arc<dyn Clock> {
     #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
     {
@@ -43,7 +49,11 @@ pub(crate) fn default_clock() -> Arc<dyn Clock> {
                 .unwrap_or_default()
         })
     }
-    #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+    #[cfg(all(target_family = "wasm", target_os = "unknown", feature = "wasm"))]
+    {
+        Arc::new(|| js_sys::Date::now() as u64)
+    }
+    #[cfg(all(target_family = "wasm", target_os = "unknown", not(feature = "wasm")))]
     {
         use std::sync::atomic::{AtomicU64, Ordering};
         let ticks = AtomicU64::new(0);

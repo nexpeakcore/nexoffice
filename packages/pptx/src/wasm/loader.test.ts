@@ -162,6 +162,25 @@ describe('PPTX wasm boundary', () => {
     expect(saveFault(undefined)).toBeNull();
   });
 
+  // Undo has to take back what the user did, not what the engine recorded. The
+  // capture window groups by wall-clock time, so a build whose clock outruns
+  // that window leaves one undo step per keystroke — five presses to take back
+  // a five-letter word. This runs the real wasm against the real `Date.now`.
+  test('one undo takes back a run typed inside the capture window', () => {
+    const editor = openPresentation(fixture, { clientId: 9401 });
+    const story = firstStory(editor.snapshot().slides.flatMap((slide) => slide.shapes));
+    const before = plainText(editor.story(story.id));
+
+    for (let i = 0; i < 5; i += 1) editor.insertText(story.id, i, 'z');
+    const typed = plainText(editor.story(story.id));
+    expect(typed.length).toBe(before.length + 5);
+
+    expect(editor.undo().applied).toBe(true);
+    expect(plainText(editor.story(story.id))).toBe(before);
+    expect(editor.canUndo()).toBe(false);
+    editor.dispose();
+  });
+
   test('saves a paragraph split and a merge back into the file', () => {
     const editor = openPresentation(fixture, { clientId: 9201 });
     const story = firstStory(editor.snapshot().slides.flatMap((slide) => slide.shapes));

@@ -1102,6 +1102,75 @@ mod tests {
         assert_eq!(revision_author(&legal, DEL).as_deref(), Some("Alice"));
         assert_eq!(revision_author(&legal, INS).as_deref(), Some("Bob"));
     }
+
+    /// Types `count` characters one at a time, each its own transaction, the
+    /// way a keystroke arrives.
+    fn type_run(doc: &EditingDoc, count: usize) {
+        for index in 0..count {
+            doc.insert_text(
+                &local("typist"),
+                Position::new("body", index as u32),
+                "z",
+                FormatPolicy::Plain,
+            )
+            .unwrap();
+        }
+    }
+
+    /// A clock that jumps a full capture window between readings — what the
+    /// wasm build used before hosts supplied a real one. Every keystroke lands
+    /// outside the previous one's window, so nothing ever groups.
+    fn clock_past_the_window() -> std::sync::Arc<dyn yrs::sync::time::Clock> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let ticks = AtomicU64::new(0);
+        std::sync::Arc::new(move || ticks.fetch_add(UNDO_CAPTURE_TIMEOUT_MS + 1, Ordering::Relaxed))
+    }
+
+    /// A clock that stands still — every keystroke inside one window, which is
+    /// what typing at any human speed looks like.
+    fn clock_inside_the_window() -> std::sync::Arc<dyn yrs::sync::time::Clock> {
+        std::sync::Arc::new(|| 1_000)
+    }
+
+    #[test]
+    fn a_run_typed_inside_one_window_is_undone_by_one_press() {
+        let doc = seed("");
+        let mut undo = doc
+            .undo_scope_with_clock(&["body"], clock_inside_the_window())
+            .unwrap();
+        type_run(&doc, 5);
+        assert_eq!(doc.paragraphs("body").unwrap()[0].text, "zzzzz");
+
+        assert!(undo.undo());
+        assert_eq!(
+            doc.paragraphs("body").unwrap()[0].text,
+            "",
+            "one press takes back the whole run the user typed"
+        );
+        assert!(!undo.can_undo(), "and there is nothing left behind it");
+    }
+
+    /// The defect this pins: a clock that outruns the capture window turns
+    /// every keystroke into its own undo step, so taking back a five-letter
+    /// word costs five presses.
+    #[test]
+    fn a_clock_past_the_window_leaves_one_undo_step_per_keystroke() {
+        let doc = seed("");
+        let mut undo = doc
+            .undo_scope_with_clock(&["body"], clock_past_the_window())
+            .unwrap();
+        type_run(&doc, 5);
+
+        let mut presses = 0;
+        while undo.undo() {
+            presses += 1;
+            if presses > 10 {
+                break;
+            }
+        }
+        assert_eq!(presses, 5, "one press per keystroke, not one per word");
+        assert_eq!(doc.paragraphs("body").unwrap()[0].text, "");
+    }
 }
 
 pub mod bridge;
