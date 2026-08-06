@@ -1,4 +1,7 @@
-use pptx_edit::{DeckSession, EditCtx, EditError, StorySnapshot, TextStyle, WriteLimits};
+use pptx_edit::{
+    DeckSession, EditCtx, EditError, SaveFault, ShapeSnapshot, StorySnapshot, TextStyle,
+    TextStylePatch, WriteLimits,
+};
 
 const FIXTURE: &[u8] = include_bytes!("../../../apps/demo/public/betteroffice-demo.pptx");
 
@@ -88,10 +91,103 @@ fn type_text(session: &DeckSession, story_id: &str, index: u32, text: &str) {
         .unwrap();
 }
 
+/// What the editor falls back to for a value nothing under the caret states:
+/// `initialStyle` in `packages/pptx-react/src/PptxEditor.tsx`.
+fn editor_fallback() -> TextStyle {
+    TextStyle {
+        bold: Some(false),
+        italic: Some(false),
+        font_size_pt: Some(24.0),
+        color: Some("#111827".to_owned()),
+        font_family: Some("Arial".to_owned()),
+        underline: Some("none".to_owned()),
+    }
+}
+
+/// The style the editor inserts typed text with.
+///
+/// A port of `effectiveStyleFromSelection` in
+/// `packages/pptx-react/src/textFormatting.ts` for a collapsed caret: the run
+/// the caret sits in, or the last run before it, resolved against
+/// [`editor_fallback`] so that every field arrives spelled out — including the
+/// `b`, `i` and `u` the run's own `<a:rPr>` usually leaves to be inherited.
+/// This, not the run's own style, is what a keystroke carries into the model.
+fn effective_style(story: &StorySnapshot, index: u32) -> TextStyle {
+    let fallback = editor_fallback();
+    let mut spans: Vec<(u32, u32, TextStyle)> = Vec::new();
+    let mut position = 0;
+    for (index, paragraph) in story.paragraphs.iter().enumerate() {
+        for run in &paragraph.runs {
+            let start = position;
+            position += run.text.encode_utf16().count() as u32;
+            if position > start {
+                spans.push((
+                    start,
+                    position,
+                    TextStyle {
+                        bold: run.style.bold.or(fallback.bold),
+                        italic: run.style.italic.or(fallback.italic),
+                        font_size_pt: run.style.font_size_pt.or(fallback.font_size_pt),
+                        color: run.style.color.clone().or_else(|| fallback.color.clone()),
+                        font_family: run
+                            .style
+                            .font_family
+                            .clone()
+                            .or_else(|| fallback.font_family.clone()),
+                        underline: run
+                            .style
+                            .underline
+                            .clone()
+                            .or_else(|| fallback.underline.clone()),
+                    },
+                ));
+            }
+        }
+        if index + 1 < story.paragraphs.len() {
+            position += 1;
+        }
+    }
+    spans
+        .iter()
+        .find(|(start, end, _)| index >= *start && index < *end)
+        .or_else(|| spans.iter().rev().find(|(_, end, _)| *end <= index))
+        .or_else(|| spans.first())
+        .map(|(_, _, style)| style.clone())
+        .unwrap_or(fallback)
+}
+
+/// Types `text` the way the editor does: at `index`, carrying the whole style
+/// the caret resolves to.
+fn type_as_the_editor_does(session: &DeckSession, story_id: &str, index: u32, text: &str) {
+    let style = effective_style(&session.story(story_id).unwrap(), index);
+    session
+        .insert_text(&EditCtx::local("test"), story_id, index, text, &style)
+        .unwrap();
+}
+
+/// The writer's account of a change it cannot express.
+///
+/// Asserting the fault, not just the wording, is the point: a broken write and
+/// a blown budget also arrive with a reason, and reading either as a refusal
+/// would tell the caller that undoing something fixes a save that undoing
+/// cannot reach.
 fn refusal(error: &EditError) -> String {
+    fault_reason(error, SaveFault::Unprojectable)
+}
+
+fn fault_reason(error: &EditError, expected: SaveFault) -> String {
+    assert_eq!(
+        error.save_fault(),
+        expected,
+        "expected a {expected:?} save, got: {error}"
+    );
     match error {
-        EditError::Unprojectable(reason) => reason.clone(),
-        other => panic!("expected a refusal, got {other}"),
+        EditError::Unprojectable(reason)
+        | EditError::Unsavable(reason)
+        | EditError::WriteLimit(reason)
+        | EditError::WriteFailed(reason)
+        | EditError::VerificationFailed(reason) => reason.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -106,11 +202,12 @@ fn a_replica_opened_from_an_update_refuses_to_save() {
     );
 
     let error = replica.project().unwrap_err();
-    assert!(
-        matches!(&error, EditError::Unprojectable(reason)
-            if reason.contains("collaborative update")),
-        "{error}"
-    );
+    let reason = fault_reason(&error, SaveFault::Unsavable);
+    assert!(reason.contains("collaborative update"), "{reason}");
+    // No edit put the replica here and no undo takes it back out, so a host
+    // that offers to abandon edits over this offers a way out that does not
+    // exist.
+    assert!(!error.save_fault().undoing_helps());
 }
 
 #[test]
@@ -161,7 +258,7 @@ fn a_text_deletion_that_empties_a_run_still_projects() {
 }
 
 #[test]
-fn a_splice_that_lands_on_the_wrong_run_is_refused() {
+fn a_splice_that_lands_on_the_wrong_run_fails_verification() {
     let deck = deck_with(r#"<a:p><a:r><a:t>AAA</a:t></a:r><a:r><a:t>BBB</a:t></a:r></a:p>"#);
     let mut package = pptx_parse::parse_pptx(&deck).unwrap();
     let bytes = String::from_utf8(package.part_bytes(SLIDE_PART).unwrap().to_vec()).unwrap();
@@ -177,11 +274,41 @@ fn a_splice_that_lands_on_the_wrong_run_is_refused() {
     assert_eq!(story.plain_text(), "AAABBB");
     type_text(&session, &story.id, 0, "X");
 
-    let reason = refusal(&session.project().unwrap_err());
+    // The writer put the text somewhere the edit did not name. Nothing the
+    // user did causes this and no undo clears it, so it must never be read as
+    // a refusal — the edit is sound and has to survive.
+    let error = session.project().unwrap_err();
+    let reason = fault_reason(&error, SaveFault::VerificationFailed);
     assert!(
         reason.contains("read back as a different deck"),
         "the wrong run was rewritten and the save must say so: {reason}"
     );
+    assert!(!error.save_fault().undoing_helps());
+}
+
+#[test]
+fn a_split_whose_bytes_land_on_the_wrong_run_fails_verification() {
+    let deck = deck_with(r#"<a:p><a:r><a:t>AAA</a:t></a:r><a:r><a:t>BBB</a:t></a:r></a:p>"#);
+    let mut package = pptx_parse::parse_pptx(&deck).unwrap();
+    let bytes = String::from_utf8(package.part_bytes(SLIDE_PART).unwrap().to_vec()).unwrap();
+    let swapped = bytes
+        .replace("<a:t>AAA</a:t>", "<a:t>ZZZ</a:t>")
+        .replace("<a:t>BBB</a:t>", "<a:t>AAA</a:t>")
+        .replace("<a:t>ZZZ</a:t>", "<a:t>BBB</a:t>");
+    assert!(package.replace_part(SLIDE_PART, swapped.into_bytes()));
+
+    let session = DeckSession::from_package(package, 217).unwrap();
+    let story = first_story(&session);
+    assert_eq!(story.plain_text(), "AAABBB");
+    press_enter(&session, &story.id, 1);
+
+    let error = session.project().unwrap_err();
+    let reason = fault_reason(&error, SaveFault::VerificationFailed);
+    assert!(
+        reason.contains("read back as a different deck"),
+        "a split spliced into the wrong run must be caught, not shipped: {reason}"
+    );
+    assert!(!error.save_fault().undoing_helps());
 }
 
 #[test]
@@ -403,19 +530,471 @@ fn one_save_rewrites_several_paragraphs_across_several_slides() {
     assert_eq!(reopened.story(&back.id).unwrap().plain_text(), "3gamma");
 }
 
+/// A paragraph with properties worth carrying, formatting worth keeping and an
+/// end paragraph mark worth placing, so a split can be checked byte for byte.
+const BULLETED: &str = concat!(
+    r#"<a:p><a:pPr lvl="2" marL="457200" indent="-228600"><a:buChar char="•"/></a:pPr>"#,
+    r#"<a:r><a:rPr b="1" sz="1400"/><a:t>alpha</a:t></a:r>"#,
+    r#"<a:r><a:rPr i="1"/><a:t>beta</a:t></a:r>"#,
+    r#"<a:endParaRPr sz="1800"/></a:p>"#,
+);
+
+const BULLET_PPR: &str =
+    r#"<a:pPr lvl="2" marL="457200" indent="-228600"><a:buChar char="•"/></a:pPr>"#;
+
+fn press_enter(session: &DeckSession, story_id: &str, index: u32) {
+    session
+        .insert_paragraph_break(&EditCtx::local("test"), story_id, index)
+        .unwrap();
+}
+
 #[test]
-fn a_run_larger_than_the_write_budget_refuses_the_save() {
+fn a_split_at_the_start_of_a_paragraph_leaves_an_empty_paragraph_above_it() {
+    let session = session_with(BULLETED);
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 0);
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(BULLETED).replace(
+            r#"<a:r><a:rPr b="1" sz="1400"/>"#,
+            &format!(r#"</a:p><a:p>{BULLET_PPR}<a:r><a:rPr b="1" sz="1400"/>"#),
+        ),
+        "the empty paragraph copies the pPr and every run keeps its own bytes"
+    );
+
+    let reopened = DeckSession::open(&bytes, 201).unwrap();
+    let story = reopened
+        .snapshot()
+        .unwrap()
+        .slides
+        .iter()
+        .flat_map(|slide| slide.shapes.clone())
+        .find_map(|shape| shape.text_stories.first().cloned())
+        .unwrap();
+    assert_eq!(story.plain_text(), "\nalphabeta");
+    assert_eq!(story.paragraphs[0].level, 2);
+    assert_eq!(story.paragraphs[1].level, 2);
+    assert_eq!(
+        story.paragraphs[0].bullet_json,
+        story.paragraphs[1].bullet_json
+    );
+}
+
+#[test]
+fn a_split_at_the_end_of_a_paragraph_moves_the_end_mark_onto_the_new_one() {
+    let session = session_with(BULLETED);
+    let story = first_story(&session);
+    press_enter(&session, &story.id, "alphabeta".chars().count() as u32);
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(BULLETED).replace(
+            r#"<a:endParaRPr sz="1800"/>"#,
+            &format!(r#"</a:p><a:p>{BULLET_PPR}<a:endParaRPr sz="1800"/>"#),
+        ),
+        "the paragraph mark of the source paragraph ends the new empty one"
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 202)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "alphabeta\n"
+    );
+}
+
+#[test]
+fn a_split_inside_a_formatted_run_gives_both_halves_its_run_properties() {
+    let session = session_with(BULLETED);
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 2);
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(BULLETED).replace(
+            r#"<a:r><a:rPr b="1" sz="1400"/><a:t>alpha</a:t></a:r>"#,
+            &format!(
+                concat!(
+                    r#"<a:r><a:rPr b="1" sz="1400"/><a:t>al</a:t></a:r>"#,
+                    r#"</a:p><a:p>{}"#,
+                    r#"<a:r><a:rPr b="1" sz="1400"/><a:t>pha</a:t></a:r>"#,
+                ),
+                BULLET_PPR
+            ),
+        ),
+        "the divided run's <a:rPr> is copied, not rebuilt"
+    );
+
+    let reopened = DeckSession::open(&bytes, 203).unwrap();
+    let reparsed = reopened.story(&story.id).unwrap();
+    assert_eq!(reparsed.plain_text(), "al\nphabeta");
+    assert_eq!(reparsed.paragraphs[0].runs[0].style.bold, Some(true));
+    assert_eq!(reparsed.paragraphs[1].runs[0].style.bold, Some(true));
+    assert_eq!(
+        reparsed.paragraphs[1].runs[0].style.font_size_pt,
+        Some(14.0)
+    );
+}
+
+#[test]
+fn a_split_leaves_the_slides_it_did_not_touch_byte_for_byte() {
+    let deck = deck_with_slides(BULLETED, r#"<a:p><a:r><a:t>gamma</a:t></a:r></a:p>"#);
+    let session = DeckSession::open(&deck, 204).unwrap();
+    let story = stories(&session)[0].clone();
+    press_enter(&session, &story.id, 5);
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SECOND_SLIDE_PART),
+        part_text(&deck, SECOND_SLIDE_PART)
+    );
+    assert_eq!(
+        part_text(&bytes, THIRD_SLIDE_PART),
+        part_text(&deck, THIRD_SLIDE_PART)
+    );
+    let before = ooxml_opc::unzip_parts(&deck).unwrap();
+    let after = ooxml_opc::unzip_parts(&bytes).unwrap();
+    for ((path, source), (saved_path, saved)) in before.iter().zip(&after) {
+        assert_eq!(path, saved_path);
+        if path != SLIDE_PART {
+            assert_eq!(source, saved, "{path} was rewritten");
+        }
+    }
+}
+
+#[test]
+fn a_merge_keeps_the_first_paragraphs_properties_and_the_last_end_mark() {
+    let paragraphs = concat!(
+        r#"<a:p><a:pPr algn="ctr"/><a:r><a:rPr b="1"/><a:t>alpha</a:t></a:r>"#,
+        r#"<a:endParaRPr sz="900"/></a:p>"#,
+        r#"<a:p><a:pPr lvl="3" algn="r"><a:buNone/></a:pPr>"#,
+        r#"<a:r><a:rPr i="1" sz="2400"/><a:t>beta</a:t></a:r>"#,
+        r#"<a:endParaRPr sz="1800"/></a:p>"#,
+    );
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    assert_eq!(story.plain_text(), "alpha\nbeta");
+    session
+        .delete_paragraph_break(&EditCtx::local("test"), &story.id, 5)
+        .unwrap();
+    assert_eq!(session.story(&story.id).unwrap().plain_text(), "alphabeta");
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace(
+            concat!(
+                r#"<a:endParaRPr sz="900"/></a:p>"#,
+                r#"<a:p><a:pPr lvl="3" algn="r"><a:buNone/></a:pPr>"#,
+            ),
+            "",
+        ),
+        "one deletion joins the paragraphs; both runs keep their own bytes"
+    );
+
+    let reparsed = DeckSession::open(&bytes, 205)
+        .unwrap()
+        .story(&story.id)
+        .unwrap();
+    assert_eq!(reparsed.plain_text(), "alphabeta");
+    assert_eq!(reparsed.paragraphs.len(), 1);
+    assert_eq!(reparsed.paragraphs[0].alignment.as_deref(), Some("ctr"));
+    assert_eq!(reparsed.paragraphs[0].level, 0);
+    assert_eq!(reparsed.paragraphs[0].runs[0].style.bold, Some(true));
+    assert_eq!(reparsed.paragraphs[0].runs[1].style.italic, Some(true));
+}
+
+#[test]
+fn a_split_and_a_merge_are_inverses_down_to_the_byte() {
+    let deck = deck_with(BULLETED);
+    let session = DeckSession::open(&deck, 206).unwrap();
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 5);
+    let split = session.save_bytes().unwrap();
+    assert_ne!(part_text(&split, SLIDE_PART), part_text(&deck, SLIDE_PART));
+
+    let session = DeckSession::open(&split, 207).unwrap();
+    let story = first_story(&session);
+    session
+        .delete_paragraph_break(&EditCtx::local("test"), &story.id, 5)
+        .unwrap();
+    assert_eq!(
+        part_text(&session.save_bytes().unwrap(), SLIDE_PART),
+        part_text(&deck, SLIDE_PART),
+        "merging what a split produced restores the source part"
+    );
+}
+
+#[test]
+fn merging_a_split_run_keeps_the_two_runs_it_was_divided_into() {
+    let deck = deck_with(BULLETED);
+    let session = DeckSession::open(&deck, 213).unwrap();
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 3);
+    let split = session.save_bytes().unwrap();
+
+    let session = DeckSession::open(&split, 214).unwrap();
+    let story = first_story(&session);
+    session
+        .delete_paragraph_break(&EditCtx::local("test"), &story.id, 3)
+        .unwrap();
+    let merged = session.save_bytes().unwrap();
+    let reparsed = DeckSession::open(&merged, 215)
+        .unwrap()
+        .story(&story.id)
+        .unwrap();
+    assert_eq!(reparsed.plain_text(), "alphabeta");
+    assert_eq!(reparsed.paragraphs.len(), 1);
+    assert_eq!(
+        part_text(&merged, SLIDE_PART),
+        slide_xml(BULLETED).replace(
+            r#"<a:r><a:rPr b="1" sz="1400"/><a:t>alpha</a:t></a:r>"#,
+            concat!(
+                r#"<a:r><a:rPr b="1" sz="1400"/><a:t>alp</a:t></a:r>"#,
+                r#"<a:r><a:rPr b="1" sz="1400"/><a:t>ha</a:t></a:r>"#,
+            ),
+        ),
+        "joining runs is not this writer's to do, so the divided run stays divided"
+    );
+}
+
+#[test]
+fn a_line_break_typed_inside_a_run_writes_a_br_carrying_its_properties() {
+    let session = session_with(BULLETED);
+    let story = first_story(&session);
+    let style = story.paragraphs[0].runs[0].style.clone();
+    session
+        .insert_text(&EditCtx::local("test"), &story.id, 2, "\n", &style)
+        .unwrap();
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(BULLETED).replace(
+            r#"<a:r><a:rPr b="1" sz="1400"/><a:t>alpha</a:t></a:r>"#,
+            concat!(
+                r#"<a:r><a:rPr b="1" sz="1400"/><a:t>al</a:t></a:r>"#,
+                r#"<a:br><a:rPr b="1" sz="1400"/></a:br>"#,
+                r#"<a:r><a:rPr b="1" sz="1400"/><a:t>pha</a:t></a:r>"#,
+            ),
+        ),
+        "the break carries the formatting of the run it divides, as PowerPoint writes it"
+    );
+
+    let reparsed = DeckSession::open(&bytes, 208)
+        .unwrap()
+        .story(&story.id)
+        .unwrap();
+    assert_eq!(reparsed.plain_text(), "al\nphabeta");
+    assert_eq!(reparsed.paragraphs.len(), 1);
+}
+
+#[test]
+fn a_line_break_typed_next_to_an_unstyled_run_needs_no_run_properties() {
+    let paragraphs = r#"<a:p><a:r><a:t>abcd</a:t></a:r></a:p>"#;
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    type_text(&session, &story.id, 2, "\n");
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace(
+            r#"<a:r><a:t>abcd</a:t></a:r>"#,
+            r#"<a:r><a:t>ab</a:t></a:r><a:br/><a:r><a:t>cd</a:t></a:r>"#,
+        )
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 209)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "ab\ncd"
+    );
+}
+
+#[test]
+fn typing_and_then_splitting_in_one_place_saves_as_one_change() {
+    let paragraphs = r#"<a:p><a:pPr algn="ctr"/><a:r><a:t>abcd</a:t></a:r></a:p>"#;
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    type_text(&session, &story.id, 2, "XY");
+    press_enter(&session, &story.id, 4);
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace(
+            r#"<a:r><a:t>abcd</a:t></a:r>"#,
+            concat!(
+                r#"<a:r><a:t>abXY</a:t></a:r>"#,
+                r#"</a:p><a:p><a:pPr algn="ctr"/>"#,
+                r#"<a:r><a:t>cd</a:t></a:r>"#,
+            ),
+        )
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 210)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "abXY\ncd"
+    );
+}
+
+#[test]
+fn a_split_of_an_empty_paragraph_writes_a_second_empty_paragraph() {
+    let paragraphs = concat!(
+        r#"<a:p><a:pPr algn="ctr"/><a:endParaRPr sz="1800"/></a:p>"#,
+        r#"<a:p><a:r><a:t>after</a:t></a:r></a:p>"#,
+    );
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 0);
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace(
+            r#"<a:p><a:pPr algn="ctr"/><a:endParaRPr sz="1800"/></a:p>"#,
+            r#"<a:p><a:pPr algn="ctr"/></a:p><a:p><a:pPr algn="ctr"/><a:endParaRPr sz="1800"/></a:p>"#,
+        )
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 211)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "\n\nafter"
+    );
+}
+
+#[test]
+fn two_splits_inside_one_run_write_three_paragraphs() {
+    let paragraphs = r#"<a:p><a:pPr algn="ctr"/><a:r><a:t>abcdefgh</a:t></a:r></a:p>"#;
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 6);
+    press_enter(&session, &story.id, 2);
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace(
+            r#"<a:r><a:t>abcdefgh</a:t></a:r>"#,
+            concat!(
+                r#"<a:r><a:t>ab</a:t></a:r>"#,
+                r#"</a:p><a:p><a:pPr algn="ctr"/><a:r><a:t>cdef</a:t></a:r>"#,
+                r#"</a:p><a:p><a:pPr algn="ctr"/><a:r><a:t>gh</a:t></a:r>"#,
+            ),
+        )
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 216)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "ab\ncdef\ngh"
+    );
+}
+
+#[test]
+fn two_edits_in_different_runs_of_one_paragraph_are_still_refused_by_name() {
+    let session = session_with(concat!(
+        r#"<a:p><a:r><a:t>abcd</a:t></a:r>"#,
+        r#"<a:r><a:rPr b="1"/><a:t>efgh</a:t></a:r></a:p>"#,
+    ));
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 2);
+    press_enter(&session, &story.id, 7);
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("the change spans more than one run"),
+        "two changes in one body that are not one change have no faithful rewrite: {reason}"
+    );
+}
+
+#[test]
+fn a_split_inside_a_field_is_refused_by_name() {
+    let session = session_with(concat!(
+        r#"<a:p><a:r><a:t>page </a:t></a:r>"#,
+        r#"<a:fld id="{4B0A}" type="slidenum"><a:t>12</a:t></a:fld></a:p>"#,
+    ));
+    let story = first_story(&session);
+    assert_eq!(story.plain_text(), "page 12");
+    press_enter(&session, &story.id, 6);
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("the change lands on field 2"),
+        "a field's text belongs to PowerPoint, not to the writer: {reason}"
+    );
+}
+
+#[test]
+fn typing_into_a_paragraph_with_no_run_is_still_refused_by_name() {
+    let session = session_with(r#"<a:p><a:endParaRPr sz="1800"/></a:p>"#);
+    let story = first_story(&session);
+    type_text(&session, &story.id, 0, "X");
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("no run to hold text"),
+        "an empty paragraph has no run to carry a style: {reason}"
+    );
+}
+
+#[test]
+fn a_split_keeps_the_paragraph_level_on_both_halves() {
+    let session = session_with(BULLETED);
+    let story = first_story(&session);
+    press_enter(&session, &story.id, 5);
+    let split = session.snapshot().unwrap();
+    assert_eq!(
+        split.slides[0].shapes[0].text_stories[0].paragraphs.len(),
+        2
+    );
+
+    let bytes = session.save_bytes().unwrap();
+    let reopened = DeckSession::open(&bytes, 212).unwrap();
+    let levels: Vec<u32> = reopened
+        .story(&story.id)
+        .unwrap()
+        .paragraphs
+        .iter()
+        .map(|paragraph| paragraph.level)
+        .collect();
+    assert_eq!(levels, vec![2, 2], "a split keeps the level on both halves");
+}
+
+#[test]
+fn a_run_larger_than_the_write_budget_stops_the_save() {
     let session = session_with(r#"<a:p><a:r><a:t>ab</a:t></a:r></a:p>"#);
     let story = first_story(&session);
     let limits = WriteLimits::default();
     let paste = "z".repeat(limits.max_run_text_bytes + 1);
     type_text(&session, &story.id, 0, &paste);
 
-    let reason = refusal(&session.project().unwrap_err());
+    // A budget is not a capability gap: the writer can express this paste, it
+    // is simply too much for one save. Saying so is what lets a host offer to
+    // save less rather than to throw the paste away.
+    let error = session.project().unwrap_err();
+    let reason = fault_reason(&error, SaveFault::Limit);
     assert!(
         reason.contains("bytes into one run"),
-        "an oversized paste must be refused by name: {reason}"
+        "an oversized paste must be stopped by name: {reason}"
     );
+    assert!(!error.save_fault().undoing_helps());
 }
 
 #[test]
@@ -428,23 +1007,25 @@ fn the_write_budgets_bound_the_runs_and_the_bytes_one_save_rewrites() {
     type_text(&session, &story.id, 0, "X");
     type_text(&session, &story.id, 5, "Y");
 
-    let reason = refusal(
+    let reason = fault_reason(
         &session
             .project_with_limits(&WriteLimits {
                 max_run_edits: 1,
                 ..WriteLimits::default()
             })
             .unwrap_err(),
+        SaveFault::Limit,
     );
     assert!(reason.contains("runs one save may rewrite"), "{reason}");
 
-    let reason = refusal(
+    let reason = fault_reason(
         &session
             .project_with_limits(&WriteLimits {
                 max_total_edit_bytes: 5,
                 ..WriteLimits::default()
             })
             .unwrap_err(),
+        SaveFault::Limit,
     );
     assert!(
         reason.contains("bytes of text one save may write"),
@@ -461,4 +1042,304 @@ fn the_write_budgets_bound_the_runs_and_the_bytes_one_save_rewrites() {
         "Xone\nYtwo",
         "an ordinary edit passes the default budgets untouched"
     );
+}
+
+#[test]
+fn a_keystroke_into_a_run_with_no_run_properties_rewrites_only_its_text() {
+    let paragraphs = r#"<a:p><a:r><a:t>abcd</a:t></a:r></a:p>"#;
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    assert_eq!(
+        story.paragraphs[0].runs[0].style,
+        TextStyle::default(),
+        "the run states nothing, so every field of the caret's style is the editor's own"
+    );
+    type_as_the_editor_does(&session, &story.id, 2, "X");
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace("<a:t>abcd</a:t>", "<a:t>abXcd</a:t>"),
+        "a keystroke moves no byte outside the <a:t> it landed in"
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 301)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "abXcd"
+    );
+}
+
+#[test]
+fn a_keystroke_into_a_partly_stated_run_saves_at_its_start_middle_and_end() {
+    let paragraphs = r#"<a:p><a:r><a:rPr b="1" sz="1400"/><a:t>abcd</a:t></a:r></a:p>"#;
+    for (index, (caret, expected)) in [(0, "Xabcd"), (2, "abXcd"), (4, "abcdX")]
+        .into_iter()
+        .enumerate()
+    {
+        let session = session_with(paragraphs);
+        let story = first_story(&session);
+        let style = effective_style(&story, caret);
+        assert_eq!(
+            (style.bold, style.italic, style.underline.as_deref()),
+            (Some(true), Some(false), Some("none")),
+            "the caret keeps the b the run states and spells out the i and u it does not"
+        );
+        type_as_the_editor_does(&session, &story.id, caret, "X");
+
+        let bytes = session.save_bytes().unwrap();
+        assert_eq!(
+            part_text(&bytes, SLIDE_PART),
+            slide_xml(paragraphs).replace("<a:t>abcd</a:t>", &format!("<a:t>{expected}</a:t>")),
+            "the run keeps its own <a:rPr>, whatever the caret spelled out"
+        );
+        assert_eq!(
+            DeckSession::open(&bytes, 310 + index as u64)
+                .unwrap()
+                .story(&story.id)
+                .unwrap()
+                .plain_text(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn a_keystroke_leaves_the_other_runs_of_its_paragraph_byte_for_byte() {
+    let paragraphs = concat!(
+        r#"<a:p><a:r><a:rPr b="1"/><a:t>alpha</a:t></a:r>"#,
+        r#"<a:r><a:rPr i="1" sz="1200"/><a:t>beta</a:t></a:r>"#,
+        r#"<a:r><a:t>gamma</a:t></a:r></a:p>"#,
+    );
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    assert_eq!(story.plain_text(), "alphabetagamma");
+    type_as_the_editor_does(&session, &story.id, 7, "X");
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace("<a:t>beta</a:t>", "<a:t>beXta</a:t>"),
+        "only the run the caret sat in is rewritten"
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 320)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "alphabeXtagamma"
+    );
+}
+
+#[test]
+fn a_keystroke_repeating_the_letter_beside_it_still_lands_in_its_own_run() {
+    let paragraphs = concat!(
+        r#"<a:p><a:r><a:rPr b="1" sz="1000"/><a:t>DOCX</a:t></a:r>"#,
+        r#"<a:r><a:rPr b="1" sz="1000"/><a:t> tab</a:t></a:r></a:p>"#,
+    );
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    type_as_the_editor_does(&session, &story.id, 3, "X");
+
+    let bytes = session.save_bytes().unwrap();
+    assert_eq!(
+        part_text(&bytes, SLIDE_PART),
+        slide_xml(paragraphs).replace("<a:t>DOCX</a:t>", "<a:t>DOCXX</a:t>"),
+        "which of the two Xs was typed cannot be read off the text, and either reads the same"
+    );
+    assert_eq!(
+        DeckSession::open(&bytes, 330)
+            .unwrap()
+            .story(&story.id)
+            .unwrap()
+            .plain_text(),
+        "DOCXX tab"
+    );
+}
+
+#[test]
+fn a_bold_toggle_over_part_of_a_run_is_still_refused_by_name() {
+    let session = session_with(r#"<a:p><a:r><a:t>abcd</a:t></a:r></a:p>"#);
+    let story = first_story(&session);
+    session
+        .format_text(
+            &EditCtx::local("test"),
+            &story.id,
+            2,
+            4,
+            &TextStylePatch {
+                bold: Some(true),
+                ..TextStylePatch::default()
+            },
+        )
+        .unwrap();
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("changed in a way this writer cannot express"),
+        "bolding half a run needs a run split, which this writer cannot make: {reason}"
+    );
+}
+
+#[test]
+fn a_bold_toggle_beside_a_keystroke_is_refused_rather_than_swallowed() {
+    let session = session_with(r#"<a:p><a:r><a:t>abcd</a:t></a:r></a:p>"#);
+    let story = first_story(&session);
+    type_as_the_editor_does(&session, &story.id, 2, "X");
+    session
+        .format_text(
+            &EditCtx::local("test"),
+            &story.id,
+            0,
+            2,
+            &TextStylePatch {
+                bold: Some(true),
+                ..TextStylePatch::default()
+            },
+        )
+        .unwrap();
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("changed in a way this writer cannot express"),
+        "a keystroke does not license the formatting change beside it: {reason}"
+    );
+}
+
+#[test]
+fn a_keystroke_contradicting_the_run_it_lands_in_is_refused_by_name() {
+    let paragraphs = r#"<a:p><a:r><a:rPr b="1"/><a:t>abcd</a:t></a:r></a:p>"#;
+    let session = session_with(paragraphs);
+    let story = first_story(&session);
+    let mut style = effective_style(&story, 2);
+    style.bold = Some(false);
+    session
+        .insert_text(&EditCtx::local("test"), &story.id, 2, "X", &style)
+        .unwrap();
+
+    let reason = refusal(&session.project().unwrap_err());
+    assert!(
+        reason.contains("changed in a way this writer cannot express"),
+        "text typed unbolded into a bold run is a run split, not a keystroke: {reason}"
+    );
+}
+
+/// Every text story of the demo deck, groups and table cells included.
+fn demo_stories(session: &DeckSession) -> Vec<StorySnapshot> {
+    fn walk(shape: &ShapeSnapshot, stories: &mut Vec<StorySnapshot>) {
+        stories.extend(shape.text_stories.iter().cloned());
+        for child in &shape.children {
+            walk(child, stories);
+        }
+    }
+    let mut stories = Vec::new();
+    for slide in &session.snapshot().unwrap().slides {
+        for shape in &slide.shapes {
+            walk(shape, &mut stories);
+        }
+    }
+    stories
+}
+
+/// The case the suite used to miss: a keystroke as the editor makes it, in
+/// every text story of a real deck.
+///
+/// Typing with the run's own style saved before this test existed; typing with
+/// the style the editor actually sends refused in every one of these stories,
+/// because a real deck's runs state `b` and `sz` and leave `i` and `u` to be
+/// inherited.
+#[test]
+fn every_text_story_of_the_demo_deck_saves_after_a_keystroke() {
+    let package = pptx_parse::parse_pptx(FIXTURE).unwrap();
+    let session = DeckSession::from_package(package.clone(), 340).unwrap();
+    let stories = demo_stories(&session);
+    assert!(
+        stories.len() > 40,
+        "the demo deck holds a deck's worth of text"
+    );
+
+    let mut refused = Vec::new();
+    for (index, story) in stories.iter().enumerate() {
+        for caret in [0, 3, 5, 20, 50] {
+            let session =
+                DeckSession::from_package(package.clone(), 1_000 + index as u64 * 8 + caret)
+                    .unwrap();
+            let live = session.story(&story.id).unwrap();
+            if caret as u32 >= live.length {
+                continue;
+            }
+            type_as_the_editor_does(&session, &story.id, caret as u32, "X");
+            if let Err(error) = session.save_bytes() {
+                refused.push(format!("{} at {caret}: {error}", story.id));
+            }
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "a keystroke must be savable everywhere:\n{}",
+        refused.join("\n")
+    );
+}
+
+/// The one reading a host may take from a failed save.
+///
+/// A code that drifts, or a new fault that quietly lands on the one the
+/// desktop answers with an offer to abandon edits, is what this pins.
+#[test]
+fn only_a_change_the_writer_cannot_express_is_undone_away() {
+    let faults = [
+        (SaveFault::Unprojectable, "unprojectable", true),
+        (SaveFault::Unsavable, "unsavable", false),
+        (SaveFault::Limit, "limit", false),
+        (SaveFault::WriteFailed, "write-failed", false),
+        (SaveFault::VerificationFailed, "verification-failed", false),
+    ];
+    for (fault, code, undoing_helps) in faults {
+        assert_eq!(fault.code(), code);
+        assert_eq!(fault.undoing_helps(), undoing_helps, "{code}");
+    }
+    let codes: std::collections::BTreeSet<_> =
+        faults.iter().map(|(fault, ..)| fault.code()).collect();
+    assert_eq!(codes.len(), faults.len(), "two faults answer to one code");
+}
+
+/// Errors that are not about writing still reach a save, through the snapshot
+/// the projection takes before it writes anything. Reading one of those as a
+/// refusal would offer to throw away work over a bad client ID.
+#[test]
+fn an_error_the_writer_did_not_raise_is_never_a_refusal() {
+    for error in [
+        EditError::InvalidClientId(0),
+        EditError::Parse("truncated".to_owned()),
+        EditError::InvalidState("no such story".to_owned()),
+        EditError::InvalidUpdate("short".to_owned()),
+        EditError::Observer("listener".to_owned()),
+        EditError::Json("boundary".to_owned()),
+    ] {
+        assert_eq!(error.save_fault(), SaveFault::WriteFailed, "{error}");
+        assert!(!error.save_fault().undoing_helps(), "{error}");
+    }
+}
+
+/// `undoing_helps` is a promise, not a label: taking the named change back out
+/// has to leave a deck that saves.
+#[test]
+fn taking_back_a_refused_change_lets_the_same_save_through() {
+    let session = session_with(r#"<a:p><a:r><a:t>ab</a:t></a:r><a:br/></a:p>"#);
+    let story = first_story(&session);
+    type_text(&session, &story.id, 3, "X");
+
+    let error = session.save_bytes().unwrap_err();
+    assert_eq!(error.save_fault(), SaveFault::Unprojectable, "{error}");
+    assert!(error.save_fault().undoing_helps());
+
+    session
+        .delete_text(&EditCtx::local("test"), &story.id, 3, 4)
+        .unwrap();
+    session
+        .save_bytes()
+        .expect("the deck saves once the change the refusal named is gone");
 }

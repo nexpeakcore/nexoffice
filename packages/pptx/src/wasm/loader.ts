@@ -32,6 +32,58 @@ import type {
 
 export type WasmInitInput = InitInput | Promise<InitInput>;
 
+/**
+ * Why a `save()` did not write, in the writer's own terms.
+ *
+ * These are not degrees of the same thing. `unprojectable` names a change the
+ * writer cannot express, and undoing it lets the same save through, so it is
+ * the only one a host may answer by offering to abandon edits. `unsavable`
+ * says no undo will ever help. `limit` says the edit was too big for one save.
+ * `write-failed` and `verification-failed` are the writer's problem, not the
+ * edit's: the work is intact and must survive them.
+ */
+export type PptxSaveFaultCode =
+  | 'unprojectable'
+  | 'unsavable'
+  | 'limit'
+  | 'write-failed'
+  | 'verification-failed';
+
+export interface PptxSaveFault {
+  code: PptxSaveFaultCode;
+  /** The writer's account of what it could not write, without the prefix. */
+  reason: string;
+  /** Whether undoing the change the reason names lets the save through. */
+  undoingHelps: boolean;
+}
+
+const SAVE_FAULT_CODES: ReadonlySet<string> = new Set<PptxSaveFaultCode>([
+  'unprojectable',
+  'unsavable',
+  'limit',
+  'write-failed',
+  'verification-failed',
+]);
+
+/**
+ * Reads the fault off a throw from {@link PresentationHandle.save}.
+ *
+ * Returns `null` for anything the writer did not classify — a disposed handle,
+ * a panic, a `TypeError` from the glue — so a caller that only acts on a known
+ * code cannot be talked into acting by an error that merely reads like one.
+ * The message is never the signal: only the `code` the boundary set is.
+ */
+export function saveFault(error: unknown): PptxSaveFault | null {
+  if (typeof error !== 'object' || error === null) return null;
+  const { code, reason, undoingHelps } = error as Record<string, unknown>;
+  if (typeof code !== 'string' || !SAVE_FAULT_CODES.has(code)) return null;
+  return {
+    code: code as PptxSaveFaultCode,
+    reason: typeof reason === 'string' ? reason : '',
+    undoingHelps: undoingHelps === true,
+  };
+}
+
 export interface OpenPresentationOptions {
   clientId?: number;
   fonts?: ReadonlyArray<PptxFontFace>;
@@ -50,6 +102,12 @@ export interface PresentationHandle extends CollaborationReplica {
   deleteText(storyId: string, start: number, end: number): TextReceipt;
   formatText(storyId: string, start: number, end: number, patch: TextStylePatch): TextReceipt;
   insertParagraphBreak(storyId: string, index: number): TextReceipt;
+  /**
+   * Joins the paragraph that ends at `index` with the one after it, the way
+   * Backspace at the start of a paragraph does. The joined paragraph keeps the
+   * level, alignment and bullet of the first of the two.
+   */
+  deleteParagraphBreak(storyId: string, index: number): TextReceipt;
   insertSlide(index: number, layoutPartPath?: string): SlideReceipt;
   deleteSlide(slideId: string): SlideReceipt;
   moveSlide(slideId: string, toIndex: number): SlideReceipt;
@@ -73,13 +131,19 @@ export interface PresentationHandle extends CollaborationReplica {
    * Projects the deck's text edits back onto the parts the file was opened
    * with and returns the re-zipped PPTX. Slides no edit touched, and every
    * non-slide part, keep their source bytes; an edited slide keeps every byte
-   * outside the `<a:t>` elements whose text changed.
+   * outside the elements the edit changed.
    *
-   * Only run text is written today. Throws, naming the change, when the deck
-   * holds anything else — a formatting patch, a new paragraph, a moved or
-   * added shape, a slide insert, remove or reorder — so a host can keep saving
-   * disabled instead of writing a file that has lost the edit. A replica
-   * opened from `initialUpdate` alone has no source bytes and always throws.
+   * Run text, paragraph splits and merges, and soft line breaks are written
+   * today. Throws, naming the change, when the deck holds anything else — a
+   * formatting patch, a run split, a moved or added shape, a slide insert,
+   * remove or reorder — so a host can keep saving disabled instead of writing
+   * a file that has lost the edit. A replica opened from `initialUpdate` alone
+   * has no source bytes and always throws.
+   *
+   * Read a throw with {@link saveFault} rather than its message: only the
+   * `unprojectable` code means undoing something would let the save through,
+   * and a host that cannot tell that apart from a broken write offers to throw
+   * away work the next attempt would have written.
    */
   save(): Uint8Array;
   canUndo(): boolean;
@@ -291,6 +355,12 @@ export function openPresentation(
     insertParagraphBreak(storyId, index): TextReceipt {
       return jsonWasmCall(
         () => doc.insertParagraphBreakJson(JSON.stringify({ storyId, index })),
+        true
+      );
+    },
+    deleteParagraphBreak(storyId, index): TextReceipt {
+      return jsonWasmCall(
+        () => doc.deleteParagraphBreakJson(JSON.stringify({ storyId, index })),
         true
       );
     },

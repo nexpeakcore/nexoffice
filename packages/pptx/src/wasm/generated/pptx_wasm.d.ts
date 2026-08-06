@@ -11,6 +11,7 @@ export class PptxDocument {
     canRedo(): boolean;
     canUndo(): boolean;
     clearUpdateObservation(): void;
+    deleteParagraphBreakJson(args: string): string;
     deleteSlideJson(args: string): string;
     deleteTextJson(args: string): string;
     drainUpdateEvent(): Uint8Array;
@@ -31,8 +32,14 @@ export class PptxDocument {
     resizeShapeJson(args: string): string;
     /**
      * Projects the deck's text edits onto the source parts and returns the
-     * re-zipped file. Rejects when the deck holds a change the writer cannot
-     * express, naming what it cannot write.
+     * re-zipped file.
+     *
+     * A rejection is an `Error` carrying a `code` property — one of
+     * [`crate::SaveFault::code`] — because these do not mean the same thing to
+     * the work in the deck, and only `"unprojectable"` names a change the host
+     * could undo to get the save through. A host that reads the message
+     * instead of the code cannot tell a writer that will not express an edit
+     * from a disk that would not take the bytes.
      */
     saveBytes(): Uint8Array;
     setShapeAdjustJson(args: string): string;
@@ -93,6 +100,7 @@ export interface InitOutput {
     readonly pptxdocument_canUndo: (a: number) => number;
     readonly pptxdocument_clearUpdateObservation: (a: number) => void;
     readonly pptxdocument_clientId: (a: number) => number;
+    readonly pptxdocument_deleteParagraphBreakJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly pptxdocument_deleteSlideJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly pptxdocument_deleteTextJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly pptxdocument_drainUpdateEvent: (a: number) => [number, number];

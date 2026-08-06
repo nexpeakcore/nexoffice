@@ -252,6 +252,19 @@ impl Presentation {
             .insert_paragraph_break(context, story_id, index)?)
     }
 
+    /// Joins the paragraph that ends at `index` with the one after it, the
+    /// inverse of [`Presentation::insert_paragraph_break`].
+    pub fn delete_paragraph_break(
+        &self,
+        context: &EditCtx,
+        story_id: &str,
+        index: u32,
+    ) -> Result<TextReceipt> {
+        Ok(self
+            .session
+            .delete_paragraph_break(context, story_id, index)?)
+    }
+
     pub fn register_font(
         &mut self,
         family: &str,

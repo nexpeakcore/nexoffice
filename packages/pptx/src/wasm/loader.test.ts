@@ -9,7 +9,17 @@ import type {
   TextStyle,
   TextStyleSnapshot,
 } from '../index';
-import { initWasm, openPresentation } from '../index';
+import { initWasm, openPresentation, saveFault } from '../index';
+
+/** The value a call threw, so a test can read it instead of only its message. */
+function caught(operation: () => unknown): unknown {
+  try {
+    operation();
+  } catch (error) {
+    return error;
+  }
+  throw new Error('the call was expected to throw and did not');
+}
 
 const root = resolve(import.meta.dir, '../../../..');
 let handle: PresentationHandle;
@@ -111,7 +121,63 @@ describe('PPTX wasm boundary', () => {
     reopened.dispose();
 
     editor.moveShape(snapshot.slides[0].id, snapshot.slides[0].shapes[0].id, 10, 20);
-    expect(() => editor.save()).toThrow(/cannot save yet/);
+    expect(saveFault(caught(() => editor.save()))).toMatchObject({
+      code: 'unprojectable',
+      undoingHelps: true,
+    });
+    editor.dispose();
+  });
+
+  // The message is not the signal. A moved shape and a replica that has no
+  // source bytes both stop a save, but only the first is fixed by undoing
+  // something — a host that cannot tell them apart offers a way out of one
+  // that does not exist for the other.
+  test('tells the ways a save can stop apart by code, not by wording', () => {
+    const editor = openPresentation(fixture, { clientId: 9301 });
+    const snapshot = editor.snapshot();
+    editor.moveShape(snapshot.slides[0].id, snapshot.slides[0].shapes[0].id, 10, 20);
+    const refused = saveFault(caught(() => editor.save()));
+    expect(refused?.code).toBe('unprojectable');
+    expect(refused?.undoingHelps).toBe(true);
+    expect(refused?.reason).not.toContain('cannot save yet');
+    expect(refused?.reason.length).toBeGreaterThan(0);
+
+    const replica = openPresentation(new Uint8Array(), {
+      clientId: 9302,
+      initialUpdate: editor.encodeStateAsUpdate(),
+    });
+    const unsavable = saveFault(caught(() => replica.save()));
+    expect(unsavable?.code).toBe('unsavable');
+    expect(unsavable?.undoingHelps).toBe(false);
+    replica.dispose();
+
+    // A disposed handle throws before the writer is ever asked, so there is no
+    // fault to read — and reading one anyway is how a plain failure ends up
+    // offering to throw away work.
+    editor.dispose();
+    expect(saveFault(caught(() => editor.save()))).toBeNull();
+    expect(saveFault(new Error('this deck holds a change the PPTX writer cannot save yet: x')))
+      .toBeNull();
+    expect(saveFault({ code: 'not-a-fault', reason: 'x' })).toBeNull();
+    expect(saveFault(undefined)).toBeNull();
+  });
+
+  test('saves a paragraph split and a merge back into the file', () => {
+    const editor = openPresentation(fixture, { clientId: 9201 });
+    const story = firstStory(editor.snapshot().slides.flatMap((slide) => slide.shapes));
+    const before = editor.story(story.id).paragraphs.length;
+    const head = editor.story(story.id).paragraphs[0].runs[0].text.length;
+
+    editor.insertParagraphBreak(story.id, head);
+    const split = openPresentation(editor.save(), { clientId: 9202 });
+    expect(split.story(story.id).paragraphs.length).toBe(before + 1);
+    split.dispose();
+
+    editor.deleteParagraphBreak(story.id, head);
+    const merged = openPresentation(editor.save(), { clientId: 9203 });
+    expect(merged.story(story.id).paragraphs.length).toBe(before);
+    expect(plainText(merged.story(story.id))).toBe(plainText(editor.story(story.id)));
+    merged.dispose();
     editor.dispose();
   });
 
@@ -184,6 +250,12 @@ function caretStyle(style: TextStyleSnapshot): TextStyle {
     fontFamily: style.fontFamily ?? undefined,
     underline: style.underline ?? undefined,
   };
+}
+
+function plainText(story: StorySnapshot): string {
+  return story.paragraphs
+    .map((paragraph) => paragraph.runs.map((run) => run.text).join(''))
+    .join('\n');
 }
 
 function shapeSnapshot(shapeId: string) {

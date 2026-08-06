@@ -184,6 +184,12 @@ impl DeckSession {
         })
     }
 
+    /// Splits the paragraph at `index` in two, the way pressing Enter does.
+    ///
+    /// The new paragraph mark carries the level, alignment and bullet of the
+    /// paragraph it splits, so both halves stay the list item, the indent and
+    /// the alignment the author gave the paragraph — which is what PowerPoint
+    /// writes into the `<a:pPr>` of a split paragraph.
     pub fn insert_paragraph_break(
         &self,
         context: &crate::EditCtx,
@@ -199,6 +205,10 @@ impl DeckSession {
                 length: final_pilcrow,
             });
         }
+        let split = pilcrows(&story, &txn)
+            .into_iter()
+            .find(|(position, _)| *position >= index)
+            .map(|(_, pilcrow)| paragraph_properties(&pilcrow, &txn));
         let paragraph_id = self.next_id("para");
         let pilcrow = story.insert_embed_with_attributes(
             &mut txn,
@@ -209,12 +219,98 @@ impl DeckSession {
         pilcrow.insert(&mut txn, KIND, PILCROW_KIND);
         pilcrow.insert(&mut txn, PARA_ID, paragraph_id);
         pilcrow.insert(&mut txn, "level", 0_f64);
+        if let Some(properties) = split {
+            write_paragraph_properties(&pilcrow, &mut txn, properties);
+        }
         Ok(TextReceipt {
             story_id: story_id.to_owned(),
             start: index,
             end: index + 1,
             text: "\n".to_owned(),
         })
+    }
+
+    /// Joins the paragraph that ends at `index` with the one after it, the way
+    /// pressing Backspace at the start of a paragraph does.
+    ///
+    /// The joined paragraph keeps the level, alignment and bullet of the first
+    /// of the two, which is what every editor does and what makes this the
+    /// exact inverse of [`DeckSession::insert_paragraph_break`].
+    pub fn delete_paragraph_break(
+        &self,
+        context: &crate::EditCtx,
+        story_id: &str,
+        index: u32,
+    ) -> EditResult<TextReceipt> {
+        let mut txn = self.transact_for(context);
+        let story = story_ref(&txn, story_id)?;
+        let final_pilcrow = final_pilcrow_index(&story, &txn)?;
+        if index >= final_pilcrow {
+            return Err(EditError::NotAParagraphBreak(index));
+        }
+        let marks = pilcrows(&story, &txn);
+        let position = marks
+            .iter()
+            .position(|(position, _)| *position == index)
+            .ok_or(EditError::NotAParagraphBreak(index))?;
+        let properties = paragraph_properties(&marks[position].1, &txn);
+        let survivor = marks
+            .get(position + 1)
+            .map(|(_, pilcrow)| pilcrow.clone())
+            .ok_or(EditError::NotAParagraphBreak(index))?;
+        story.remove_range(&mut txn, index, 1);
+        write_paragraph_properties(&survivor, &mut txn, properties);
+        Ok(TextReceipt {
+            story_id: story_id.to_owned(),
+            start: index,
+            end: index + 1,
+            text: "\n".to_owned(),
+        })
+    }
+}
+
+const PARAGRAPH_KEYS: [&str; 3] = ["level", "alignment", "bulletJson"];
+
+fn pilcrows<T: ReadTxn>(story: &TextRef, txn: &T) -> Vec<(u32, MapRef)> {
+    let mut marks = Vec::new();
+    let mut offset = 0;
+    for diff in story.diff(txn, YChange::identity) {
+        let length = out_len(&diff.insert);
+        if let Out::YMap(map) = diff.insert {
+            marks.push((offset, map));
+        }
+        offset += length;
+    }
+    marks
+}
+
+fn paragraph_properties<T: ReadTxn>(pilcrow: &MapRef, txn: &T) -> Vec<(&'static str, Option<Any>)> {
+    PARAGRAPH_KEYS
+        .iter()
+        .map(|key| {
+            let value = match pilcrow.get(txn, key) {
+                Some(Out::Any(value)) => Some(value),
+                _ => None,
+            };
+            (*key, value)
+        })
+        .collect()
+}
+
+fn write_paragraph_properties(
+    pilcrow: &MapRef,
+    txn: &mut TransactionMut<'_>,
+    properties: Vec<(&'static str, Option<Any>)>,
+) {
+    for (key, value) in properties {
+        match value {
+            Some(value) => {
+                pilcrow.insert(txn, key, value);
+            }
+            None => {
+                pilcrow.remove(txn, key);
+            }
+        }
     }
 }
 
@@ -431,7 +527,10 @@ fn insert_option(attrs: &mut Attrs, key: &str, value: Option<Any>) {
     }
 }
 
-fn style_from_run_properties(properties: &RunProperties, theme: Option<&Theme>) -> TextStyle {
+pub(crate) fn style_from_run_properties(
+    properties: &RunProperties,
+    theme: Option<&Theme>,
+) -> TextStyle {
     TextStyle {
         bold: properties.bold,
         italic: properties.italic,
