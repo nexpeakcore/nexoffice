@@ -186,6 +186,15 @@ function collectShapeFonts(
  * knowable once it is parsed. Registering the rest afterwards is what stops the
  * screen measuring Chinese text with a Latin font while the PDF measures it
  * with the right one.
+ *
+ * Both registrations are needed and they are not the same one. The engine's is
+ * what the layout measures with; the document's is what the canvas paints with,
+ * because the canvas asks CSS for the family the display list names. Doing only
+ * the first lays the text out at the right widths and then draws it in whatever
+ * the browser substitutes.
+ *
+ * The editor cannot be handed these through its `fonts` prop instead: changing
+ * it reopens the presentation, which would throw away everything typed since.
  */
 export async function registerDeckFonts(
   handle: { registerFont: (face: PptxFontFace) => number },
@@ -203,6 +212,8 @@ export async function registerDeckFonts(
     try {
       const face = resolvePresentationFace(request.family, request.bold, request.italic)
       handle.registerFont({ ...request, bytes: await loadPresentationFaceBytes(face) })
+      await registerBundledFontFace(face, request.family)
+      await registerMetricAlias(face)
       added += 1
     } catch {
       // One family failing to load must not cost the deck the rest of them.
