@@ -15,7 +15,7 @@ categories = ["parser-implementations", "rendering"]
 docx-edit.workspace = true
 docx-layout.workspace = true
 docx-parse.workspace = true
-sha2 = "0.10"
+sha2 = "0.11"
 
 [dev-dependencies]
 ooxml-opc.workspace = true
