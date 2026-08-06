@@ -11,7 +11,7 @@ permissions:
 jobs:
   packages:
     name: Package gate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, nexoffice]
     steps:
       - uses: actions/checkout@v7
 
@@ -51,7 +51,7 @@ jobs:
 
   audit:
     name: Security audit
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, nexoffice]
     steps:
       - uses: actions/checkout@v7
 
@@ -71,7 +71,7 @@ jobs:
 
   rust:
     name: Rust gate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, nexoffice]
     steps:
       - uses: actions/checkout@v7
 
@@ -109,8 +109,14 @@ jobs:
         if: steps.ws.outputs.present == 'true'
         run: node scripts/publish-crates.mjs --dry-run
 
+      # Run as a plain binary rather than through cargo-deny-action, which is a
+      # Docker container action and so refuses to start anywhere but Linux. The
+      # version is the one that action pins, so the same advisories, licences,
+      # bans and sources are enforced as before the runner moved.
+      - name: Install cargo-deny
+        if: steps.ws.outputs.present == 'true'
+        run: cargo install cargo-deny --version 0.20.2 --locked
+
       - name: License and advisory gate
         if: steps.ws.outputs.present == 'true'
-        uses: EmbarkStudios/cargo-deny-action@v2.1.1
-        with:
-          command: check bans licenses advisories sources
+        run: cargo deny check bans licenses advisories sources
