@@ -53,7 +53,7 @@ impl DeckSession {
     pub fn open(bytes: &[u8], client_id: u64) -> EditResult<Self> {
         let package =
             pptx_parse::parse_pptx(bytes).map_err(|error| EditError::Parse(error.to_string()))?;
-        let fingerprint = format!("{:x}", Sha256::digest(bytes));
+        let fingerprint = hex_digest(&Sha256::digest(bytes));
         Self::from_package_with_fingerprint(package, fingerprint, client_id)
     }
 
@@ -61,7 +61,7 @@ impl DeckSession {
     pub fn from_package(package: PptxPackage, client_id: u64) -> EditResult<Self> {
         let bytes = pptx_parse::write_pptx(&package)
             .map_err(|error| EditError::Parse(error.to_string()))?;
-        let fingerprint = format!("{:x}", Sha256::digest(bytes));
+        let fingerprint = hex_digest(&Sha256::digest(bytes));
         Self::from_package_with_fingerprint(package, fingerprint, client_id)
     }
 
@@ -295,4 +295,38 @@ fn validate_state_vector_entry_count(bytes: &[u8]) -> Result<(), String> {
         return Err("state vector entry count exceeds its payload".to_owned());
     }
     Ok(())
+}
+
+/// Lowercase hex of a digest.
+///
+/// sha2 0.11 returns an `Array` where 0.10 returned a `GenericArray`, and only
+/// the latter formatted with `{:x}`. These strings are persisted deck
+/// fingerprints, so the encoding has to stay byte for byte what the old
+/// formatter produced, which is what the test below pins.
+fn hex_digest(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+#[cfg(test)]
+mod hex_digest_tests {
+    use super::hex_digest;
+    use sha2::{Digest, Sha256};
+
+    /// The published SHA-256 of "abc", lowercase and unseparated — the exact
+    /// shape `{:x}` gave, so a fingerprint written before this change still
+    /// matches one written after.
+    #[test]
+    fn matches_the_formatter_it_replaced() {
+        assert_eq!(
+            hex_digest(&Sha256::digest(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(hex_digest(&[0x00, 0x0f, 0xff]), "000fff");
+        assert_eq!(hex_digest(&[]), "");
+    }
 }

@@ -235,7 +235,7 @@ pub fn parse_docx_s9_wire(
     let digest = options
         .determinism_seed
         .clone()
-        .unwrap_or_else(|| format!("{:x}", Sha256::digest(data)));
+        .unwrap_or_else(|| crate::canonical::hex_digest(&Sha256::digest(data)));
     let mut ids = HexIdAllocator::from_sha256(&digest)?;
 
     let document_part = find_part(&parts, "word/document.xml");

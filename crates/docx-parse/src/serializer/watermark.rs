@@ -292,7 +292,7 @@ mod tests {
         let xml = serialize_watermark(&watermark);
         assert_eq!(xml.len(), 1_335);
         assert_eq!(
-            format!("{:x}", Sha256::digest(xml.as_bytes())),
+            crate::canonical::hex_digest(&Sha256::digest(xml.as_bytes())),
             "d90d90638898524669dc4c4705f5743396b482d825fd23de2e82b98ca634a8e9"
         );
         assert!(xml.starts_with(
@@ -347,7 +347,7 @@ mod tests {
         let xml = serialize_watermark(&watermark);
         assert_eq!(xml.len(), 1_166);
         assert_eq!(
-            format!("{:x}", Sha256::digest(xml.as_bytes())),
+            crate::canonical::hex_digest(&Sha256::digest(xml.as_bytes())),
             "b8cbeb6d07e256a41ee355bcf6bad629b3c04c736d435cac21feb22c83c2d58d"
         );
         assert!(xml.contains("width:155.7pt;height:77.85pt;z-index"));
