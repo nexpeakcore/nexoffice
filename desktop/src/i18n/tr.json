@@ -83,6 +83,12 @@
       "dontSave": "Kaydetme",
       "cancel": "İptal"
     },
+    "saveRefused": {
+      "message": "NexOffice bu değişikliği {name} dosyasına henüz kaydedemiyor",
+      "detail": "{message}\n\nHiçbir şey yazılmadı, dolayısıyla diskteki dosya değişmedi. Kaydetmeden devam ederseniz son kaydetmeden bu yana yaptığınız tüm düzenlemeleri kaybedersiniz — yalnızca bu değişikliği değil.",
+      "discard": "Tüm Düzenlemeleri At",
+      "keepEditing": "Düzenlemeye Devam Et"
+    },
     "pdfTruncated": {
       "message": "PDF dışa aktarma kısaltıldı",
       "detail": "Belge {cap} sayfalık dışa aktarma sınırını aşıyor; yalnızca ilk {pages} sayfa dışa aktarıldı."
@@ -108,7 +114,7 @@
   },
   "exportStale": {
     "message": "{name} açıldığı haliyle dışa aktarılsın mı?",
-    "detail": "Bu sunu açıldığından beri değişti, ancak sunu düzenlemeleri henüz kaydedilemiyor veya dışa aktarılamıyor. PDF, dosyanın açıldığı halini içerecek — düzenlemeleriniz onda görünmeyecek.",
+    "detail": "NexOffice bu sunudaki değişikliklerden birini henüz yazamıyor, bu yüzden PDF yalnızca dosyanın açıldığı andaki halini içerebilir — düzenlemelerinizin hiçbiri onda görünmeyecek, yalnızca o değişiklik değil.",
     "cancel": "İptal",
     "confirm": "Açıldığı haliyle dışa aktar"
   },
@@ -121,7 +127,7 @@
     "saved": "{path} kaydedildi",
     "saveCanceled": "Kaydetme iptal edildi",
     "saveFailed": "Kaydetme başarısız: {message}",
-    "presentationSaveUnsupported": "Sunuları kaydetme henüz desteklenmiyor — düzenlemeler bu oturumda kalır",
+    "saveRefused": "Kaydedilmedi — {message}",
     "openFirst": "Önce bir belge açın",
     "openWordFirst": "Önce bir Word belgesi açın",
     "exportingPdf": "PDF dışa aktarılıyor…",
@@ -133,7 +139,7 @@
     "truncatedSuffix": " — sayfa sınırında kısaltıldı",
     "skippedSuffixOne": " — 1 slayt işlenemedi ve atlandı",
     "skippedSuffixMany": " — {slides} slayt işlenemedi ve atlandı",
-    "asOpenedSuffix": " — sunu açıldığı haliyle; düzenlemeleriniz dahil değil",
+    "asOpenedSuffix": " — sunu tam olarak açıldığı haliyle; düzenlemelerinizin hiçbiri dahil değil",
     "wordCount": "Sözcük: {words} · Karakter: {characters} · Sayfa {page}/{pages}",
     "wordCountSlides": "Sözcük: {words} · Karakter: {characters} · Slayt {slide}/{slides}",
     "frozeTopRow": "Üst satır donduruldu",
@@ -148,7 +154,7 @@
     "spellingOk": "Yazım doğru",
     "loadingDictionary": "Sözlük yükleniyor…",
     "dictError": "Sözlük hatası",
-    "presentationSaveUnsupported": "Düzenlendi — sunu düzenlemeleri henüz kaydedilemiyor"
+    "saveRefused": "Bu değişiklik henüz kaydedilemiyor"
   },
   "spellPanel": {
     "title": "Yazım Denetimi",

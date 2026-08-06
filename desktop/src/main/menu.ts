@@ -62,13 +62,7 @@ export function buildMenu(context: MenuContext): Menu {
   const hasZoom = context.documentKind !== null
   const hasFind = context.documentKind === 'docx'
   const hasFreeze = context.documentKind === 'xlsx'
-  // Word count and spell check only read text, so they serve a presentation
-  // too even though its edits can never be saved.
   const hasProofing = context.documentKind === 'docx' || context.documentKind === 'pptx'
-  // The pptx engine holds edits in its CRDT without a PresentationML writer, so
-  // a presentation has no bytes to save. PDF export renders from the bytes the
-  // deck opened with, so it stays available for every kind.
-  const canSave = context.documentKind !== 'pptx'
   const canExportPdf = context.documentKind !== null
   // What the focused editor says its clipboard verbs can act on right now: the
   // pptx editor has no shape clipboard, so cut, copy, paste and delete would
@@ -104,16 +98,10 @@ export function buildMenu(context: MenuContext): Menu {
         { label: t('menu.file.open'), accelerator: 'CmdOrCtrl+O', click: send('file:open') },
         { label: t('menu.file.openRecent'), submenu: openRecentSubmenu(context) },
         { type: 'separator' },
-        {
-          label: t('menu.file.save'),
-          accelerator: 'CmdOrCtrl+S',
-          enabled: canSave,
-          click: send('file:save'),
-        },
+        { label: t('menu.file.save'), accelerator: 'CmdOrCtrl+S', click: send('file:save') },
         {
           label: t('menu.file.saveAs'),
           accelerator: 'CmdOrCtrl+Shift+S',
-          enabled: canSave,
           click: send('file:saveAs'),
         },
         { type: 'separator' },

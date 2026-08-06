@@ -47,6 +47,10 @@ const NO_SELECTION: PptxEditorSelectionState = {
 }
 
 export interface PptxEditorViewRef {
+  // Projects the deck's edits back onto the parts it was opened with. Throws,
+  // naming the change, when the deck holds something the PresentationML writer
+  // cannot express — the caller must show that message rather than replace it.
+  save: () => Uint8Array | null
   getText: () => string
   getStats: () => EditorStats | null
   getSelectionState: () => PptxEditorSelectionState
@@ -100,8 +104,16 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
       slidesRef.current = Math.max(1, snapshot.slides.length)
     }, [])
 
+    // This view is not keyed by document, so opening another deck reuses the
+    // instance and every ref on it. The editor for the new deck arrives later,
+    // asynchronously, and until it does `apiRef` would still answer for the
+    // deck that just closed — a save would write the old deck's bytes to the
+    // new deck's path, and undo would edit a document nobody is looking at.
+    // Dropping the handle here makes every command a no-op until the editor
+    // for this deck reports ready.
     useEffect(() => {
       readyRef.current = false
+      apiRef.current = null
       textRef.current = ''
       wordsRef.current = 0
       slidesRef.current = 1
@@ -123,6 +135,10 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
     }, [])
 
     useImperativeHandle(ref, () => ({
+      // Null until this deck's editor is ready, which the caller reads as
+      // "no editor yet" and falls back to the bytes the document was opened
+      // with — the right bytes for this deck, rather than the last one's.
+      save: () => (readyRef.current ? (apiRef.current?.handle.save() ?? null) : null),
       getText: () => textRef.current,
       getSelectionState: () => apiRef.current?.getSelectionState() ?? selectionRef.current,
       getStats: () =>

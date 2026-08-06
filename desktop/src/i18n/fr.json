@@ -83,6 +83,12 @@
       "dontSave": "Ne pas enregistrer",
       "cancel": "Annuler"
     },
+    "saveRefused": {
+      "message": "NexOffice ne peut pas encore enregistrer cette modification dans {name}",
+      "detail": "{message}\n\nRien n'a été écrit : le fichier sur le disque est inchangé. Si vous continuez sans enregistrer, vous perdez toutes les modifications faites depuis le dernier enregistrement — pas seulement celle-ci.",
+      "discard": "Abandonner toutes les modifications",
+      "keepEditing": "Continuer à modifier"
+    },
     "pdfTruncated": {
       "message": "Export PDF tronqué",
       "detail": "Le document dépasse la limite d'export de {cap} pages ; seules les {pages} premières pages ont été exportées."
@@ -108,7 +114,7 @@
   },
   "exportStale": {
     "message": "Exporter {name} tel qu'il a été ouvert ?",
-    "detail": "Cette présentation a changé depuis son ouverture, mais les modifications de présentation ne peuvent pas encore être enregistrées ni exportées. Le PDF contiendra le fichier tel qu'il a été ouvert — vos modifications n'y apparaîtront pas.",
+    "detail": "NexOffice ne peut pas encore écrire l'une des modifications de cette présentation ; le PDF ne peut donc contenir que le fichier exactement tel qu'il a été ouvert — aucune de vos modifications n'y apparaîtra, pas seulement celle-là.",
     "cancel": "Annuler",
     "confirm": "Exporter tel qu'ouvert"
   },
@@ -121,7 +127,7 @@
     "saved": "{path} enregistré",
     "saveCanceled": "Enregistrement annulé",
     "saveFailed": "Échec de l'enregistrement : {message}",
-    "presentationSaveUnsupported": "L'enregistrement des présentations n'est pas encore pris en charge — les modifications restent dans cette session",
+    "saveRefused": "Non enregistré — {message}",
     "openFirst": "Ouvrez d'abord un document",
     "openWordFirst": "Ouvrez d'abord un document Word",
     "exportingPdf": "Export PDF en cours…",
@@ -133,7 +139,7 @@
     "truncatedSuffix": " — tronqué à la limite de pages",
     "skippedSuffixOne": " — 1 diapositive n'a pas pu être rendue et a été omise",
     "skippedSuffixMany": " — {slides} diapositives n'ont pas pu être rendues et ont été omises",
-    "asOpenedSuffix": " — la présentation telle qu'elle a été ouverte ; vos modifications ne sont pas incluses",
+    "asOpenedSuffix": " — la présentation exactement telle qu'elle a été ouverte ; aucune de vos modifications n'est incluse",
     "wordCount": "Mots : {words} · Caractères : {characters} · Page {page}/{pages}",
     "wordCountSlides": "Mots : {words} · Caractères : {characters} · Diapositive {slide}/{slides}",
     "frozeTopRow": "Première ligne figée",
@@ -148,7 +154,7 @@
     "spellingOk": "Orthographe OK",
     "loadingDictionary": "Chargement du dictionnaire…",
     "dictError": "Erreur de dictionnaire",
-    "presentationSaveUnsupported": "Modifié — les modifications de présentation ne peuvent pas encore être enregistrées"
+    "saveRefused": "Cette modification ne peut pas encore être enregistrée"
   },
   "spellPanel": {
     "title": "Vérification orthographique",

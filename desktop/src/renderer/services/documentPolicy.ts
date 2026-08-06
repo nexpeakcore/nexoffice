@@ -1,30 +1,9 @@
+import { saveFault } from '@betteroffice/pptx'
 import {
   ALL_EDIT_CAPABILITIES,
   type DocumentKind,
   type EditCapabilities,
 } from '../../shared/ipc.js'
-
-// The pptx engine keeps edits in its CRDT and never projects them back into
-// PresentationML, so there is no serializer to write an edited deck with.
-// Saving the bytes it opened with would clear a dirty flag over a file that
-// still holds the original content, so a presentation is never dirty and never
-// saved.
-export function canSave(kind: DocumentKind): boolean {
-  return kind !== 'pptx'
-}
-
-// The missing serializer also decides what an export renders: with nothing to
-// write, both save and export can only reach for the bytes the document opened
-// with, so once such a document is edited the PDF no longer matches the screen.
-// This is the one condition behind the footer notice and the export prompt —
-// it is deliberately not the dirty flag, which would trap the window in
-// `ensureSaved` for a document that can never be saved.
-export function hasUnsavableEdits(
-  kind: DocumentKind | null,
-  changedSinceOpen: boolean,
-): boolean {
-  return kind !== null && !canSave(kind) && changedSinceOpen
-}
 
 // The part of the pptx editor's selection state the Edit menu depends on,
 // declared structurally so this stays a plain policy module.
@@ -52,14 +31,83 @@ export function editCapabilities(
   }
 }
 
-export function exportedStatusKey(pages: number | null | undefined): string {
-  if (pages == null) return 'status.exported'
-  return pages === 1 ? 'status.exportedPagesOne' : 'status.exportedPagesMany'
-}
-
 export interface StatusSuffix {
   key: string
   vars?: Record<string, string | number>
+}
+
+export interface StatusMessage {
+  key: string
+  vars?: Record<string, string | number>
+  suffixes?: StatusSuffix[]
+}
+
+// How one attempt to write the open document ended.
+//
+// A refusal is not a failure. The PresentationML writer expresses text edits
+// inside a single run and refuses everything else by name — a paragraph break,
+// a formatting patch, a moved shape, an added slide — so its message is the
+// only account of what cannot be written, and it reaches the user whole. A
+// failure is the write itself going wrong (a full disk, a revoked path) and
+// says nothing about the edit.
+export type SaveOutcome =
+  | { status: 'saved'; path: string }
+  | { status: 'canceled' }
+  | { status: 'refused'; message: string }
+  | { status: 'failed'; message: string }
+
+// What the presentation writer said it could not express, or null when the
+// throw meant something else.
+//
+// The writer classifies its own failures and the boundary carries the code, so
+// this asks `undoingHelps` rather than reading the message: that is true for
+// exactly the fault an undo clears, and it is the only one worth offering an
+// escape for. A blown write budget, a broken zip, a deck that read back wrong
+// and a replica that never had source bytes all say `false` — offering to
+// abandon edits over any of them throws away work that the change the user
+// made did not cost.
+//
+// The reason, not the whole message, is what comes back: the message repeats
+// the writer's own preamble, which the status line already supplies.
+export function saveRefusal(error: unknown): string | null {
+  const fault = saveFault(error)
+  return fault?.undoingHelps === true ? fault.reason : null
+}
+
+export function saveOutcomeStatus(outcome: SaveOutcome): StatusMessage {
+  switch (outcome.status) {
+    case 'saved':
+      return { key: 'status.saved', vars: { path: outcome.path } }
+    case 'canceled':
+      return { key: 'status.saveCanceled' }
+    case 'refused':
+      return { key: 'status.saveRefused', vars: { message: outcome.message } }
+    case 'failed':
+      return { key: 'status.saveFailed', vars: { message: outcome.message } }
+  }
+}
+
+// What the unsaved-changes loop does next with the save it asked for.
+//
+// Only a refusal opens the escape prompt: nothing was written, the change is
+// still in the deck, and asking for the same save again would refuse the same
+// way — so the user is offered the exit that does not need a successful save,
+// carrying the reason with it. A canceled dialog or a failed write is the
+// user's own next move, and neither closes the document behind their back.
+export type UnsavedStep =
+  | { step: 'saved' }
+  | { step: 'stop' }
+  | { step: 'escape'; message: string }
+
+export function unsavedStep(outcome: SaveOutcome): UnsavedStep {
+  if (outcome.status === 'saved') return { step: 'saved' }
+  if (outcome.status === 'refused') return { step: 'escape', message: outcome.message }
+  return { step: 'stop' }
+}
+
+export function exportedStatusKey(pages: number | null | undefined): string {
+  if (pages == null) return 'status.exported'
+  return pages === 1 ? 'status.exportedPagesOne' : 'status.exportedPagesMany'
 }
 
 // Stopping at the page cap and failing to render a page are different things

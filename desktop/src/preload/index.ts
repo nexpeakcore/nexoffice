@@ -8,6 +8,7 @@ import {
   type OpenedDocument,
   type PrintJob,
   type PrintRenderResult,
+  type RefusedChoice,
   type SaveResult,
   type UnsavedChoice,
   type UpdateEvent,
@@ -51,6 +52,9 @@ const api = {
 
   confirmUnsaved: (name: string): Promise<UnsavedChoice> =>
     ipcRenderer.invoke(IPC.confirmUnsaved, name),
+
+  confirmSaveRefused: (name: string, message: string): Promise<RefusedChoice> =>
+    ipcRenderer.invoke(IPC.confirmSaveRefused, { name, message }),
 
   webEditAction: (action: WebEditAction): void => ipcRenderer.send(IPC.webEditAction, action),
 

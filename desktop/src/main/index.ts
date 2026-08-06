@@ -1,6 +1,7 @@
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { access, readFile, writeFile } from 'node:fs/promises'
 import { app, BrowserWindow, dialog, ipcMain, protocol, screen, shell, type Rectangle } from 'electron'
+import { closeDecision } from './closePolicy.js'
 import { buildMenu } from './menu.js'
 import {
   addRecent,
@@ -37,6 +38,7 @@ import {
   type OpenedDocument,
   type PrintJob,
   type PrintRenderResult,
+  type RefusedChoice,
   type SaveRequest,
   type SaveResult,
   type UnsavedChoice,
@@ -47,6 +49,10 @@ const isDev = !app.isPackaged
 let mainWindow: BrowserWindow | null = null
 let rendererReady = false
 let quitting = false
+/** Whether a close is already waiting on the renderer's answer. */
+let closeRequested = false
+/** Whether the renderer has stopped answering input, per Electron. */
+let rendererUnresponsive = false
 let activeDocumentKind: DocumentKind | null = null
 let activeEditCapabilities: EditCapabilities = ALL_EDIT_CAPABILITIES
 const pendingOpenPaths: string[] = []
@@ -196,16 +202,56 @@ function createWindow(): BrowserWindow {
 
   window.webContents.on('will-navigate', (event) => event.preventDefault())
 
+  // Vetoing the close is how the renderer gets to ask about unsaved work, and
+  // it is also how the app becomes impossible to quit if the renderer never
+  // answers. The wait ends when the renderer has demonstrably stopped
+  // answering — not when the user asks a second time, and not on a timer.
+  //
+  // Both of the cheaper rules lose documents. A second attempt cannot be told
+  // apart from impatience: a save takes seconds on a large deck, and a user who
+  // presses again during one would have the window destroyed mid-write. A
+  // timer cannot be told apart from a prompt sitting on screen waiting to be
+  // read. `unresponsive` is the one signal that means the renderer itself has
+  // stopped, so it is the only one allowed to end the wait.
   window.on('close', (event) => {
-    if (!rendererReady || window.webContents.isDestroyed()) return
+    const decision = closeDecision({
+      rendererReady,
+      webContentsDestroyed: window.webContents.isDestroyed(),
+      closeRequested,
+      rendererUnresponsive,
+    })
+    if (decision === 'close') return
     event.preventDefault()
+    if (decision === 'wait') return
+    closeRequested = true
     window.webContents.send(IPC.closeRequest)
+  })
+
+  window.webContents.on('unresponsive', () => {
+    rendererUnresponsive = true
+  })
+  window.webContents.on('responsive', () => {
+    rendererUnresponsive = false
+  })
+
+  // A dead renderer will never answer the handshake, so the window stops
+  // waiting on one. It is not destroyed here: quitting the app out from under
+  // the user with no word of why is its own failure, and on Windows and Linux
+  // destroying the last window quits. Marking it not-ready is enough — the
+  // next close goes straight through.
+  window.webContents.on('render-process-gone', (_event, details) => {
+    if (details.reason === 'clean-exit') return
+    rendererReady = false
+    rendererUnresponsive = false
+    closeRequested = false
   })
 
   window.on('closed', () => {
     if (mainWindow === window) {
       mainWindow = null
       rendererReady = false
+      closeRequested = false
+      rendererUnresponsive = false
     }
   })
 
@@ -466,6 +512,36 @@ function registerIpc(): void {
     return response === 0 ? 'save' : response === 1 ? 'discard' : 'cancel'
   })
 
+  // Shown only after a save the writer refused, so the buttons are the two
+  // moves that exist: leave the change behind, or keep the document open. The
+  // refusal names what could not be written and is quoted whole — it is the
+  // only thing that tells the user which change to take back.
+  //
+  // Keeping the document open is `buttons[0]`. macOS lays buttons out from
+  // there rightwards, which is where the unsaved-changes prompt just put
+  // "Save" — so the spot the hand is already moving to keeps the work rather
+  // than throwing it away.
+  ipcMain.handle(
+    IPC.confirmSaveRefused,
+    async (_event, request: { name: string; message: string }): Promise<RefusedChoice> => {
+      const owner = mainWindow
+      // Matches `confirmUnsaved`: with no window there is no document left to
+      // keep open, and answering 'cancel' here would veto a quit the user
+      // asked for without ever telling them why.
+      if (!owner || owner.isDestroyed()) return 'discard'
+
+      const { response } = await dialog.showMessageBox(owner, {
+        type: 'warning',
+        buttons: [t('dialog.saveRefused.keepEditing'), t('dialog.saveRefused.discard')],
+        defaultId: 0,
+        cancelId: 0,
+        message: t('dialog.saveRefused.message', { name: request.name }),
+        detail: t('dialog.saveRefused.detail', { message: request.message }),
+      })
+      return response === 1 ? 'discard' : 'cancel'
+    },
+  )
+
   ipcMain.handle(IPC.exportPdf, async (_event, request: ExportPdfRequest): Promise<ExportPdfResult> => {
     const owner = mainWindow
     if (!owner || owner.isDestroyed()) return { path: null, canceled: true }
@@ -586,6 +662,7 @@ function registerIpc(): void {
 
   ipcMain.on(IPC.closeResponse, (event, proceed: boolean) => {
     if (!mainWindow || event.sender !== mainWindow.webContents) return
+    closeRequested = false
     if (!proceed) {
       quitting = false
       return

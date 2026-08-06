@@ -83,6 +83,12 @@
       "dontSave": "Không lưu",
       "cancel": "Hủy"
     },
+    "saveRefused": {
+      "message": "NexOffice chưa thể lưu thay đổi này vào {name}",
+      "detail": "{message}\n\nKhông có gì được ghi, nên tệp trên đĩa vẫn giữ nguyên. Nếu bạn tiếp tục mà không lưu, bạn sẽ mất mọi chỉnh sửa kể từ lần lưu gần nhất — không chỉ riêng thay đổi này.",
+      "discard": "Bỏ mọi chỉnh sửa",
+      "keepEditing": "Tiếp tục chỉnh sửa"
+    },
     "pdfTruncated": {
       "message": "Xuất PDF bị cắt bớt",
       "detail": "Tài liệu vượt quá giới hạn xuất {cap} trang; chỉ {pages} trang đầu được xuất."
@@ -108,7 +114,7 @@
   },
   "exportStale": {
     "message": "Xuất {name} theo bản đã mở?",
-    "detail": "Bản trình bày này đã thay đổi kể từ khi bạn mở, nhưng các chỉnh sửa bản trình bày chưa thể được lưu hoặc xuất. Tệp PDF sẽ chứa nội dung như lúc mở — các chỉnh sửa của bạn sẽ không xuất hiện trong đó.",
+    "detail": "NexOffice chưa ghi được một trong các thay đổi của bản trình bày này, nên tệp PDF chỉ có thể chứa nội dung đúng như lúc mở — sẽ không có chỉnh sửa nào của bạn xuất hiện trong đó, không chỉ riêng thay đổi đó.",
     "cancel": "Hủy",
     "confirm": "Xuất theo bản đã mở"
   },
@@ -121,7 +127,7 @@
     "saved": "Đã lưu {path}",
     "saveCanceled": "Đã hủy lưu",
     "saveFailed": "Lưu thất bại: {message}",
-    "presentationSaveUnsupported": "Chưa hỗ trợ lưu bản trình bày — các chỉnh sửa chỉ tồn tại trong phiên này",
+    "saveRefused": "Chưa lưu — {message}",
     "openFirst": "Hãy mở một tài liệu trước",
     "openWordFirst": "Hãy mở một tài liệu Word trước",
     "exportingPdf": "Đang xuất PDF…",
@@ -133,7 +139,7 @@
     "truncatedSuffix": " — đã cắt bớt do vượt giới hạn trang",
     "skippedSuffixOne": " — 1 trang chiếu không dựng được và đã bị bỏ qua",
     "skippedSuffixMany": " — {slides} trang chiếu không dựng được và đã bị bỏ qua",
-    "asOpenedSuffix": " — nội dung như lúc mở; không bao gồm các chỉnh sửa của bạn",
+    "asOpenedSuffix": " — nội dung đúng như lúc mở; không bao gồm bất kỳ chỉnh sửa nào của bạn",
     "wordCount": "Số từ: {words} · Ký tự: {characters} · Trang {page}/{pages}",
     "wordCountSlides": "Số từ: {words} · Ký tự: {characters} · Trang chiếu {slide}/{slides}",
     "frozeTopRow": "Đã cố định hàng đầu tiên",
@@ -148,7 +154,7 @@
     "spellingOk": "Chính tả đúng",
     "loadingDictionary": "Đang tải từ điển…",
     "dictError": "Lỗi từ điển",
-    "presentationSaveUnsupported": "Đã chỉnh sửa — chưa thể lưu các chỉnh sửa bản trình bày"
+    "saveRefused": "Chưa thể lưu thay đổi này"
   },
   "spellPanel": {
     "title": "Kiểm tra chính tả",

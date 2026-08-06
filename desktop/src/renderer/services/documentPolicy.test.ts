@@ -1,42 +1,111 @@
 import { describe, expect, test } from 'bun:test'
+import type { PptxSaveFaultCode } from '@betteroffice/pptx'
 import { createTranslator } from '../../i18n/index.js'
 import { ALL_EDIT_CAPABILITIES } from '../../shared/ipc.js'
 import {
-  canSave,
   editCapabilities,
   exportSuffixes,
   exportedStatusKey,
-  hasUnsavableEdits,
+  saveOutcomeStatus,
+  saveRefusal,
+  unsavedStep,
 } from './documentPolicy.js'
 
-describe('canSave', () => {
-  test('allows the kinds whose engines serialize', () => {
-    expect(canSave('docx')).toBe(true)
-    expect(canSave('xlsx')).toBe(true)
+const REASON = 'slide 1 shape "Title 1" added or removed a paragraph'
+
+// What the boundary actually throws: an `Error` carrying the writer's code.
+// Building it here rather than importing a class keeps the tests honest about
+// what the desktop reads — the properties, never the wording.
+function thrown(code: PptxSaveFaultCode, undoingHelps: boolean, reason = REASON): Error {
+  const error = new Error(`the writer's own sentence: ${reason}`)
+  return Object.assign(error, { code, reason, undoingHelps })
+}
+
+describe('saveRefusal', () => {
+  test('reads the writer’s account off a change an undo would clear', () => {
+    expect(saveRefusal(thrown('unprojectable', true))).toBe(REASON)
   })
 
-  test('refuses presentations', () => {
-    expect(canSave('pptx')).toBe(false)
+  // These all stop a save, and none of them is the user's change. Reading one
+  // as a refusal offers to abandon edits that nothing the user did cost — a
+  // budget wants a smaller save, a broken write wants another attempt, and a
+  // replica with no source bytes has no way out at all.
+  test('never reads a stopped save the user did not cause as a refusal', () => {
+    expect(saveRefusal(thrown('limit', false))).toBeNull()
+    expect(saveRefusal(thrown('write-failed', false))).toBeNull()
+    expect(saveRefusal(thrown('verification-failed', false))).toBeNull()
+    expect(saveRefusal(thrown('unsavable', false))).toBeNull()
+  })
+
+  // Every one of these throws from the same call site a refusal does, so
+  // classifying by where the call sat would read them all as refusals.
+  test('refuses to read a failed save as a refusal', () => {
+    expect(saveRefusal(new Error('presentation handle is disposed'))).toBeNull()
+    expect(saveRefusal(new WebAssembly.RuntimeError('unreachable'))).toBeNull()
+    expect(saveRefusal(new TypeError('doc.saveBytes is not a function'))).toBeNull()
+    expect(saveRefusal('some string the boundary threw')).toBeNull()
+    expect(saveRefusal(undefined)).toBeNull()
+  })
+
+  // The wording is not the signal. An error that quotes the writer word for
+  // word, or claims a code the writer does not issue, still carries nothing.
+  test('does not promote an error that merely reads like a refusal', () => {
+    expect(
+      saveRefusal(
+        new Error('this deck holds a change the PPTX writer cannot save yet: ' + REASON),
+      ),
+    ).toBeNull()
+    expect(
+      saveRefusal(Object.assign(new Error('x'), { code: 'made-up', undoingHelps: true })),
+    ).toBeNull()
   })
 })
 
-describe('hasUnsavableEdits', () => {
-  test('is false for a deck that has not been touched since it opened', () => {
-    expect(hasUnsavableEdits('pptx', false)).toBe(false)
+describe('saveOutcomeStatus', () => {
+  test('names the file a save wrote', () => {
+    expect(saveOutcomeStatus({ status: 'saved', path: '/decks/Deck.pptx' })).toEqual({
+      key: 'status.saved',
+      vars: { path: '/decks/Deck.pptx' },
+    })
   })
 
-  test('is true for a deck edited since it opened', () => {
-    expect(hasUnsavableEdits('pptx', true)).toBe(true)
+  test('says nothing more about a canceled dialog', () => {
+    expect(saveOutcomeStatus({ status: 'canceled' })).toEqual({ key: 'status.saveCanceled' })
   })
 
-  test('is false for savable kinds however much they changed', () => {
-    expect(hasUnsavableEdits('docx', true)).toBe(false)
-    expect(hasUnsavableEdits('xlsx', true)).toBe(false)
+  test('passes a refusal through whole rather than summarizing it', () => {
+    expect(saveOutcomeStatus({ status: 'refused', message: REASON })).toEqual({
+      key: 'status.saveRefused',
+      vars: { message: REASON },
+    })
   })
 
-  test('is false when nothing is open', () => {
-    expect(hasUnsavableEdits(null, true)).toBe(false)
-    expect(hasUnsavableEdits(null, false)).toBe(false)
+  test('keeps a refusal apart from a failed write', () => {
+    const refused = saveOutcomeStatus({ status: 'refused', message: 'x' })
+    const failed = saveOutcomeStatus({ status: 'failed', message: 'x' })
+    expect(failed).toEqual({ key: 'status.saveFailed', vars: { message: 'x' } })
+    expect(refused.key).not.toBe(failed.key)
+  })
+})
+
+describe('unsavedStep', () => {
+  test('lets the close continue once the save wrote', () => {
+    expect(unsavedStep({ status: 'saved', path: '/decks/Deck.pptx' })).toEqual({ step: 'saved' })
+  })
+
+  test('stops on a canceled save dialog rather than closing the document', () => {
+    expect(unsavedStep({ status: 'canceled' })).toEqual({ step: 'stop' })
+  })
+
+  test('stops on a failed write, which retrying may still fix', () => {
+    expect(unsavedStep({ status: 'failed', message: 'disk full' })).toEqual({ step: 'stop' })
+  })
+
+  test('offers the escape, carrying the reason, only for a refusal', () => {
+    expect(unsavedStep({ status: 'refused', message: REASON })).toEqual({
+      step: 'escape',
+      message: REASON,
+    })
   })
 })
 
@@ -169,6 +238,10 @@ describe('translated keys', () => {
       exportedStatusKey(null),
       exportedStatusKey(1),
       exportedStatusKey(7),
+      saveOutcomeStatus({ status: 'saved', path: '/decks/Deck.pptx' }).key,
+      saveOutcomeStatus({ status: 'canceled' }).key,
+      saveOutcomeStatus({ status: 'refused', message: REASON }).key,
+      saveOutcomeStatus({ status: 'failed', message: 'disk full' }).key,
       ...exportSuffixes({ truncated: true, skipped: 1, asOpened: true }).map(
         (suffix) => suffix.key,
       ),
