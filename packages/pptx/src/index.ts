@@ -22,7 +22,6 @@ export type {
 } from './collaboration';
 export { PRESENCE_LABEL_DURATION_MS, presenceColorForClientId } from './collaboration';
 export {
-  PptxSaveRefusedError,
   initWasm,
   inspectPresentation,
   isWasmAvailable,

@@ -1,4 +1,4 @@
-import { PptxSaveRefusedError } from '@betteroffice/pptx'
+import { saveFault } from '@betteroffice/pptx'
 import {
   ALL_EDIT_CAPABILITIES,
   type DocumentKind,
@@ -59,15 +59,19 @@ export type SaveOutcome =
 // What the presentation writer said it could not express, or null when the
 // throw meant something else.
 //
-// The wasm boundary hands every error out as text, so a save that was refused
-// and a save that broke are told apart in the pptx loader, which raises
-// `PptxSaveRefusedError` for the one error that means the edit cannot be
-// projected and leaves a disposed handle, a bad snapshot and a panic as plain
-// errors. Only the first is a refusal: reading the others as one would offer
-// to throw away work that retrying the save would have written, and the offer
-// is what a refusal exists to make.
+// The writer classifies its own failures and the boundary carries the code, so
+// this asks `undoingHelps` rather than reading the message: that is true for
+// exactly the fault an undo clears, and it is the only one worth offering an
+// escape for. A blown write budget, a broken zip, a deck that read back wrong
+// and a replica that never had source bytes all say `false` — offering to
+// abandon edits over any of them throws away work that the change the user
+// made did not cost.
+//
+// The reason, not the whole message, is what comes back: the message repeats
+// the writer's own preamble, which the status line already supplies.
 export function saveRefusal(error: unknown): string | null {
-  return error instanceof PptxSaveRefusedError ? error.message : null
+  const fault = saveFault(error)
+  return fault?.undoingHelps === true ? fault.reason : null
 }
 
 export function saveOutcomeStatus(outcome: SaveOutcome): StatusMessage {
