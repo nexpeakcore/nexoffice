@@ -228,6 +228,29 @@ describe('docx wasm collaboration', () => {
     }
   });
 
+  // Undo has to take back what the user did, not what the engine recorded.
+  // The capture window groups by wall-clock time, so a build whose clock
+  // outruns that window leaves one step per keystroke — five presses to take
+  // back a five-letter word. This runs the real wasm against the real
+  // `Date.now`.
+  it('takes back a run typed inside the capture window in one undo', async () => {
+    const [left] = await seededPair();
+    try {
+      left.beginUndoCapture('body');
+      const before = left.paragraphs('body')[0].text;
+      const paraId = left.paragraphs('body')[0].paraId;
+      for (let i = 0; i < 5; i += 1) {
+        left.insertText({ story: 'body', paraId, offset: i }, 'z');
+      }
+      expect(left.paragraphs('body')[0].text.length).toBe(before.length + 5);
+
+      expect(left.undo()).toBe(true);
+      expect(left.paragraphs('body')[0].text).toBe(before);
+    } finally {
+      left.destroy();
+    }
+  });
+
   it('keeps local undo isolated and preserves tracked-change attribution', async () => {
     const [left, right] = await seededPair();
     const connection = connectPair(left, right);

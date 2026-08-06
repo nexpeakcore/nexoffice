@@ -1102,6 +1102,121 @@ mod tests {
         assert_eq!(revision_author(&legal, DEL).as_deref(), Some("Alice"));
         assert_eq!(revision_author(&legal, INS).as_deref(), Some("Bob"));
     }
+
+    /// Types `count` characters one at a time, each its own transaction, the
+    /// way a keystroke arrives.
+    fn type_run(doc: &EditingDoc, count: usize) {
+        for index in 0..count {
+            doc.insert_text(
+                &local("typist"),
+                Position::new("body", index as u32),
+                "z",
+                FormatPolicy::Plain,
+            )
+            .unwrap();
+        }
+    }
+
+    /// A clock that jumps a full capture window between readings — what the
+    /// wasm build used before hosts supplied a real one. Every keystroke lands
+    /// outside the previous one's window, so nothing ever groups.
+    fn clock_past_the_window() -> std::sync::Arc<dyn yrs::sync::time::Clock> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let ticks = AtomicU64::new(0);
+        std::sync::Arc::new(move || ticks.fetch_add(UNDO_CAPTURE_TIMEOUT_MS + 1, Ordering::Relaxed))
+    }
+
+    /// A clock that moves the way a real one does, at a typing speed that keeps
+    /// each keystroke inside the previous one's window.
+    ///
+    /// It has to move: a frozen clock groups everything no matter what the
+    /// window is, so it would pass just as happily against a build whose clock
+    /// jumps past the window on every reading.
+    fn clock_inside_the_window(step_ms: u64) -> std::sync::Arc<dyn yrs::sync::time::Clock> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let ticks = AtomicU64::new(1_000);
+        std::sync::Arc::new(move || ticks.fetch_add(step_ms, Ordering::Relaxed))
+    }
+
+    #[test]
+    fn a_run_typed_inside_one_window_is_undone_by_one_press() {
+        let doc = seed("");
+        let mut undo = doc
+            .undo_scope_with_clock(&["body"], clock_inside_the_window(50))
+            .unwrap();
+        type_run(&doc, 5);
+        assert_eq!(doc.paragraphs("body").unwrap()[0].text, "zzzzz");
+
+        assert!(undo.undo());
+        assert_eq!(
+            doc.paragraphs("body").unwrap()[0].text,
+            "",
+            "one press takes back the whole run the user typed"
+        );
+        assert!(!undo.can_undo(), "and there is nothing left behind it");
+    }
+
+    /// The defect this pins: a clock that outruns the capture window turns
+    /// every keystroke into its own undo step, so taking back a five-letter
+    /// word costs five presses.
+    #[test]
+    fn a_clock_past_the_window_leaves_one_undo_step_per_keystroke() {
+        let doc = seed("");
+        let mut undo = doc
+            .undo_scope_with_clock(&["body"], clock_past_the_window())
+            .unwrap();
+        type_run(&doc, 5);
+
+        let mut presses = 0;
+        while undo.undo() {
+            presses += 1;
+            if presses > 10 {
+                break;
+            }
+        }
+        assert_eq!(presses, 5, "one press per keystroke, not one per word");
+        assert_eq!(doc.paragraphs("body").unwrap()[0].text, "");
+    }
+
+    /// The rule itself, rather than its two extremes: a pause longer than the
+    /// window starts a new step, and only a pause does. Typing a word, thinking,
+    /// then typing another leaves two things to take back — one per word.
+    #[test]
+    fn a_pause_past_the_window_starts_a_new_undo_step() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let ticks = std::sync::Arc::new(AtomicU64::new(1_000));
+        let reader = std::sync::Arc::clone(&ticks);
+        let doc = seed("");
+        let mut undo = doc
+            .undo_scope_with_clock(
+                &["body"],
+                std::sync::Arc::new(move || reader.fetch_add(50, Ordering::Relaxed)),
+            )
+            .unwrap();
+
+        type_run(&doc, 3);
+        ticks.fetch_add(UNDO_CAPTURE_TIMEOUT_MS * 2, Ordering::Relaxed);
+        for index in 3..5u32 {
+            doc.insert_text(
+                &local("typist"),
+                Position::new("body", index),
+                "z",
+                FormatPolicy::Plain,
+            )
+            .unwrap();
+        }
+        assert_eq!(doc.paragraphs("body").unwrap()[0].text, "zzzzz");
+
+        assert!(undo.undo());
+        assert_eq!(
+            doc.paragraphs("body").unwrap()[0].text,
+            "zzz",
+            "the first press takes back only what was typed after the pause"
+        );
+        assert!(undo.undo());
+        assert_eq!(doc.paragraphs("body").unwrap()[0].text, "");
+        assert!(!undo.can_undo());
+    }
 }
 
 pub mod bridge;

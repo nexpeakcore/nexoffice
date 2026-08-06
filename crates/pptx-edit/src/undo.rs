@@ -14,6 +14,14 @@ pub struct DeckUndoManager {
 
 impl DeckUndoManager {
     pub(crate) fn new(doc: &Doc, client_id: u64) -> EditResult<Self> {
+        Self::with_clock(doc, client_id, default_clock())
+    }
+
+    /// [`DeckUndoManager::new`] with the clock supplied rather than chosen.
+    ///
+    /// The clock decides what one press takes back: readings inside the capture
+    /// window group into one step, readings past it do not group at all.
+    pub(crate) fn with_clock(doc: &Doc, client_id: u64, clock: Arc<dyn Clock>) -> EditResult<Self> {
         let txn = doc.transact();
         let order = txn
             .get_array(SLIDE_ORDER)
@@ -32,7 +40,7 @@ impl DeckUndoManager {
             capture_timeout_millis: CAPTURE_TIMEOUT_MS,
             tracked_origins: HashSet::from([Origin::from(client_id)]),
             capture_transaction: None,
-            timestamp: default_clock(),
+            timestamp: clock,
             init_undo_stack: Vec::new(),
             init_redo_stack: Vec::new(),
         };
@@ -75,7 +83,14 @@ fn default_clock() -> Arc<dyn Clock> {
                 .unwrap_or_default()
         })
     }
-    #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+    #[cfg(all(target_family = "wasm", target_os = "unknown", feature = "wasm"))]
+    {
+        Arc::new(|| js_sys::Date::now() as u64)
+    }
+    // No JS to ask, so keystrokes cannot be grouped by when they happened. The
+    // deck still undoes correctly, one transaction at a time; nothing ships
+    // from this configuration.
+    #[cfg(all(target_family = "wasm", target_os = "unknown", not(feature = "wasm")))]
     {
         use std::sync::atomic::{AtomicU64, Ordering};
         let ticks = AtomicU64::new(0);
