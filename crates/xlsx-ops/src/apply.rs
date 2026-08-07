@@ -290,9 +290,11 @@ pub fn apply(wb: &mut Workbook, op: &Op) -> Result<InvertedOp, OpError> {
             range,
             format,
         } => {
+            // u64: `rows * columns` overflows the 32-bit usize on wasm32,
+            // where a wrapped product can equal a hostile payload's length.
             if format.rows == 0
                 || format.columns == 0
-                || format.formats.len() != (format.rows as usize) * (format.columns as usize)
+                || format.formats.len() as u64 != u64::from(format.rows) * u64::from(format.columns)
             {
                 return Err(OpError::InvalidStyle(
                     "captured format dimensions do not match its cells".into(),
@@ -301,7 +303,8 @@ pub fn apply(wb: &mut Workbook, op: &Op) -> Result<InvertedOp, OpError> {
             apply_range_formats(wb, *sheet, *range, |cell_format, row, col| {
                 let source_row = (row - range.start.row) % format.rows;
                 let source_col = (col - range.start.col) % format.columns;
-                let index = (source_row * format.columns + source_col) as usize;
+                let index = (u64::from(source_row) * u64::from(format.columns)
+                    + u64::from(source_col)) as usize;
                 *cell_format = format.formats[index].clone();
                 Ok(())
             })
@@ -1459,6 +1462,28 @@ mod tests {
             value: CellValue::Number { value: v },
             ..Default::default()
         }
+    }
+
+    // On wasm32 (32-bit usize) `65536 * 65536` wraps to 0 and matches an
+    // empty formats vec, so this documents that the dimension check must be
+    // 64-bit: a wrapped product must never validate a hostile payload.
+    #[test]
+    fn range_format_rejects_dimension_overflow() {
+        let mut wb = Workbook::default();
+        wb.sheets.push(Sheet::new("Sheet1"));
+        let result = apply(
+            &mut wb,
+            &Op::ApplyRangeFormat {
+                sheet: SheetId(0),
+                range: rng("A1:B2"),
+                format: crate::CapturedFormat {
+                    rows: 65536,
+                    columns: 65536,
+                    formats: Vec::new(),
+                },
+            },
+        );
+        assert!(matches!(result, Err(OpError::InvalidStyle(_))));
     }
 
     fn wb_one_sheet() -> Workbook {
