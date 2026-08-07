@@ -5,7 +5,7 @@ copyright: Copyright © 2026 Nexpeak
 # bun hoists electron to the workspace root, so electron-builder cannot resolve
 # the ^ range in package.json on its own. Keep in sync with the installed
 # version (bun pm ls electron).
-electronVersion: 40.10.6
+electronVersion: 41.10.3
 
 directories:
   output: release
