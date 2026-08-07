@@ -711,6 +711,15 @@ export function IconPageBreak(props: IconProps) {
   );
 }
 
+// Material Symbols "123" — digits one-two-three, the page-number glyph.
+export function IconPageNumber(props: IconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M188-400v-120h-40q-17 0-28.5-11.5T108-560q0-17 11.5-28.5T148-600h60q17 0 28.5 11.5T248-560v160q0 13-8.5 21.5T218-370q-13 0-21.5-8.5T188-400Zm164 0q-14 0-23-9t-9-23v-56q0-14 9-23t23-9h76v-40H340q-8 0-14-6t-6-14q0-8 6-14t14-6h96q14 0 23 9t9 23v56q0 14-9 23t-23 9h-76v40h96q8 0 14 6t6 14q0 8-6 14t-14 6H352Zm240 0q-8 0-14-6t-6-14q0-8 6-14t14-6h96v-40h-56q-8 0-14-6t-6-14q0-8 6-14t14-6h56v-40h-96q-8 0-14-6t-6-14q0-8 6-14t14-6h100q14 0 23 9t9 23v144q0 14-9 23t-23 9H592Z" />
+    </SvgIcon>
+  );
+}
+
 export function IconWatermark(props: IconProps) {
   return (
     <SvgIcon {...props}>
@@ -940,6 +949,8 @@ const iconMap: Record<string, React.ComponentType<IconProps>> = {
   more_vert: IconMoreVert,
   // Page break
   page_break: IconPageBreak,
+  // Page number field
+  page_number: IconPageNumber,
   // Watermark
   branding_watermark: IconWatermark,
   // Navigation

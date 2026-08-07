@@ -1332,6 +1332,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     handleHeaderFooterDoubleClick,
     handleBodyClick,
     handleRemoveHeaderFooter,
+    materializeHeaderFooter,
   } = useHeaderFooterEditing({
     document: history.state,
     pushDocument,
@@ -1343,6 +1344,65 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     setHfEditIsFirstPage,
     setHfEditPageIndex,
   });
+
+  // Word's "insert page number": a PAGE field lands in the footer and the
+  // footer opens so the result is visible. The layout substitutes each page's
+  // real number per page, so one field is the whole feature.
+  //
+  // Two paths on purpose. A footer that already exists is live in the engine,
+  // so its story is the single source of truth and the field must be inserted
+  // there. A document with no footer has no story to insert into — the footer
+  // is materialised with the field already inside, the same way an empty one
+  // is materialised on double-click, and seeding gives it its story.
+  const handleInsertPageNumber = useCallback(() => {
+    const pageField = {
+      instruction: 'PAGE',
+      fieldType: 'PAGE',
+      displayText: '1',
+      displayMode: 'result',
+    };
+    const refs = finalSectionProperties?.footerReferences ?? [];
+    const ref = refs.find((r) => r.type === 'default') ?? refs[0];
+    const story = ref?.rId ? `hf:${ref.rId}` : null;
+    const session = pagedEditorRef.current?.getYrsSession();
+    if (session && story && session.storyIds().includes(story)) {
+      // End of the last paragraph's content: everything before its pilcrow.
+      const segments = session.storySegments(story);
+      let end = 0;
+      for (const segment of segments) {
+        end += segment.kind === 'text' ? segment.text.length : 1;
+      }
+      if (segments.at(-1)?.kind === 'pilcrow') end -= 1;
+      session.beginUndoCapture(story);
+      session.applyRawOps(story, [
+        { op: 'insertEmbed', index: Math.max(0, end), kind: 'field', payload: { ...pageField } },
+      ]);
+      setHfEditIsFirstPage(false);
+      setHfEditPageIndex(0);
+      setHfEditPosition('footer');
+      return;
+    }
+    materializeHeaderFooter('footer', false, [
+      {
+        type: 'paragraph',
+        formatting: { alignment: 'center' },
+        content: [
+          {
+            type: 'simpleField',
+            instruction: 'PAGE',
+            fieldType: 'PAGE',
+            content: [{ type: 'run', content: [{ type: 'text', text: '1' }] }],
+          },
+        ],
+      },
+    ]);
+  }, [
+    finalSectionProperties,
+    materializeHeaderFooter,
+    setHfEditIsFirstPage,
+    setHfEditPageIndex,
+    setHfEditPosition,
+  ]);
 
   // Container styles - using overflow: auto so sticky toolbar works
   const containerStyle: CSSProperties = {
@@ -1831,6 +1891,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
               onInsertSectionBreakNextPage={handleInsertSectionBreakNextPage}
               onInsertSectionBreakContinuous={handleInsertSectionBreakContinuous}
               onInsertTOC={handleInsertTOC}
+              onInsertPageNumber={handleInsertPageNumber}
               onImageWrapType={handleImageWrapType}
               onImageTransform={handleImageTransform}
               onOpenImageProperties={handleOpenImageProperties}

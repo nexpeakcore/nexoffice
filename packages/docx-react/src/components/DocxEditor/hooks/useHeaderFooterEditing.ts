@@ -55,29 +55,15 @@ export function useHeaderFooterEditing({
       };
     }, [document, initialSectionProperties, finalSectionProperties]);
 
-  const handleHeaderFooterDoubleClick = useCallback(
-    (position: 'header' | 'footer', pageNumber?: number) => {
-      // No scroll-to-page-1 — the HF content is shared across all pages by
-      // `r:id`, so the painter renders the same edits on every page in real
-      // time. Whichever page the user double-clicked, the chrome bar floats
-      // over THAT page's header and edits propagate visually to all others.
-      const sectProps = document?.package?.document?.finalSectionProperties;
-      const isFirstPage = sectProps?.titlePg === true && (pageNumber ?? 1) === 1;
-      setHfEditPageIndex(Math.max(0, (pageNumber ?? 1) - 1));
-      const hf = isFirstPage
-        ? position === 'header'
-          ? firstPageHeaderContent
-          : firstPageFooterContent
-        : position === 'header'
-          ? headerContent
-          : footerContent;
-      setHfEditIsFirstPage(isFirstPage);
-      if (hf) {
-        setHfEditPosition(position);
-        return;
-      }
-
-      // Materialise an empty header/footer so the user can start typing.
+  // Creates the part with the given content, registers its relationship so
+  // the serializer wires up content types + doc rels (#274), and enters edit
+  // mode on it.
+  const materializeHeaderFooter = useCallback(
+    (
+      position: 'header' | 'footer',
+      isFirstPage: boolean,
+      content: HeaderFooter['content']
+    ) => {
       if (!document?.package) return;
       const pkg = document.package;
       const sectionProps = pkg.document?.finalSectionProperties;
@@ -85,21 +71,20 @@ export function useHeaderFooterEditing({
 
       const hdrFtrType = isFirstPage ? 'first' : 'default';
       const rId = `rId_new_${position}_${hdrFtrType}`;
-      const emptyHf: HeaderFooter = {
+      const newHf: HeaderFooter = {
         type: position === 'header' ? 'header' : 'footer',
         hdrFtrType,
-        content: [{ type: 'paragraph', content: [] }],
+        content,
       };
 
       const mapKey = position === 'header' ? 'headers' : 'footers';
       const newMap = new Map(pkg[mapKey] ?? []);
-      newMap.set(rId, emptyHf);
+      newMap.set(rId, newHf);
 
       const refKey = position === 'header' ? 'headerReferences' : 'footerReferences';
       const existingRefs = sectionProps[refKey] ?? [];
       const newRef = { type: hdrFtrType as 'default' | 'first', rId };
 
-      // Register the rel so the serializer wires up content types + doc rels (#274).
       const existingRels = pkg.relationships;
       const usedTargets = new Set<string>();
       for (const rel of existingRels?.values() ?? []) {
@@ -138,13 +123,41 @@ export function useHeaderFooterEditing({
       pushDocument(newDoc);
       setHfEditPosition(position);
     },
+    [document, pushDocument, setHfEditPosition]
+  );
+
+  const handleHeaderFooterDoubleClick = useCallback(
+    (position: 'header' | 'footer', pageNumber?: number) => {
+      // No scroll-to-page-1 — the HF content is shared across all pages by
+      // `r:id`, so the painter renders the same edits on every page in real
+      // time. Whichever page the user double-clicked, the chrome bar floats
+      // over THAT page's header and edits propagate visually to all others.
+      const sectProps = document?.package?.document?.finalSectionProperties;
+      const isFirstPage = sectProps?.titlePg === true && (pageNumber ?? 1) === 1;
+      setHfEditPageIndex(Math.max(0, (pageNumber ?? 1) - 1));
+      const hf = isFirstPage
+        ? position === 'header'
+          ? firstPageHeaderContent
+          : firstPageFooterContent
+        : position === 'header'
+          ? headerContent
+          : footerContent;
+      setHfEditIsFirstPage(isFirstPage);
+      if (hf) {
+        setHfEditPosition(position);
+        return;
+      }
+
+      // Materialise an empty header/footer so the user can start typing.
+      materializeHeaderFooter(position, isFirstPage, [{ type: 'paragraph', content: [] }]);
+    },
     [
       headerContent,
       footerContent,
       firstPageHeaderContent,
       firstPageFooterContent,
       document,
-      pushDocument,
+      materializeHeaderFooter,
       setHfEditPosition,
       setHfEditIsFirstPage,
       setHfEditPageIndex,
@@ -210,5 +223,6 @@ export function useHeaderFooterEditing({
     handleHeaderFooterDoubleClick,
     handleBodyClick,
     handleRemoveHeaderFooter,
+    materializeHeaderFooter,
   };
 }

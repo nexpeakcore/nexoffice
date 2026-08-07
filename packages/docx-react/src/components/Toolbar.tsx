@@ -203,6 +203,8 @@ export interface ToolbarProps {
   onInsertSectionBreakContinuous?: () => void;
   /** Callback when user wants to insert a table of contents */
   onInsertTOC?: () => void;
+  /** Callback when user wants to insert a page number field into the footer */
+  onInsertPageNumber?: () => void;
   /** Callback when user wants to insert a shape */
   onInsertShape?: (data: {
     shapeType: string;
