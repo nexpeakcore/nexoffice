@@ -1377,6 +1377,9 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
       session.applyRawOps(story, [
         { op: 'insertEmbed', index: Math.max(0, end), kind: 'field', payload: { ...pageField } },
       ]);
+      // Local out-of-band mutations never refresh layout on their own; the
+      // update subscription only syncs remote origins.
+      pagedEditorRef.current?.syncYrsInputState(true);
       setHfEditIsFirstPage(false);
       setHfEditPageIndex(0);
       setHfEditPosition('footer');
