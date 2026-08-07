@@ -366,8 +366,13 @@ export interface PagedEditorRef {
   getYrsStoredFormatting(): YrsStoredFormatting | null;
   /** Resolve a live yrs Loc to the display position used by overlays. */
   yrsLocToDisplayPosition(loc: YrsLoc): number | null;
-  /** Publish a yrs selection/mutation through the direct-input refresh path. */
-  syncYrsInputState(docChanged: boolean): boolean;
+  /** Publish a yrs selection/mutation through the direct-input refresh path.
+   * Pass `mutatedStory` when mutating a story the selection is not in. */
+  syncYrsInputState(
+    docChanged: boolean,
+    origin?: LayoutUpdateOrigin,
+    mutatedStory?: string
+  ): boolean;
   /** Apply a body-toolbar command through yrs. */
   applyYrsFormatting(action: FormattingAction): boolean;
   /** Apply a non-toolbar body command through yrs. */
@@ -897,11 +902,11 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
     }, [collaboration?.presence, yrsCore.session]);
 
     const syncYrsInputState = useCallback(
-      (docChanged: boolean, origin: LayoutUpdateOrigin = 'local'): boolean => {
+      (docChanged: boolean, origin: LayoutUpdateOrigin = 'local', mutatedStory?: string): boolean => {
         if (!yrsCore.session) return false;
         const displaySelection = yrsInputRef.current?.displaySelection() ?? { anchor: 0, head: 0 };
         if (docChanged) {
-          yrsCore.publishDirectInput();
+          yrsCore.publishDirectInput(mutatedStory);
         }
         handleYrsStateChange(displaySelection, docChanged, false, false, origin);
         return true;

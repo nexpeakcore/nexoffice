@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 
 import { parseDocx } from '../docx';
 import { writeDocumentWithRust } from '../docx/rustSaveFacade';
+import { buildResidentRegionLayoutRequest } from '../editor/computeLayout';
 import { preloadEditWasm } from '../wasm/edit';
 import { createYrsSession, type YrsStorySegment } from './index';
 import { documentToYrs } from './documentToYrs';
@@ -141,5 +142,92 @@ describe('inserting a page number field', () => {
   it('leaves an untouched document without one', async () => {
     const parsed = await parseDocx(Uint8Array.from(readFileSync(FIXTURE)).buffer);
     expect(pageFields(parsed)).toHaveLength(0);
+  });
+});
+
+// The editor's no-default-footer path: the footer part is materialised with
+// empty content, a live story is created for it (`createStory`), the field
+// is inserted into that story, and the section references are patched in
+// BOTH `sections[]` and `finalSectionProperties` — the parser mirrors the
+// body sectPr into both, and region layout composes pages from `sections[]`.
+describe('materialising a default footer into a live story', () => {
+  const TITLEPG_FIXTURE = resolve(import.meta.dir, '__fixtures__/titlepg-first-footer.docx');
+  const NEW_RID = 'rId_new_footer_default';
+  const STORY = `hf:${NEW_RID}`;
+
+  beforeAll(() => preloadEditWasm(new Uint8Array(readFileSync(WASM))));
+
+  async function withMaterializedFooter() {
+    const bytes = Uint8Array.from(readFileSync(TITLEPG_FIXTURE));
+    const original = bytes.buffer.slice(0) as ArrayBuffer;
+    const parsed = await parseDocx(bytes.buffer);
+    const session = await createYrsSession({ clientId: 81002 });
+    documentToYrs(session, parsed);
+    session.createStory(STORY, '', 'Normal', 'center');
+    session.applyRawOps(STORY, [
+      { op: 'insertEmbed', index: 0, kind: 'field', payload: { ...PAGE_FIELD } },
+    ]);
+    const pkg = parsed.package;
+    const sect = pkg.document.finalSectionProperties ?? {};
+    const nextRefs = [
+      ...(sect.footerReferences ?? []),
+      { type: 'default' as const, rId: NEW_RID },
+    ];
+    const footers = new Map(pkg.footers ?? []);
+    footers.set(NEW_RID, {
+      type: 'footer',
+      hdrFtrType: 'default',
+      content: [{ type: 'paragraph', formatting: { alignment: 'center' }, content: [] }],
+    } as never);
+    const relationships = new Map(pkg.relationships);
+    relationships.set(NEW_RID, {
+      id: NEW_RID,
+      type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer',
+      target: 'footer2.xml',
+    });
+    const document = {
+      ...parsed,
+      package: {
+        ...pkg,
+        footers,
+        relationships,
+        document: {
+          ...pkg.document,
+          finalSectionProperties: { ...sect, footerReferences: nextRefs },
+          sections: pkg.document.sections?.map((section, index, all) =>
+            index === all.length - 1
+              ? {
+                  ...section,
+                  properties: { ...section.properties, footerReferences: nextRefs },
+                }
+              : section
+          ),
+        },
+      },
+    } as Document;
+    return { original, session, document };
+  }
+
+  it('composes the story into region layout for the pages', async () => {
+    const { session, document } = await withMaterializedFooter();
+    const request = buildResidentRegionLayoutRequest(document, 24, { dpi: 96 } as never);
+    const output = JSON.parse(session.layoutDocumentWithRegionsJson(JSON.stringify(request))) as {
+      headersFooters?: { variants?: Array<{ rId: string; kind: string; type: string }> };
+    };
+    const variant = output.headersFooters?.variants?.find((v) => v.rId === NEW_RID);
+    expect(variant).toBeDefined();
+    expect(variant?.kind).toBe('footer');
+    expect(variant?.type).toBe('default');
+  });
+
+  it('projects the story into the part on save, without duplicate references', async () => {
+    const { original, session, document } = await withMaterializedFooter();
+    const projected = yrsToDocument(session, document);
+    const saved = await writeDocumentWithRust(projected, original);
+    const reparsed = await parseDocx(saved.buffer);
+    expect(pageFields(reparsed)).toHaveLength(1);
+    const refs = reparsed.package.document.finalSectionProperties?.footerReferences ?? [];
+    expect(refs.filter((ref) => ref.type === 'default')).toHaveLength(1);
+    expect(refs.filter((ref) => ref.type === 'first')).toHaveLength(1);
   });
 });

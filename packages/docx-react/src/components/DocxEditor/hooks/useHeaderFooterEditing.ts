@@ -4,6 +4,7 @@ import type {
   HeaderFooter,
   SectionProperties,
 } from '@betteroffice/docx/types/document';
+import type { YrsSession } from '@betteroffice/docx/yrs';
 import { resolveHeaderFooter } from '@betteroffice/docx/layout';
 
 /**
@@ -18,6 +19,37 @@ import { resolveHeaderFooter } from '@betteroffice/docx/layout';
  * `package.headers` / `package.footers` and registers the relationship
  * so the serializer picks it up (#274).
  */
+/**
+ * The parser mirrors the body-level sectPr into both `sections[]` (whose
+ * entries own the pages during region layout) and `finalSectionProperties`.
+ * A reference change must land in both, or the engine keeps composing pages
+ * from the untouched copy.
+ */
+function patchSectionReferences(
+  pkgDocument: NonNullable<Document['package']['document']>,
+  refKey: 'headerReferences' | 'footerReferences',
+  nextRefs: SectionProperties['headerReferences']
+): NonNullable<Document['package']['document']> {
+  const finalProps = pkgDocument.finalSectionProperties ?? {};
+  const previousRefs = JSON.stringify(finalProps[refKey] ?? []);
+  const sections = pkgDocument.sections;
+  const lastIndex = (sections?.length ?? 0) - 1;
+  const mirrorsFinal =
+    lastIndex >= 0 &&
+    JSON.stringify(sections![lastIndex]!.properties?.[refKey] ?? []) === previousRefs;
+  return {
+    ...pkgDocument,
+    finalSectionProperties: { ...finalProps, [refKey]: nextRefs },
+    sections: mirrorsFinal
+      ? sections!.map((section, index) =>
+          index === lastIndex
+            ? { ...section, properties: { ...section.properties, [refKey]: nextRefs } }
+            : section
+        )
+      : sections,
+  };
+}
+
 export function useHeaderFooterEditing({
   document,
   pushDocument,
@@ -28,6 +60,7 @@ export function useHeaderFooterEditing({
   hfEditIsFirstPage,
   setHfEditIsFirstPage,
   setHfEditPageIndex,
+  getYrsSession,
 }: {
   document: Document | null;
   pushDocument: (doc: Document) => void;
@@ -40,6 +73,7 @@ export function useHeaderFooterEditing({
   hfEditIsFirstPage: boolean;
   setHfEditIsFirstPage: React.Dispatch<React.SetStateAction<boolean>>;
   setHfEditPageIndex: React.Dispatch<React.SetStateAction<number>>;
+  getYrsSession?: () => YrsSession | null;
 }) {
   const { headerContent, footerContent, firstPageHeaderContent, firstPageFooterContent } =
     useMemo(() => {
@@ -57,20 +91,26 @@ export function useHeaderFooterEditing({
 
   // Creates the part with the given content, registers its relationship so
   // the serializer wires up content types + doc rels (#274), and enters edit
-  // mode on it.
+  // mode on it. Returns the part's rId, or null when nothing was created.
   const materializeHeaderFooter = useCallback(
     (
       position: 'header' | 'footer',
       isFirstPage: boolean,
       content: HeaderFooter['content']
-    ) => {
-      if (!document?.package) return;
+    ): string | null => {
+      if (!document?.package) return null;
       const pkg = document.package;
       const sectionProps = pkg.document?.finalSectionProperties;
-      if (!sectionProps) return;
+      if (!sectionProps) return null;
 
       const hdrFtrType = isFirstPage ? 'first' : 'default';
-      const rId = `rId_new_${position}_${hdrFtrType}`;
+      const refKey = position === 'header' ? 'headerReferences' : 'footerReferences';
+      const existingRefs = sectionProps[refKey] ?? [];
+      // Re-materialising a variant that already has a reference (e.g. one
+      // created earlier this session) must reuse its rId — appending would
+      // serialize two identical w:footerReference elements.
+      const existingRef = existingRefs.find((r) => r.type === hdrFtrType);
+      const rId = existingRef?.rId ?? `rId_new_${position}_${hdrFtrType}`;
       const newHf: HeaderFooter = {
         type: position === 'header' ? 'header' : 'footer',
         hdrFtrType,
@@ -81,27 +121,27 @@ export function useHeaderFooterEditing({
       const newMap = new Map(pkg[mapKey] ?? []);
       newMap.set(rId, newHf);
 
-      const refKey = position === 'header' ? 'headerReferences' : 'footerReferences';
-      const existingRefs = sectionProps[refKey] ?? [];
       const newRef = { type: hdrFtrType as 'default' | 'first', rId };
 
       const existingRels = pkg.relationships;
-      const usedTargets = new Set<string>();
-      for (const rel of existingRels?.values() ?? []) {
-        if (rel.target) usedTargets.add(rel.target);
-      }
-      let targetNum = 1;
-      while (usedTargets.has(`${position}${targetNum}.xml`)) targetNum++;
-      const relType =
-        position === 'header'
-          ? 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/header'
-          : 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer';
       const newRelationships = new Map(existingRels);
-      newRelationships.set(rId, {
-        id: rId,
-        type: relType,
-        target: `${position}${targetNum}.xml`,
-      });
+      if (!newRelationships.has(rId)) {
+        const usedTargets = new Set<string>();
+        for (const rel of existingRels?.values() ?? []) {
+          if (rel.target) usedTargets.add(rel.target);
+        }
+        let targetNum = 1;
+        while (usedTargets.has(`${position}${targetNum}.xml`)) targetNum++;
+        const relType =
+          position === 'header'
+            ? 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/header'
+            : 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer';
+        newRelationships.set(rId, {
+          id: rId,
+          type: relType,
+          target: `${position}${targetNum}.xml`,
+        });
+      }
 
       const newDoc: Document = {
         ...document,
@@ -110,20 +150,29 @@ export function useHeaderFooterEditing({
           [mapKey]: newMap,
           relationships: newRelationships,
           document: pkg.document
-            ? {
-                ...pkg.document,
-                finalSectionProperties: {
-                  ...sectionProps,
-                  [refKey]: [...existingRefs, newRef],
-                },
-              }
+            ? patchSectionReferences(
+                pkg.document,
+                refKey,
+                existingRef ? existingRefs : [...existingRefs, newRef]
+              )
             : pkg.document,
         },
       };
       pushDocument(newDoc);
+      // Stories are otherwise created only by document-load seeding, so a
+      // part materialised mid-session has no story: the band never paints
+      // and typing into it is dead until save + reopen. Create it live.
+      const session = getYrsSession?.();
+      const storyId = `hf:${rId}`;
+      if (session && !session.storyIds().includes(storyId)) {
+        const alignment =
+          (content[0]?.type === 'paragraph' && content[0].formatting?.alignment) || 'left';
+        session.createStory(storyId, '', 'Normal', alignment);
+      }
       setHfEditPosition(position);
+      return rId;
     },
-    [document, pushDocument, setHfEditPosition]
+    [document, pushDocument, setHfEditPosition, getYrsSession]
   );
 
   const handleHeaderFooterDoubleClick = useCallback(
@@ -199,13 +248,7 @@ export function useHeaderFooterEditing({
           ...pkg,
           [mapKey]: newMap,
           document: pkg.document
-            ? {
-                ...pkg.document,
-                finalSectionProperties: {
-                  ...sectionProps,
-                  [refKey]: newRefs,
-                },
-              }
+            ? patchSectionReferences(pkg.document, refKey, newRefs)
             : pkg.document,
         },
       };

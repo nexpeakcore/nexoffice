@@ -313,7 +313,7 @@ export function DocxEditorPagedArea({
           },
         },
       ]);
-      editor.syncYrsInputState(true);
+      editor.syncYrsInputState(true, 'local', story);
     },
     [activeHfRid]
   );
@@ -322,12 +322,20 @@ export function DocxEditorPagedArea({
   // the positioned editor-content host.
   const canvasOverlayTarget = useCanvasOverlayTarget(true, editorContentRef);
 
+  // The indexed page wins only while it actually shows the variant being
+  // edited; on a titlePg section page 1's band is the first-page variant, so
+  // editing the default footer must anchor to a page that renders it.
   const activeHfPage = displayListQueries
-    ? (displayListQueries.displayList.pages[hfEditPageIndex] ??
-      displayListQueries.displayList.pages.find((page) => {
-        const band = hfEditPosition ? page[hfEditPosition] : null;
-        return band?.rId === activeHfRid;
-      }))
+    ? (() => {
+        const pages = displayListQueries.displayList.pages;
+        const showsActiveHf = (page: (typeof pages)[number]) => {
+          const band = hfEditPosition ? page[hfEditPosition] : null;
+          return band?.rId === activeHfRid;
+        };
+        const indexed = pages[hfEditPageIndex];
+        if (indexed && (!activeHfRid || showsActiveHf(indexed))) return indexed;
+        return pages.find(showsActiveHf) ?? indexed ?? null;
+      })()
     : null;
   const activeHfBand = activeHfPage && hfEditPosition ? activeHfPage[hfEditPosition] : null;
   const hfChromeRect =

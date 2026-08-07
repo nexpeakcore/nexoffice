@@ -1324,6 +1324,8 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   );
   const finalSectionProperties = history.state?.package.document?.finalSectionProperties;
 
+  const getYrsSession = useCallback(() => pagedEditorRef.current?.getYrsSession() ?? null, []);
+
   const {
     headerContent,
     footerContent,
@@ -1343,64 +1345,58 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     hfEditIsFirstPage,
     setHfEditIsFirstPage,
     setHfEditPageIndex,
+    getYrsSession,
   });
 
-  // Word's "insert page number": a PAGE field lands in the footer and the
-  // footer opens so the result is visible. The layout substitutes each page's
-  // real number per page, so one field is the whole feature.
+  // Word's "insert page number": a PAGE field lands in the default footer and
+  // the footer opens so the result is visible. The layout substitutes each
+  // page's real number per page, so one field is the whole feature.
   //
-  // Two paths on purpose. A footer that already exists is live in the engine,
-  // so its story is the single source of truth and the field must be inserted
-  // there. A document with no footer has no story to insert into — the footer
-  // is materialised with the field already inside, the same way an empty one
-  // is materialised on double-click, and seeding gives it its story.
+  // Only the default footer qualifies: inserting into a first-page/even
+  // variant would number the wrong pages, and the edit mode opened below is
+  // the default variant. Without one, a default footer is materialised even
+  // when first/even variants exist, and the field is inserted into its
+  // freshly created story.
   const handleInsertPageNumber = useCallback(() => {
-    const pageField = {
-      instruction: 'PAGE',
-      fieldType: 'PAGE',
-      displayText: '1',
-      displayMode: 'result',
-    };
+    const session = getYrsSession();
+    if (!session) return;
+    setHfEditIsFirstPage(false);
+    setHfEditPageIndex(0);
     const refs = finalSectionProperties?.footerReferences ?? [];
-    const ref = refs.find((r) => r.type === 'default') ?? refs[0];
-    const story = ref?.rId ? `hf:${ref.rId}` : null;
-    const session = pagedEditorRef.current?.getYrsSession();
-    if (session && story && session.storyIds().includes(story)) {
-      // End of the last paragraph's content: everything before its pilcrow.
-      const segments = session.storySegments(story);
-      let end = 0;
-      for (const segment of segments) {
-        end += segment.kind === 'text' ? segment.text.length : 1;
-      }
-      if (segments.at(-1)?.kind === 'pilcrow') end -= 1;
-      session.beginUndoCapture(story);
-      session.applyRawOps(story, [
-        { op: 'insertEmbed', index: Math.max(0, end), kind: 'field', payload: { ...pageField } },
+    const defaultRef = refs.find((r) => r.type === 'default');
+    let story = defaultRef?.rId ? `hf:${defaultRef.rId}` : null;
+    if (!story || !session.storyIds().includes(story)) {
+      const rId = materializeHeaderFooter('footer', false, [
+        { type: 'paragraph', formatting: { alignment: 'center' }, content: [] },
       ]);
-      // Local out-of-band mutations never refresh layout on their own; the
-      // update subscription only syncs remote origins.
-      pagedEditorRef.current?.syncYrsInputState(true);
-      setHfEditIsFirstPage(false);
-      setHfEditPageIndex(0);
-      setHfEditPosition('footer');
-      return;
+      story = rId ? `hf:${rId}` : null;
     }
-    materializeHeaderFooter('footer', false, [
+    if (!story || !session.storyIds().includes(story)) return;
+    // End of the last paragraph's content: everything before its pilcrow.
+    const segments = session.storySegments(story);
+    let end = 0;
+    for (const segment of segments) {
+      end += segment.kind === 'text' ? segment.text.length : 1;
+    }
+    if (segments.at(-1)?.kind === 'pilcrow') end -= 1;
+    session.beginUndoCapture(story);
+    session.applyRawOps(story, [
       {
-        type: 'paragraph',
-        formatting: { alignment: 'center' },
-        content: [
-          {
-            type: 'simpleField',
-            instruction: 'PAGE',
-            fieldType: 'PAGE',
-            content: [{ type: 'run', content: [{ type: 'text', text: '1' }] }],
-          },
-        ],
+        op: 'insertEmbed',
+        index: Math.max(0, end),
+        kind: 'field',
+        payload: { instruction: 'PAGE', fieldType: 'PAGE', displayText: '1', displayMode: 'result' },
       },
     ]);
+    // Local out-of-band mutations never refresh layout on their own; the
+    // update subscription only syncs remote origins. The mutated story is
+    // passed explicitly — the selection still sits in the body, and marking
+    // the wrong story dirty drops the field from the debounced projection.
+    pagedEditorRef.current?.syncYrsInputState(true, 'local', story);
+    setHfEditPosition('footer');
   }, [
     finalSectionProperties,
+    getYrsSession,
     materializeHeaderFooter,
     setHfEditIsFirstPage,
     setHfEditPageIndex,
