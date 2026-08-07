@@ -18,6 +18,7 @@ import type { YrsCellLoc, YrsSession } from '@betteroffice/docx/yrs';
 
 import type { YrsInputRef } from '../YrsInput';
 import { useDragAutoScroll } from '../../../hooks/useDragAutoScroll';
+import { mousedownRegionAction } from '../internals/pointerRegionPolicy';
 import type { YrsPositionProjection } from '../internals/yrsPositionProjection';
 import type { YrsEditorCommand } from '../yrsCommands';
 
@@ -292,13 +293,14 @@ export function usePagesPointer(opts: UsePagesPointerOptions): UsePagesPointerRe
 
       const point = resolveCanvasHit(e.clientX, e.clientY, false);
       const region = point?.hit?.region ?? null;
-      if (hfEditMode) {
-        if (region !== hfEditMode && onBodyClick) {
+      const action = mousedownRegionAction(region, hfEditMode);
+      if (action === 'exit-hf') {
+        if (onBodyClick) {
           e.stopPropagation();
           onBodyClick();
           return;
         }
-      } else if ((region === 'header' || region === 'footer') && e.detail !== 2) {
+      } else if (action === 'ignore') {
         return;
       }
 
