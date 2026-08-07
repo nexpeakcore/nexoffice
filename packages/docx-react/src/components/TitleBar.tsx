@@ -187,6 +187,7 @@ export function MenuBar() {
     onInsertSectionBreakNextPage,
     onInsertSectionBreakContinuous,
     onInsertTOC,
+    onInsertPageNumber,
     onWatermark,
     onRefocusEditor,
   } = ctx;
@@ -343,6 +344,12 @@ export function MenuBar() {
             label: t('toolbar.tableOfContents'),
             onClick: onInsertTOC,
             disabled: !onInsertTOC,
+          },
+          {
+            icon: 'page_number',
+            label: t('toolbar.pageNumber'),
+            onClick: onInsertPageNumber,
+            disabled: !onInsertPageNumber,
           },
           ...(onWatermark
             ? [

@@ -77,6 +77,7 @@ export function DocxEditorToolbar({
   onInsertSectionBreakNextPage,
   onInsertSectionBreakContinuous,
   onInsertTOC,
+  onInsertPageNumber,
   onImageWrapType,
   onImageTransform,
   onOpenImageProperties,
@@ -124,6 +125,7 @@ export function DocxEditorToolbar({
   onInsertSectionBreakNextPage: () => void;
   onInsertSectionBreakContinuous: () => void;
   onInsertTOC: () => void;
+  onInsertPageNumber: () => void;
   onImageWrapType: (value: string) => void;
   onImageTransform: (action: 'rotateCW' | 'rotateCCW' | 'flipH' | 'flipV') => void;
   onOpenImageProperties: () => void;
@@ -160,6 +162,7 @@ export function DocxEditorToolbar({
         onInsertSectionBreakNextPage={onInsertSectionBreakNextPage}
         onInsertSectionBreakContinuous={onInsertSectionBreakContinuous}
         onInsertTOC={onInsertTOC}
+        onInsertPageNumber={onInsertPageNumber}
         imageContext={imageContext}
         onImageWrapType={onImageWrapType}
         onImageTransform={onImageTransform}
