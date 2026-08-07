@@ -3415,6 +3415,72 @@ fn non_worksheet_sheets_stay_typed_and_byte_identical() {
 }
 
 #[test]
+fn batch_can_add_a_sheet_and_edit_it_atomically() {
+    let mut model = WorkbookModel::default();
+    model.sheets.push(Sheet::new("Data"));
+    let bytes = ooxml_opc::rezip_parts(&xlsx_parse::serialize_workbook(&model).unwrap()).unwrap();
+    let mut workbook = Workbook::open(&bytes).unwrap();
+    workbook
+        .apply_ops(
+            vec![
+                Op::AddSheet {
+                    index: 1,
+                    name: "Added".into(),
+                },
+                Op::SetCell {
+                    sheet: SheetId(1),
+                    at: cell("A1"),
+                    cell: CellState {
+                        value: CellValue::Number { value: 7.0 },
+                        formula: None,
+                        style: None,
+                    },
+                },
+            ],
+            CalculationOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(workbook.sheet_count(), 2);
+    assert_eq!(
+        workbook.model().sheets[1]
+            .cell(cell("A1"))
+            .map(|c| &c.value),
+        Some(&CellValue::Number { value: 7.0 })
+    );
+}
+
+#[test]
+fn batch_guard_tracks_sheet_indices_across_removal() {
+    let original = non_worksheet_fixture();
+    let mut workbook = Workbook::open(&original).unwrap();
+    // After RemoveSheet(0) the chartsheet shifts into index 0; the guard must
+    // see the shifted origin, not the pre-batch worksheet, or the edit lands
+    // on a placeholder and is silently dropped on save.
+    assert!(matches!(
+        workbook.apply_ops(
+            vec![
+                Op::RemoveSheet { index: 0 },
+                Op::SetCell {
+                    sheet: SheetId(0),
+                    at: cell("A1"),
+                    cell: CellState {
+                        value: CellValue::Text {
+                            value: "blocked".into(),
+                        },
+                        formula: None,
+                        style: None,
+                    },
+                },
+            ],
+            CalculationOptions::default(),
+        ),
+        Err(Error::InvalidOperation(_))
+    ));
+    // The refused batch must leave the model untouched.
+    assert_eq!(workbook.sheet_count(), 3);
+}
+
+#[test]
 fn strict_prefixed_templates_keep_namespaces_relationships_and_mc_order() {
     let original = strict_prefixed_fixture();
     let mut workbook = Workbook::open(&original).unwrap();

@@ -902,15 +902,28 @@ impl Workbook {
         }
         let invalidates_proposals = ops.iter().any(invalidates_proposals);
         let mut preview = self.model.clone();
+        // Sheet ids in later ops refer to the state earlier ops produced, so
+        // the worksheet guard must track the evolving preview: origins shift
+        // with every AddSheet/RemoveSheet exactly as commit will shift them.
+        let mut preview_origins = self.preserved.origins.clone();
         for op in &ops {
             if let Some(sheet) = worksheet_edit_target(op) {
-                self.ensure_worksheet_sheet(sheet)?;
+                self.ensure_worksheet_sheet_in(&preview, &preview_origins, sheet)?;
             }
             self.ensure_references_stay_valid(op)?;
             validate_op(&preview, op)?;
             validate_insert_capacity(&preview, op)?;
             xlsx_ops::apply(&mut preview, op)?;
             validate_model(&preview)?;
+            match *op {
+                Op::AddSheet { index, .. } => {
+                    preview_origins.insert(index.min(preview_origins.len()), None);
+                }
+                Op::RemoveSheet { index } if index < preview_origins.len() => {
+                    preview_origins.remove(index);
+                }
+                _ => {}
+            }
         }
         if preview == self.model {
             return Ok(MutationResult::default());
@@ -1432,13 +1445,17 @@ impl Workbook {
 
     /// Rejects edits aimed at a preserved chartsheet or dialogsheet.
     fn ensure_worksheet_sheet(&self, sheet: SheetId) -> Result<()> {
-        self.sheet(sheet)?;
-        let origin = self
-            .preserved
-            .origins
-            .get(sheet.0 as usize)
-            .copied()
-            .flatten();
+        self.ensure_worksheet_sheet_in(&self.model, &self.preserved.origins, sheet)
+    }
+
+    fn ensure_worksheet_sheet_in(
+        &self,
+        model: &WorkbookModel,
+        origins: &[Option<usize>],
+        sheet: SheetId,
+    ) -> Result<()> {
+        model.sheet(sheet).ok_or(Error::SheetOutOfRange(sheet))?;
+        let origin = origins.get(sheet.0 as usize).copied().flatten();
         if origin.is_some_and(|origin| {
             self.source_package
                 .as_ref()
