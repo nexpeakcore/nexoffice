@@ -27,7 +27,7 @@ function fakeAccess(): AgentWorkbookAccess & {
         return [
           [
             { input: '1', isFormula: false },
-            { input: '=A1*2', isFormula: true },
+            { input: '=A1*2', isFormula: true, filterText: '2' },
           ],
           [
             { input: 'x', isFormula: false },
@@ -68,7 +68,7 @@ describe('executeXlsxAgentTool', () => {
       range: 'A1:B2',
     }) as { rows: unknown[][] }
     expect(result.rows).toHaveLength(2)
-    expect(result.rows[0]![1]).toEqual({ input: '=A1*2', isFormula: true })
+    expect(result.rows[0]![1]).toEqual({ input: '=A1*2', isFormula: true, value: '2' })
   })
 
   it('defaults to the active sheet', () => {
@@ -134,7 +134,7 @@ describe('executeXlsxAgentTool', () => {
     if (!('proposal' in validated)) throw new Error('expected a proposal')
     const result = applyWriteCells(access, validated.proposal)
     expect(access.edited).toEqual([{ sheet: 1, edits: [{ row: 0, col: 0, input: '42' }] }])
-    expect(result).toEqual({ applied: true, sheet: 1, cells: ['A1'] })
+    expect(result).toEqual({ applied: true, sheet: 1, cells: [{ a1: 'A1', value: '' }] })
   })
 
   it('reports bad ranges, bad sheets, and unknown tools as model-readable errors', () => {

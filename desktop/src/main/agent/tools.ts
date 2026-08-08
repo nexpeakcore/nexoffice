@@ -19,7 +19,7 @@ const XLSX_TOOLS: ChatToolFunction[] = [
   {
     name: 'read_range',
     description:
-      `Read a rectangular range of cells from one sheet. Returns a row-major grid of { input, isFormula } where input is the raw cell content (formula text when isFormula). At most ${READ_RANGE_CELL_CAP} cells per call — window larger reads into consecutive calls.`,
+      `Read a rectangular range of cells from one sheet. Returns a row-major grid of { input, isFormula, value } — input is the raw content (formula text when isFormula), value is the current computed result (formula errors appear here as #NAME?, #VALUE!, …). At most ${READ_RANGE_CELL_CAP} cells per call — window larger reads into consecutive calls.`,
     parameters: {
       type: 'object',
       properties: {
@@ -39,7 +39,7 @@ const XLSX_TOOLS: ChatToolFunction[] = [
   {
     name: 'write_cells',
     description:
-      `Propose edits to cells. The user sees the full list and must approve before anything is applied — the result tells you whether they approved. Each edit sets one cell's raw input (text, number, or a formula starting with "="); an empty input clears the cell. At most ${WRITE_CELLS_CAP} edits per call. Read the affected cells first so you do not overwrite data the user wants kept.`,
+      `Propose edits to cells. The user sees the full list and must approve before anything is applied — the result tells you whether they approved, and includes each written cell's computed value so you can catch formula errors and fix them in a follow-up proposal. Each edit sets one cell's raw input (text, number, or a formula starting with "="); an empty input clears the cell. At most ${WRITE_CELLS_CAP} edits per call. Read the affected cells first so you do not overwrite data the user wants kept.`,
     parameters: {
       type: 'object',
       properties: {
@@ -78,7 +78,9 @@ export function agentSystemPrompt(kind: DocumentKind, name: string, locale: stri
   const document =
     kind === 'xlsx'
       ? `an Excel workbook named "${name}". Use the tools to inspect it before answering questions about its contents; never guess cell values. ` +
-        'You may change cells with write_cells: every proposal is shown to the user for approval, so group related edits into one call and explain what you are about to change before calling it. A rejected proposal is not an error — ask what to do differently.'
+        'You may change cells with write_cells: every proposal is shown to the user for approval, so group related edits into one call and explain what you are about to change before calling it. A rejected proposal is not an error — ask what to do differently. ' +
+        'When the user wants a result that should stay current as the data changes (totals, rankings, top-N blocks, lookups), write FORMULAS rather than computed constants — e.g. a live top-10 of column C is =LARGE(C$2:C$100,1)…=LARGE(C$2:C$100,10) with =INDEX(A:A,MATCH(LARGE(…),C:C,0)) for the labels. ' +
+        'The formula engine supports the common function set (SUM, AVERAGE, COUNT/COUNTIF(S), SUMIF(S), IF/IFS/IFERROR, MIN/MAX, MEDIAN, ROUND, LARGE, SMALL, RANK, INDEX, MATCH, VLOOKUP/HLOOKUP/XLOOKUP, CHOOSE, text and date functions) but NOT dynamic arrays — SORT, FILTER, UNIQUE and SEQUENCE will evaluate to errors, so build per-cell formulas instead. Charts cannot be created yet.'
       : `a document named "${name}".`
   return (
     'You are the NexOffice assistant, embedded in a desktop office suite. ' +
