@@ -356,24 +356,6 @@ type Refusal = (&'static str, Box<dyn Fn(&Presentation)>);
 fn a_change_this_slice_cannot_write_refuses_instead_of_dropping_it() {
     let refusals: Vec<Refusal> = vec![
         (
-            "formatting",
-            Box::new(|presentation: &Presentation| {
-                let (story_id, _) = story_holding(presentation, "A Rust-native");
-                presentation
-                    .format_text(
-                        &context(),
-                        &story_id,
-                        0,
-                        4,
-                        &TextStylePatch {
-                            bold: Some(true),
-                            ..TextStylePatch::default()
-                        },
-                    )
-                    .unwrap();
-            }),
-        ),
-        (
             "two paragraph breaks in different runs",
             Box::new(|presentation: &Presentation| {
                 let (story_id, _) = story_holding(presentation, "01");
@@ -382,15 +364,6 @@ fn a_change_this_slice_cannot_write_refuses_instead_of_dropping_it() {
                     .unwrap();
                 presentation
                     .insert_paragraph_break(&context(), &story_id, 6)
-                    .unwrap();
-            }),
-        ),
-        (
-            "unstyled text inside a styled run",
-            Box::new(|presentation: &Presentation| {
-                let (story_id, _) = story_holding(presentation, "A Rust-native");
-                presentation
-                    .insert_text(&context(), &story_id, 0, "plain", &TextStyle::default())
                     .unwrap();
             }),
         ),
@@ -467,16 +440,21 @@ fn a_change_this_slice_cannot_write_refuses_instead_of_dropping_it() {
 #[test]
 fn undoing_an_unwritable_edit_restores_a_savable_deck() {
     let presentation = Presentation::open(FIXTURE).unwrap();
-    let (story_id, _) = story_holding(&presentation, "A Rust-native");
+    let snapshot = presentation.snapshot().unwrap();
     presentation
-        .format_text(
+        .add_text_box(
             &context(),
-            &story_id,
-            0,
-            4,
-            &TextStylePatch {
-                bold: Some(true),
-                ..TextStylePatch::default()
+            &snapshot.slides[0].id,
+            &ShapeDraft {
+                name: "Added".to_owned(),
+                rect: ShapeRect {
+                    x: 0,
+                    y: 0,
+                    width: 100_000,
+                    height: 100_000,
+                },
+                text: "hello".to_owned(),
+                style: TextStyle::default(),
             },
         )
         .unwrap();
@@ -484,6 +462,55 @@ fn undoing_an_unwritable_edit_restores_a_savable_deck() {
 
     assert!(presentation.undo());
     assert_eq!(parts(&presentation.save().unwrap()), parts(FIXTURE));
+}
+
+/// A formatting patch over part of a run is spelled into the file: the run is
+/// split, the styled half carries the patch, and only that slide changes.
+#[test]
+fn a_mid_run_formatting_patch_saves_and_reads_back() {
+    let presentation = Presentation::open(FIXTURE).unwrap();
+    let (story_id, _) = story_holding(&presentation, "A Rust-native");
+    presentation
+        .format_text(
+            &context(),
+            &story_id,
+            2,
+            9,
+            &TextStylePatch {
+                bold: Some(true),
+                color: Some("#325ee6".to_owned()),
+                ..TextStylePatch::default()
+            },
+        )
+        .unwrap();
+
+    let saved = presentation.save().unwrap();
+    let (before, after) = (parts(FIXTURE), parts(&saved));
+    let changed: Vec<&str> = before
+        .iter()
+        .zip(&after)
+        .filter(|(source, written)| source != written)
+        .map(|(source, _)| source.0.as_str())
+        .collect();
+    assert_eq!(
+        changed.len(),
+        1,
+        "exactly one slide part changed: {changed:?}"
+    );
+
+    let reopened = Presentation::open(&saved).unwrap();
+    let reopened_snapshot = reopened.snapshot().unwrap();
+    let styled: Vec<_> = reopened_snapshot
+        .slides
+        .iter()
+        .flat_map(|slide| &slide.shapes)
+        .flat_map(|shape| &shape.text_stories)
+        .flat_map(|story| &story.paragraphs)
+        .flat_map(|paragraph| &paragraph.runs)
+        .filter(|run| run.style.bold == Some(true) && run.style.color.as_deref() == Some("#325EE6"))
+        .collect();
+    assert_eq!(styled.len(), 1, "one styled split run: {styled:?}");
+    assert_eq!(styled[0].text.chars().count(), 7);
 }
 
 /// A pure move is no longer a refusal: the shape's own `<a:xfrm>` is spliced

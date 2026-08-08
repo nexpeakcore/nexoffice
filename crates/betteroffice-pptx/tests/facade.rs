@@ -76,10 +76,45 @@ fn opens_edits_renders_saves_and_reopens() {
             },
         )
         .unwrap();
+    let saved_formatted = presentation.save().unwrap();
+    let formatted = Presentation::open(&saved_formatted).unwrap();
+    let formatted_snapshot = formatted.snapshot().unwrap();
+    let story = formatted_snapshot
+        .slides
+        .iter()
+        .flat_map(|slide| &slide.shapes)
+        .find_map(|shape| shape.text_stories.first())
+        .expect("the reopened deck keeps its text story");
+    assert!(
+        story.paragraphs[0]
+            .runs
+            .iter()
+            .any(|run| run.style.italic == Some(true)),
+        "the mid-run italic survives the save: {:?}",
+        story.paragraphs[0].runs
+    );
+
+    presentation
+        .add_text_box(
+            &EditCtx::local("facade-test"),
+            &slide_id,
+            &betteroffice_pptx::ShapeDraft {
+                name: "Added".to_owned(),
+                rect: betteroffice_pptx::ShapeRect {
+                    x: 0,
+                    y: 0,
+                    width: 100_000,
+                    height: 100_000,
+                },
+                text: "hello".to_owned(),
+                style: betteroffice_pptx::TextStyle::default(),
+            },
+        )
+        .unwrap();
     let refusal = presentation.save().unwrap_err().to_string();
     assert!(
         refusal.contains("cannot save yet"),
-        "a mid-run formatting patch is refused: {refusal}"
+        "an added shape is refused: {refusal}"
     );
 
     assert!(presentation.undo());

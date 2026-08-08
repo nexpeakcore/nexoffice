@@ -1160,8 +1160,10 @@ fn a_keystroke_repeating_the_letter_beside_it_still_lands_in_its_own_run() {
     );
 }
 
+/// Bolding half a run splits it in the file: the untouched half keeps its
+/// bytes and the styled half gets a synthesised `<a:rPr b="1"/>`.
 #[test]
-fn a_bold_toggle_over_part_of_a_run_is_still_refused_by_name() {
+fn a_bold_toggle_over_part_of_a_run_splits_it_in_the_saved_file() {
     let session = session_with(r#"<a:p><a:r><a:t>abcd</a:t></a:r></a:p>"#);
     let story = first_story(&session);
     session
@@ -1177,15 +1179,26 @@ fn a_bold_toggle_over_part_of_a_run_is_still_refused_by_name() {
         )
         .unwrap();
 
-    let reason = refusal(&session.project().unwrap_err());
+    let saved = session.save_bytes().unwrap();
+    let slide_xml = part_text(&saved, SLIDE_PART);
+    assert!(slide_xml.contains(r#"<a:t>ab</a:t>"#), "{slide_xml}");
     assert!(
-        reason.contains("changed in a way this writer cannot express"),
-        "bolding half a run needs a run split, which this writer cannot make: {reason}"
+        slide_xml.contains(r#"<a:rPr b="1"/><a:t>cd</a:t>"#),
+        "{slide_xml}"
     );
+
+    let reopened = DeckSession::open(&saved, 91).unwrap();
+    let story = first_story(&reopened);
+    let runs: Vec<_> = story.paragraphs[0]
+        .runs
+        .iter()
+        .map(|run| (run.text.as_str(), run.style.bold))
+        .collect();
+    assert_eq!(runs, [("ab", None), ("cd", Some(true))]);
 }
 
 #[test]
-fn a_bold_toggle_beside_a_keystroke_is_refused_rather_than_swallowed() {
+fn a_bold_toggle_beside_a_keystroke_both_save() {
     let session = session_with(r#"<a:p><a:r><a:t>abcd</a:t></a:r></a:p>"#);
     let story = first_story(&session);
     type_as_the_editor_does(&session, &story.id, 2, "X");
@@ -1202,15 +1215,19 @@ fn a_bold_toggle_beside_a_keystroke_is_refused_rather_than_swallowed() {
         )
         .unwrap();
 
-    let reason = refusal(&session.project().unwrap_err());
-    assert!(
-        reason.contains("changed in a way this writer cannot express"),
-        "a keystroke does not license the formatting change beside it: {reason}"
-    );
+    let saved = session.save_bytes().unwrap();
+    let reopened = DeckSession::open(&saved, 92).unwrap();
+    let story = first_story(&reopened);
+    let runs: Vec<_> = story.paragraphs[0]
+        .runs
+        .iter()
+        .map(|run| (run.text.as_str(), run.style.bold))
+        .collect();
+    assert_eq!(runs, [("ab", Some(true)), ("Xcd", None)]);
 }
 
 #[test]
-fn a_keystroke_contradicting_the_run_it_lands_in_is_refused_by_name() {
+fn a_keystroke_contradicting_the_run_it_lands_in_splits_the_run() {
     let paragraphs = r#"<a:p><a:r><a:rPr b="1"/><a:t>abcd</a:t></a:r></a:p>"#;
     let session = session_with(paragraphs);
     let story = first_story(&session);
@@ -1220,10 +1237,17 @@ fn a_keystroke_contradicting_the_run_it_lands_in_is_refused_by_name() {
         .insert_text(&EditCtx::local("test"), &story.id, 2, "X", &style)
         .unwrap();
 
-    let reason = refusal(&session.project().unwrap_err());
-    assert!(
-        reason.contains("changed in a way this writer cannot express"),
-        "text typed unbolded into a bold run is a run split, not a keystroke: {reason}"
+    let saved = session.save_bytes().unwrap();
+    let reopened = DeckSession::open(&saved, 93).unwrap();
+    let story = first_story(&reopened);
+    let runs: Vec<_> = story.paragraphs[0]
+        .runs
+        .iter()
+        .map(|run| (run.text.as_str(), run.style.bold))
+        .collect();
+    assert_eq!(
+        runs,
+        [("ab", Some(true)), ("X", Some(false)), ("cd", Some(true))]
     );
 }
 
