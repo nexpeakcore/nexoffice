@@ -1449,3 +1449,50 @@ fn moving_a_shape_without_an_explicit_transform_is_refused() {
     assert_eq!(error.save_fault(), SaveFault::Unprojectable, "{error}");
     assert!(error.to_string().contains("layout"), "{error}");
 }
+
+/// A removed shape's element is cut from the slide; the rest keeps its bytes.
+#[test]
+fn a_removed_shape_saves_and_stays_gone() {
+    let session = DeckSession::open(FIXTURE, 95).unwrap();
+    let snapshot = session.snapshot().unwrap();
+    let slide = &snapshot.slides[0];
+    let victim = slide.shapes[0].clone();
+    session
+        .remove_shape(&EditCtx::local("test"), &slide.id, &victim.id)
+        .unwrap();
+
+    let saved = session.save_bytes().unwrap();
+    let reopened = DeckSession::open(&saved, 96).unwrap();
+    let reopened_slide = &reopened.snapshot().unwrap().slides[0];
+    assert_eq!(reopened_slide.shapes.len(), slide.shapes.len() - 1);
+    assert!(
+        reopened_slide
+            .shapes
+            .iter()
+            .all(|shape| shape.name != victim.name),
+        "the removed shape does not come back"
+    );
+}
+
+/// A removal combined with a text edit in a surviving shape lands both.
+#[test]
+fn a_removal_and_a_text_edit_share_one_save() {
+    let session = session_with(r#"<a:p><a:r><a:t>keep</a:t></a:r></a:p>"#);
+    let snapshot = session.snapshot().unwrap();
+    let other_slide = &snapshot.slides[1];
+    let victim = other_slide.shapes[0].clone();
+    session
+        .remove_shape(&EditCtx::local("test"), &other_slide.id, &victim.id)
+        .unwrap();
+    let story = first_story(&session);
+    type_text(&session, &story.id, 4, "!");
+
+    let saved = session.save_bytes().unwrap();
+    let reopened = DeckSession::open(&saved, 97).unwrap();
+    let story = first_story(&reopened);
+    assert_eq!(story.paragraphs[0].runs[0].text, "keep!");
+    assert_eq!(
+        reopened.snapshot().unwrap().slides[1].shapes.len(),
+        other_slide.shapes.len() - 1
+    );
+}

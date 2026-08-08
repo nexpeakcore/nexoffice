@@ -1433,6 +1433,101 @@ fn malformed(part: &str, offset: usize, message: impl Into<String>) -> PptxError
     }
 }
 
+/// Cuts the named top-level shapes' whole elements out of the slide's
+/// `<p:spTree>`, leaving every other byte in place. Paths are top-level child
+/// indexes counted the way the parser counts shapes; a path that names no
+/// shape is an error rather than a silent no-op.
+pub fn rewrite_slide_shape_removals(
+    part: &str,
+    bytes: &[u8],
+    removals: &[usize],
+) -> Result<Vec<u8>, PptxError> {
+    if removals.is_empty() {
+        return Ok(bytes.to_vec());
+    }
+    let wanted: BTreeSet<usize> = removals.iter().copied().collect();
+    if wanted.len() != removals.len() {
+        return Err(malformed(part, 0, "two removals cover the same shape"));
+    }
+
+    let mut reader = Reader::from_reader(bytes);
+    reader.config_mut().trim_text(false);
+    reader.config_mut().check_end_names = true;
+    // (local name, was a counted top-level shape opened at this depth)
+    let mut stack: Vec<(Vec<u8>, Option<usize>)> = Vec::new();
+    let mut in_tree_depth: Option<usize> = None;
+    let mut next_shape = 0usize;
+    let mut spans: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
+    let mut open_shape: Option<(usize, usize)> = None;
+
+    loop {
+        let opens_at = reader.buffer_position() as usize;
+        let event = reader
+            .read_event()
+            .map_err(|error| malformed(part, opens_at, error.to_string()))?;
+        let ends_at = reader.buffer_position() as usize;
+        match event {
+            Event::Start(ref start) | Event::Empty(ref start) => {
+                let name = local_name(start.name().into_inner()).to_vec();
+                let top_level_shape = in_tree_depth == Some(stack.len())
+                    && matches!(name.as_slice(), b"sp" | b"pic" | b"graphicFrame" | b"grpSp");
+                let index = top_level_shape.then(|| {
+                    let index = next_shape;
+                    next_shape += 1;
+                    index
+                });
+                if let Some(index) = index
+                    && wanted.contains(&index)
+                {
+                    if matches!(event, Event::Empty(_)) {
+                        spans.insert(index, (opens_at, ends_at));
+                    } else {
+                        open_shape = Some((index, opens_at));
+                    }
+                }
+                if matches!(event, Event::Start(_)) {
+                    if name == b"spTree" && in_tree_depth.is_none() {
+                        in_tree_depth = Some(stack.len() + 1);
+                    }
+                    stack.push((name, index));
+                }
+            }
+            Event::End(_) => {
+                if let Some((_, index)) = stack.pop()
+                    && let Some(index) = index
+                    && let Some((open_index, start)) = open_shape
+                    && open_index == index
+                {
+                    spans.insert(index, (start, ends_at));
+                    open_shape = None;
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    let mut splices: Vec<(usize, usize)> = Vec::new();
+    for index in &wanted {
+        let span = spans
+            .get(index)
+            .ok_or_else(|| malformed(part, 0, format!("shape {index} is not in the shape tree")))?;
+        splices.push(*span);
+    }
+    splices.sort_by_key(|(start, _)| *start);
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut cursor = 0;
+    for (start, end) in splices {
+        if start < cursor || end < start || end > bytes.len() {
+            return Err(malformed(part, start, "two removals overlap in the part"));
+        }
+        output.extend_from_slice(&bytes[cursor..start]);
+        cursor = end;
+    }
+    output.extend_from_slice(&bytes[cursor..]);
+    Ok(output)
+}
+
 /// One shape's rewritten placement, in EMU.
 ///
 /// The values land in the `<a:off>`/`<a:ext>` of the `<a:xfrm>` the shape
@@ -2444,5 +2539,27 @@ mod tests {
         assert_eq!(font_size_to_sz(10.5), Some(1050));
         assert_eq!(font_size_to_sz(0.001), None);
         assert!(font_size_to_sz(24.001).is_none());
+    }
+
+    #[test]
+    fn shape_removal_cuts_the_named_top_level_shapes() {
+        let out = rewrite_slide_shape_removals("s.xml", GEOMETRY.as_bytes(), &[1]).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(!out.contains("<p:pic>"), "the picture is gone: {out}");
+        assert!(out.contains(r#"<a:off x="10" y="20"/>"#), "shape 0 kept");
+        assert!(out.contains("<p:grpSp>"), "the group kept");
+        assert!(
+            out.contains(r#"<a:off x="100" y="200"/>"#),
+            "the group child kept"
+        );
+    }
+
+    #[test]
+    fn shape_removal_refuses_a_path_outside_the_tree() {
+        let error = rewrite_slide_shape_removals("s.xml", GEOMETRY.as_bytes(), &[9]).unwrap_err();
+        assert!(
+            error.to_string().contains("not in the shape tree"),
+            "{error}"
+        );
     }
 }
