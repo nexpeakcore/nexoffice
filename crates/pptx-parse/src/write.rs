@@ -1766,6 +1766,55 @@ pub fn rewrite_slide_shape_insertions(
     Ok(output)
 }
 
+/// The first removed drawing id something else in the part still points at:
+/// a connector's `<a:stCxn>`/`<a:endCxn>` or an animation target's `spid`
+/// attribute. The parse model carries neither connectors nor timing, so the
+/// read-back verification cannot see these — the caller refuses the removal
+/// instead of writing a file with dangling ids.
+pub fn dangling_shape_reference(
+    part: &str,
+    bytes: &[u8],
+    ids: &BTreeSet<u32>,
+) -> Result<Option<u32>, PptxError> {
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let mut reader = Reader::from_reader(bytes);
+    reader.config_mut().trim_text(false);
+    reader.config_mut().check_end_names = true;
+    loop {
+        let opens_at = reader.buffer_position() as usize;
+        let event = reader
+            .read_event()
+            .map_err(|error| malformed(part, opens_at, error.to_string()))?;
+        match event {
+            Event::Start(ref start) | Event::Empty(ref start) => {
+                let name = local_name(start.name().into_inner()).to_vec();
+                let wanted_attribute: &[u8] = match name.as_slice() {
+                    b"stCxn" | b"endCxn" => b"id",
+                    _ => b"spid",
+                };
+                for attribute in start.attributes() {
+                    let attribute =
+                        attribute.map_err(|error| malformed(part, opens_at, error.to_string()))?;
+                    if local_name(attribute.key.into_inner()) != wanted_attribute {
+                        continue;
+                    }
+                    if let Ok(value) = std::str::from_utf8(&attribute.value)
+                        && let Ok(id) = value.trim().parse::<u32>()
+                        && ids.contains(&id)
+                    {
+                        return Ok(Some(id));
+                    }
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
 /// One shape's rewritten placement, in EMU.
 ///
 /// The values land in the `<a:off>`/`<a:ext>` of the `<a:xfrm>` the shape
@@ -2798,6 +2847,36 @@ mod tests {
         assert!(
             error.to_string().contains("not in the shape tree"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn dangling_reference_scan_sees_connectors_and_timing_targets() {
+        let xml = concat!(
+            r#"<p:sld xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree>"#,
+            r#"<p:cxnSp><p:nvCxnSpPr><p:cNvPr id="7" name="c"/><p:cNvCxnSpPr>"#,
+            r#"<a:stCxn id="2" idx="0"/><a:endCxn id="3" idx="2"/>"#,
+            r#"</p:cNvCxnSpPr></p:nvCxnSpPr></p:cxnSp>"#,
+            r#"</p:spTree></p:cSld>"#,
+            r#"<p:timing><p:spTgt spid="4"/></p:timing></p:sld>"#,
+        );
+        let ids = |list: &[u32]| list.iter().copied().collect::<BTreeSet<u32>>();
+        assert_eq!(
+            dangling_shape_reference("s.xml", xml.as_bytes(), &ids(&[2])).unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            dangling_shape_reference("s.xml", xml.as_bytes(), &ids(&[3])).unwrap(),
+            Some(3)
+        );
+        assert_eq!(
+            dangling_shape_reference("s.xml", xml.as_bytes(), &ids(&[4])).unwrap(),
+            Some(4)
+        );
+        // The connector's own cNvPr id is not a reference to a removed shape.
+        assert_eq!(
+            dangling_shape_reference("s.xml", xml.as_bytes(), &ids(&[7])).unwrap(),
+            None
         );
     }
 }
