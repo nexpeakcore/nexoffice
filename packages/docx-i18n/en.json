@@ -766,7 +766,8 @@
       "behindText": "Behind Text",
       "inFrontOfText": "In Front of Text",
       "ariaLabel": "Image layout options",
-      "imageProperties": "Image properties…"
+      "imageProperties": "Image properties…",
+      "current": "Current"
     },
     "menuDesc": {
       "inLineWithText": "Image flows in the line as a glyph",

@@ -748,7 +748,8 @@
       "inLineWithText": "בתוך שורת הטקסט",
       "squareLeft": "ריבוע משמאל",
       "squareRight": "ריבוע מימין",
-      "imageProperties": "מאפייני תמונה…"
+      "imageProperties": "מאפייני תמונה…",
+      "current": "נוכחי"
     },
     "menuDesc": {
       "behindText": "התמונה מאחורי הטקסט",

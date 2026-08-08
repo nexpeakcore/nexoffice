@@ -766,7 +766,8 @@
       "behindText": "Di Belakang Teks",
       "inFrontOfText": "Di Depan Teks",
       "ariaLabel": "Opsi tata letak gambar",
-      "imageProperties": "Properti Gambar..."
+      "imageProperties": "Properti Gambar...",
+      "current": "Saat ini"
     },
     "menuDesc": {
       "inLineWithText": "Gambar berada dalam baris teks seperti karakter.",

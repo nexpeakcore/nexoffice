@@ -748,7 +748,8 @@
       "inLineWithText": "嵌入型",
       "squareLeft": "四周型靠左",
       "squareRight": "四周型靠右",
-      "imageProperties": "图片属性…"
+      "imageProperties": "图片属性…",
+      "current": "当前"
     },
     "menuDesc": {
       "behindText": "图像绘制在正文下方",

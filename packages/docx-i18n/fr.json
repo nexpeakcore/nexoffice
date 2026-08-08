@@ -751,7 +751,8 @@
       "behindText": "Derrière le texte",
       "inFrontOfText": "Devant le texte",
       "ariaLabel": "Options de disposition de l'image",
-      "imageProperties": "Propriétés de l'image…"
+      "imageProperties": "Propriétés de l'image…",
+      "current": "Actuel"
     },
     "menuDesc": {
       "inLineWithText": "L'image s'intègre dans la ligne comme un caractère",

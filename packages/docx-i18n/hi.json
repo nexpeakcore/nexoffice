@@ -751,7 +751,8 @@
       "behindText": "टेक्स्ट के पीछे",
       "inFrontOfText": "टेक्स्ट के सामने",
       "ariaLabel": "चित्र लेआउट विकल्प",
-      "imageProperties": "चित्र की विशेषताएँ…"
+      "imageProperties": "चित्र की विशेषताएँ…",
+      "current": "वर्तमान"
     },
     "menuDesc": {
       "inLineWithText": "चित्र एक ग्लिफ़ के रूप में लाइन में बहता है",
