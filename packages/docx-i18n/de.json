@@ -748,7 +748,8 @@
       "inLineWithText": "Mit Text in Zeile",
       "squareLeft": "Quadrat links",
       "squareRight": "Quadrat rechts",
-      "imageProperties": "Bildeigenschaften…"
+      "imageProperties": "Bildeigenschaften…",
+      "current": "Aktuell"
     },
     "menuDesc": {
       "behindText": "Bild liegt hinter dem Text",

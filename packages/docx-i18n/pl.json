@@ -748,7 +748,8 @@
       "inLineWithText": "Równo z tekstem",
       "squareLeft": "Kwadrat z lewej",
       "squareRight": "Kwadrat z prawej",
-      "imageProperties": "Właściwości obrazu…"
+      "imageProperties": "Właściwości obrazu…",
+      "current": "Bieżący"
     },
     "menuDesc": {
       "behindText": "Obraz za tekstem",

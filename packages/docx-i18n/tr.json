@@ -751,7 +751,8 @@
       "behindText": "Metnin arkasında",
       "inFrontOfText": "Metnin önünde",
       "ariaLabel": "Görsel düzeni seçenekleri",
-      "imageProperties": "Görsel özellikleri…"
+      "imageProperties": "Görsel özellikleri…",
+      "current": "Geçerli"
     },
     "menuDesc": {
       "inLineWithText": "Görsel satır içinde harf gibi akar",
