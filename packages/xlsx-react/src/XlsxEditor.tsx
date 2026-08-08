@@ -108,8 +108,8 @@ export interface XlsxEditorApi {
   undo: () => void;
   /** Redo the last undone edit through the editor's history pipeline. */
   redo: () => void;
-  /** Copy the current selection to the system clipboard as TSV. */
-  copySelection: () => Promise<void>;
+  /** Copy the current selection to the system clipboard as TSV; resolves true when the clipboard write succeeded. */
+  copySelection: () => Promise<boolean>;
   /** Copy the current selection to the clipboard, then clear it. */
   cutSelection: () => Promise<void>;
   /** Paste clipboard TSV into the grid at the current selection. */
@@ -467,7 +467,7 @@ function XlsxEditorContent({
   const editorActionsRef = useRef<{
     undo: () => void;
     redo: () => void;
-    copySelection: () => Promise<void>;
+    copySelection: () => Promise<boolean>;
     cutSelection: () => Promise<void>;
     pasteSelection: () => Promise<void>;
     clearSelection: () => void;
@@ -658,7 +658,7 @@ function XlsxEditorContent({
             undo: () => editorActionsRef.current?.undo(),
             redo: () => editorActionsRef.current?.redo(),
             copySelection: () =>
-              editorActionsRef.current?.copySelection() ?? Promise.resolve(),
+              editorActionsRef.current?.copySelection() ?? Promise.resolve(false),
             cutSelection: () =>
               editorActionsRef.current?.cutSelection() ?? Promise.resolve(),
             pasteSelection: () =>
@@ -1015,9 +1015,9 @@ function XlsxEditorContent({
     });
   }, [sheetInfo, limits]);
 
-  const copySelection = useCallback(async () => {
+  const copySelection = useCallback(async (): Promise<boolean> => {
     const handle = handleRef.current;
-    if (!handle || !selection) return;
+    if (!handle || !selection) return false;
     const r = normalizeRange(selection);
     try {
       const from = handle.cell(activeSheet, r.top, r.left).a1;
@@ -1027,14 +1027,17 @@ function XlsxEditorContent({
         cells.map((row) => row.map((c) => ({ input: c.input, isFormula: c.isFormula })))
       );
       await navigator.clipboard.writeText(tsv);
+      return true;
     } catch {
       // clipboard denied or read failed — nothing to paste, leave state as-is.
+      return false;
     }
   }, [selection, activeSheet]);
 
   const cutSelection = useCallback(async () => {
-    await copySelection();
-    clearCells();
+    // Clear only when the copy actually reached the clipboard; wiping cells
+    // after a failed copy loses the data with nothing to paste back.
+    if (await copySelection()) clearCells();
   }, [copySelection, clearCells]);
 
   const pasteSelection = useCallback(async () => {
