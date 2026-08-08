@@ -334,6 +334,24 @@ function PptxEditorContent({
   const [selection, setSelection] = useState<PptxTextSelection | null>(null);
   const [shapeSelection, setShapeSelection] = useState<PptxShapeSelection | null>(null);
   const [slideMenu, setSlideMenu] = useState<{ index: number; x: number; y: number } | null>(null);
+  const [resizePreview, setResizePreview] = useState<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const resizeGestureRef = useRef<{
+    pointerId: number;
+    handle: string;
+    startClientX: number;
+    startClientY: number;
+    slideId: string;
+    shapeId: string;
+    /** Frame-pixel bounds at gesture start. */
+    bounds: FrameBounds;
+    /** EMU rect at gesture start. */
+    emu: { x: number; y: number; width: number; height: number };
+  } | null>(null);
   const [dragPreview, setDragPreview] = useState<ShapeDragPreview | null>(null);
   const [textBoxPreview, setTextBoxPreview] = useState<TextBoxPreview | null>(null);
   const [textStyle, setTextStyle] = useState(initialStyle);
@@ -830,6 +848,113 @@ function PptxEditorContent({
     } catch (value) {
       reportError(value);
     }
+  };
+
+  /** Applies a resize handle's client-pixel drag to a rectangle. */
+  const resizedRect = <T extends { x: number; y: number; width: number; height: number }>(
+    rect: T,
+    handle: string,
+    dx: number,
+    dy: number,
+    minimum: number
+  ): T => {
+    let { x, y, width, height } = rect;
+    if (handle.includes('e')) width += dx;
+    if (handle.includes('s')) height += dy;
+    if (handle.includes('w')) {
+      const clamped = Math.min(dx, width - minimum);
+      x += clamped;
+      width -= clamped;
+    }
+    if (handle.includes('n')) {
+      const clamped = Math.min(dy, height - minimum);
+      y += clamped;
+      height -= clamped;
+    }
+    width = Math.max(minimum, width);
+    height = Math.max(minimum, height);
+    return { ...rect, x, y, width, height };
+  };
+
+  const resizePointerDown = (handle: string) => (event: PointerEvent<HTMLSpanElement>) => {
+    if (!event.isPrimary || event.button !== 0) return;
+    const current = modelRef.current;
+    const slide = current?.snapshot.slides[current.slideIndex];
+    if (!current?.frame || !slide || !shapeSelection || !selectedShape || !selectedShapeBounds) {
+      return;
+    }
+    resizeGestureRef.current = {
+      pointerId: event.pointerId,
+      handle,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      slideId: slide.id,
+      shapeId: shapeSelection.shapeId,
+      bounds: selectedShapeBounds,
+      emu: {
+        x: selectedShape.x,
+        y: selectedShape.y,
+        width: selectedShape.width,
+        height: selectedShape.height,
+      },
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.stopPropagation();
+    event.preventDefault();
+  };
+
+  const resizePointerMove = (event: PointerEvent<HTMLSpanElement>) => {
+    const gesture = resizeGestureRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    const dx = (event.clientX - gesture.startClientX) / scale;
+    const dy = (event.clientY - gesture.startClientY) / scale;
+    setResizePreview(resizedRect(gesture.bounds, gesture.handle, dx, dy, 2));
+    event.preventDefault();
+  };
+
+  const resizePointerUp = (event: PointerEvent<HTMLSpanElement>) => {
+    const gesture = resizeGestureRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    resizeGestureRef.current = null;
+    setResizePreview(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const handle = handleRef.current;
+    const current = modelRef.current;
+    const slide = current?.snapshot.slides[current.slideIndex];
+    if (!handle || !current?.frame || slide?.id !== gesture.slideId) return;
+    const deckDx =
+      ((event.clientX - gesture.startClientX) / scale) *
+      (current.snapshot.widthEmu / current.frame.width);
+    const deckDy =
+      ((event.clientY - gesture.startClientY) / scale) *
+      (current.snapshot.heightEmu / current.frame.height);
+    const next = resizedRect(
+      gesture.emu,
+      gesture.handle,
+      Math.round(deckDx),
+      Math.round(deckDy),
+      12_700
+    );
+    try {
+      if (next.x !== gesture.emu.x || next.y !== gesture.emu.y) {
+        handle.moveShape(gesture.slideId, gesture.shapeId, next.x, next.y);
+      }
+      if (next.width !== gesture.emu.width || next.height !== gesture.emu.height) {
+        handle.resizeShape(gesture.slideId, gesture.shapeId, next.width, next.height);
+      }
+      refreshAt(undefined, true);
+      event.preventDefault();
+    } catch (value) {
+      reportError(value);
+    }
+  };
+
+  const resizePointerCancel = (event: PointerEvent<HTMLSpanElement>) => {
+    if (resizeGestureRef.current?.pointerId !== event.pointerId) return;
+    resizeGestureRef.current = null;
+    setResizePreview(null);
   };
 
   const pointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
@@ -1830,14 +1955,66 @@ function PptxEditorContent({
                   <span
                     style={{
                       ...styles.shapeSelection,
-                      left: (selectedShapeBounds.x + (shapeDragDelta?.x ?? 0)) * scale,
-                      top: (selectedShapeBounds.y + (shapeDragDelta?.y ?? 0)) * scale,
-                      width: Math.max(1, selectedShapeBounds.width * scale),
-                      height: Math.max(1, selectedShapeBounds.height * scale),
+                      left:
+                        ((resizePreview?.x ?? selectedShapeBounds.x) +
+                          (shapeDragDelta?.x ?? 0)) *
+                        scale,
+                      top:
+                        ((resizePreview?.y ?? selectedShapeBounds.y) +
+                          (shapeDragDelta?.y ?? 0)) *
+                        scale,
+                      width: Math.max(1, (resizePreview?.width ?? selectedShapeBounds.width) * scale),
+                      height: Math.max(
+                        1,
+                        (resizePreview?.height ?? selectedShapeBounds.height) * scale
+                      ),
                     }}
                     aria-hidden="true"
                   />
                 ) : null}
+                {selectedShapeBounds && selectedShape && canMoveShape(selectedShape)
+                  ? (
+                      [
+                        ['nw', 0, 0, 'nwse-resize'],
+                        ['n', 0.5, 0, 'ns-resize'],
+                        ['ne', 1, 0, 'nesw-resize'],
+                        ['e', 1, 0.5, 'ew-resize'],
+                        ['se', 1, 1, 'nwse-resize'],
+                        ['s', 0.5, 1, 'ns-resize'],
+                        ['sw', 0, 1, 'nesw-resize'],
+                        ['w', 0, 0.5, 'ew-resize'],
+                      ] as const
+                    ).map(([name, fx, fy, cursor]) => {
+                      const bounds = resizePreview ?? selectedShapeBounds;
+                      return (
+                        <span
+                          key={name}
+                          data-resize-handle={name}
+                          style={{
+                            position: 'absolute',
+                            zIndex: 4,
+                            width: 9,
+                            height: 9,
+                            marginLeft: -4.5,
+                            marginTop: -4.5,
+                            left: (bounds.x + bounds.width * fx + (shapeDragDelta?.x ?? 0)) * scale,
+                            top: (bounds.y + bounds.height * fy + (shapeDragDelta?.y ?? 0)) * scale,
+                            background: '#ffffff',
+                            border: '1.5px solid #2563eb',
+                            borderRadius: 2,
+                            cursor,
+                            pointerEvents: 'auto',
+                            touchAction: 'none',
+                          }}
+                          onPointerDown={resizePointerDown(name)}
+                          onPointerMove={resizePointerMove}
+                          onPointerUp={resizePointerUp}
+                          onPointerCancel={resizePointerCancel}
+                          onLostPointerCapture={resizePointerCancel}
+                        />
+                      );
+                    })
+                  : null}
                 {textBoxPreview ? (
                   <span
                     style={{
