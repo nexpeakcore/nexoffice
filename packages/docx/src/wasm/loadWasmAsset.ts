@@ -64,6 +64,13 @@ export interface WasmModuleState {
   ensure(): void;
 }
 
+function syncInput(input: WasmAsyncInput | undefined): WasmSyncInput | undefined {
+  if (input === undefined) return undefined;
+  if (input instanceof WebAssembly.Module) return input;
+  if (input instanceof ArrayBuffer || ArrayBuffer.isView(input)) return input;
+  return undefined;
+}
+
 export function createWasmModuleState(options: {
   label: string;
   preloadName: string;
@@ -78,6 +85,22 @@ export function createWasmModuleState(options: {
     preload(input?: WasmAsyncInput): Promise<void> {
       if (initialized) return Promise.resolve();
       if (pending) return pending;
+      // Init synchronously whenever the bytes are already at hand (explicit
+      // BufferSource/Module, or the asset on local disk). A pending async
+      // init is a hazard: the glue's re-init guard is checked before its
+      // fetch, so a sync init landing inside that window is later clobbered
+      // by a second, fresh instance while sessions keep pointers into the
+      // first. No async window, no race.
+      const bytes = syncInput(input) ?? (input === undefined ? readWasmSync(options.assetUrl()) : undefined);
+      if (bytes) {
+        try {
+          options.initSync({ module: bytes });
+        } catch (error) {
+          return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+        }
+        initialized = true;
+        return Promise.resolve();
+      }
       pending = options
         .initAsync({ module_or_path: input ?? options.assetUrl() })
         .then(
@@ -93,6 +116,12 @@ export function createWasmModuleState(options: {
     },
     ensure(): void {
       if (initialized) return;
+      if (pending) {
+        throw new Error(
+          `${options.label} wasm preload is still in flight; await ${options.preloadName}() before ` +
+            'synchronous use (a sync init now would be clobbered when the async init lands)'
+        );
+      }
       const bytes = readWasmSync(options.assetUrl());
       if (bytes) {
         options.initSync({ module: bytes });
