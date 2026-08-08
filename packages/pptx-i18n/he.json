@@ -75,7 +75,12 @@
     "panelLabel": null,
     "fallbackTitle": null,
     "canvasLabel": null,
-    "canvasLabelWithSelection": null
+    "canvasLabelWithSelection": null,
+    "menuLabel": "פעולות שקופית",
+    "menuNewSlide": "שקופית חדשה",
+    "menuDeleteSlide": "מחיקת שקופית",
+    "menuMoveUp": "העברה למעלה",
+    "menuMoveDown": "העברה למטה"
   },
   "editor": {
     "appLabel": null,

@@ -75,7 +75,12 @@
     "panelLabel": null,
     "fallbackTitle": null,
     "canvasLabel": null,
-    "canvasLabelWithSelection": null
+    "canvasLabelWithSelection": null,
+    "menuLabel": "Actions de diapositive",
+    "menuNewSlide": "Nouvelle diapositive",
+    "menuDeleteSlide": "Supprimer la diapositive",
+    "menuMoveUp": "Monter",
+    "menuMoveDown": "Descendre"
   },
   "editor": {
     "appLabel": null,

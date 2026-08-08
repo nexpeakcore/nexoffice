@@ -75,7 +75,12 @@
     "panelLabel": null,
     "fallbackTitle": null,
     "canvasLabel": null,
-    "canvasLabelWithSelection": null
+    "canvasLabelWithSelection": null,
+    "menuLabel": "Slayt işlemleri",
+    "menuNewSlide": "Yeni slayt",
+    "menuDeleteSlide": "Slaydı sil",
+    "menuMoveUp": "Yukarı taşı",
+    "menuMoveDown": "Aşağı taşı"
   },
   "editor": {
     "appLabel": null,

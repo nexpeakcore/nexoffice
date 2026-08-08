@@ -75,7 +75,12 @@
     "panelLabel": null,
     "fallbackTitle": null,
     "canvasLabel": null,
-    "canvasLabelWithSelection": null
+    "canvasLabelWithSelection": null,
+    "menuLabel": "Aksi slide",
+    "menuNewSlide": "Slide baru",
+    "menuDeleteSlide": "Hapus slide",
+    "menuMoveUp": "Naikkan",
+    "menuMoveDown": "Turunkan"
   },
   "editor": {
     "appLabel": null,
