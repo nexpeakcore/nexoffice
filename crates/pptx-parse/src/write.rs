@@ -49,11 +49,41 @@ pub struct RunRef {
     pub run: usize,
 }
 
+/// What one written run's `<a:rPr>` must end up expressing, field by field.
+///
+/// `None` leaves the source spelling alone; `Some(None)` removes the
+/// attribute or child element; `Some(Some(value))` writes it. Everything the
+/// patch does not name keeps its source bytes, so effects, links and
+/// spellings this model does not carry survive a formatting change.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RunStylePatch {
+    pub bold: Option<Option<bool>>,
+    pub italic: Option<Option<bool>>,
+    /// The `u` attribute value, e.g. `sng`.
+    pub underline: Option<Option<String>>,
+    pub font_size_pt: Option<Option<f64>>,
+    /// Hex without `#`, written as `<a:solidFill><a:srgbClr val=…/></a:solidFill>`.
+    pub color_rgb: Option<Option<String>>,
+    /// The `<a:latin typeface=…/>` value.
+    pub font_family: Option<Option<String>>,
+}
+
+impl RunStylePatch {
+    pub fn is_empty(&self) -> bool {
+        self.bold.is_none()
+            && self.italic.is_none()
+            && self.underline.is_none()
+            && self.font_size_pt.is_none()
+            && self.color_rgb.is_none()
+            && self.font_family.is_none()
+    }
+}
+
 /// One piece of an output paragraph.
 ///
 /// Every piece names the source run it is made of, so a rewrite can only
 /// re-emit bytes the part already holds.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RunPiece {
     /// The source run, byte for byte.
     Keep(RunRef),
@@ -61,17 +91,26 @@ pub enum RunPiece {
     Text(RunRef, String),
     /// A new `<a:br>` carrying a copy of the source run's `<a:rPr>`.
     Break(RunRef),
+    /// The source `<a:r>` re-emitted around different character data with its
+    /// `<a:rPr>` patched (or synthesised when the source spells none).
+    Styled(RunRef, String, RunStylePatch),
 }
 
 impl RunPiece {
     fn target(&self) -> RunRef {
         match self {
-            Self::Keep(target) | Self::Text(target, _) | Self::Break(target) => *target,
+            Self::Keep(target)
+            | Self::Text(target, _)
+            | Self::Break(target)
+            | Self::Styled(target, _, _) => *target,
         }
     }
 
     fn holds_text(&self) -> bool {
-        matches!(self, Self::Keep(_) | Self::Text(_, _))
+        matches!(
+            self,
+            Self::Keep(_) | Self::Text(_, _) | Self::Styled(_, _, _)
+        )
     }
 }
 
@@ -80,7 +119,7 @@ impl RunPiece {
 /// `shape_path` indexes the shape tree the way the parser walks it: each entry
 /// is the position of a `<p:sp>`/`<p:pic>`/`<p:graphicFrame>`/`<p:grpSp>` among
 /// its container's shape children, descending through groups.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ParagraphRewrite {
     pub shape_path: Vec<usize>,
     pub location: TextBodyLocation,
@@ -252,6 +291,8 @@ impl ParagraphSpans {
 struct RunSpans {
     regular: bool,
     span: (usize, usize),
+    /// End of the run's open tag: where a synthesised `<a:rPr>` would go.
+    open_end: usize,
     properties: Option<(usize, usize)>,
     text: Option<TextSpans>,
 }
@@ -309,6 +350,7 @@ fn collect_spans(
                         SpanRole::Run => spans.runs.push(RunSpans {
                             regular: name == b"r",
                             span: (opens_at, opens_at),
+                            open_end: ends_at,
                             properties: None,
                             text: None,
                         }),
@@ -343,6 +385,7 @@ fn collect_spans(
                         SpanRole::Run => spans.runs.push(RunSpans {
                             regular: name == b"r",
                             span: (opens_at, ends_at),
+                            open_end: ends_at,
                             properties: None,
                             text: None,
                         }),
@@ -671,6 +714,11 @@ fn plan_splices(
                     Item::Piece(RunPiece::Break(_)) => {
                         rebuilt.extend(break_bytes(bytes, run));
                     }
+                    Item::Piece(RunPiece::Styled(_, text, patch)) => {
+                        rebuilt.extend(styled_run_bytes(
+                            part, rewrite, bytes, run, target, text, patch,
+                        )?);
+                    }
                 }
             }
             splices.push(part, run.span.0, run.span.1, rebuilt)?;
@@ -875,6 +923,299 @@ fn break_bytes(bytes: &[u8], run: &RunSpans) -> Vec<u8> {
     output.extend_from_slice(prefix);
     output.extend_from_slice(b"br>");
     output
+}
+
+/// The namespace prefix of an element tag, `<a:r ...>` → `a:` (empty when
+/// the tag is unprefixed).
+fn element_prefix(tag: &[u8]) -> Vec<u8> {
+    let name = element_name(tag);
+    match name.iter().rposition(|byte| *byte == b':') {
+        Some(index) => name[..=index].to_vec(),
+        None => Vec::new(),
+    }
+}
+
+fn escape_attribute(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(character),
+        }
+    }
+    out
+}
+
+/// The whole-hundredths `sz` a size in points writes as, or `None` when the
+/// size cannot round-trip exactly — the caller refuses instead of writing a
+/// file that reads back a different size.
+pub fn font_size_to_sz(points: f64) -> Option<i64> {
+    let hundredths = (points * 100.0).round();
+    if !(100.0..=400_000.0).contains(&hundredths) {
+        return None;
+    }
+    let written = hundredths as i64;
+    (written as f64 / 100.0 == points).then_some(written)
+}
+
+/// Rewrites one `<a:rPr>` fragment to express the patch, keeping every
+/// attribute and child the patch does not name byte for byte.
+fn patch_rpr(part: &str, fragment: &[u8], patch: &RunStylePatch) -> Result<Vec<u8>, PptxError> {
+    let prefix = element_prefix(fragment);
+    let prefix_str = String::from_utf8_lossy(&prefix).into_owned();
+    let mut reader = Reader::from_reader(fragment);
+    reader.config_mut().trim_text(false);
+    reader.config_mut().check_end_names = true;
+
+    let open = reader
+        .read_event()
+        .map_err(|error| malformed(part, 0, error.to_string()))?;
+    let (name, self_closing) = match &open {
+        Event::Start(start) => (start.name().into_inner().to_vec(), false),
+        Event::Empty(start) => (start.name().into_inner().to_vec(), true),
+        _ => {
+            return Err(malformed(
+                part,
+                0,
+                "the rPr fragment does not open with rPr",
+            ));
+        }
+    };
+    let mut attributes: Vec<(Vec<u8>, Vec<u8>)> = match &open {
+        Event::Start(start) | Event::Empty(start) => start
+            .attributes()
+            .map(|attribute| {
+                attribute
+                    .map(|attribute| {
+                        (
+                            attribute.key.into_inner().to_vec(),
+                            attribute.value.into_owned(),
+                        )
+                    })
+                    .map_err(|error| malformed(part, 0, error.to_string()))
+            })
+            .collect::<Result<_, _>>()?,
+        _ => Vec::new(),
+    };
+
+    let mut set_attribute = |key: &[u8], value: Option<String>| {
+        attributes.retain(|(existing, _)| element_name(existing) != key);
+        if let Some(value) = value {
+            attributes.push((key.to_vec(), escape_attribute(&value).into_bytes()));
+        }
+    };
+    if let Some(bold) = &patch.bold {
+        set_attribute(
+            b"b",
+            bold.map(|value| if value { "1" } else { "0" }.to_owned()),
+        );
+    }
+    if let Some(italic) = &patch.italic {
+        set_attribute(
+            b"i",
+            italic.map(|value| if value { "1" } else { "0" }.to_owned()),
+        );
+    }
+    if let Some(underline) = &patch.underline {
+        set_attribute(b"u", underline.clone());
+    }
+    if let Some(size) = &patch.font_size_pt {
+        let written = match size {
+            Some(points) => Some(
+                font_size_to_sz(*points)
+                    .ok_or_else(|| {
+                        malformed(
+                            part,
+                            0,
+                            format!("font size {points}pt cannot be written exactly"),
+                        )
+                    })?
+                    .to_string(),
+            ),
+            None => None,
+        };
+        set_attribute(b"sz", written);
+    }
+
+    // Direct children: record each one's span and local name so solidFill and
+    // latin can be replaced in place while everything else keeps its bytes.
+    let mut children: Vec<(Vec<u8>, (usize, usize))> = Vec::new();
+    if !self_closing {
+        let mut depth = 0usize;
+        loop {
+            let starts_at = reader.buffer_position() as usize;
+            let event = reader
+                .read_event()
+                .map_err(|error| malformed(part, starts_at, error.to_string()))?;
+            let ends_at = reader.buffer_position() as usize;
+            match event {
+                Event::Start(start) => {
+                    if depth == 0 {
+                        children.push((
+                            element_name(&[b"<", start.name().into_inner()].concat()).to_vec(),
+                            (starts_at, ends_at),
+                        ));
+                    }
+                    depth += 1;
+                }
+                Event::Empty(start) => {
+                    if depth == 0 {
+                        children.push((
+                            element_name(&[b"<", start.name().into_inner()].concat()).to_vec(),
+                            (starts_at, ends_at),
+                        ));
+                    }
+                }
+                Event::End(_) => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    if depth == 0
+                        && let Some(last) = children.last_mut()
+                    {
+                        last.1.1 = ends_at;
+                    }
+                }
+                Event::Eof => break,
+                _ => {}
+            }
+        }
+    }
+
+    let local = |qualified: &[u8]| -> Vec<u8> {
+        match qualified.iter().rposition(|byte| *byte == b':') {
+            Some(index) => qualified[index + 1..].to_vec(),
+            None => qualified.to_vec(),
+        }
+    };
+    let solid_fill = children
+        .iter()
+        .position(|(name, _)| local(name) == b"solidFill");
+    let latin = children
+        .iter()
+        .position(|(name, _)| local(name) == b"latin");
+    let color_fragment = patch.color_rgb.as_ref().and_then(|color| {
+        color.as_ref().map(|hex| {
+            format!(
+                r#"<{prefix_str}solidFill><{prefix_str}srgbClr val="{}"/></{prefix_str}solidFill>"#,
+                escape_attribute(hex)
+            )
+        })
+    });
+    let latin_fragment = patch.font_family.as_ref().and_then(|family| {
+        family.as_ref().map(|name| {
+            format!(
+                r#"<{prefix_str}latin typeface="{}"/>"#,
+                escape_attribute(name)
+            )
+        })
+    });
+
+    let mut body: Vec<Vec<u8>> = Vec::new();
+    let mut color_written = false;
+    let mut latin_written = false;
+    for (index, (name, span)) in children.iter().enumerate() {
+        let name = local(name);
+        if patch.color_rgb.is_some() && name == b"solidFill" && Some(index) == solid_fill {
+            if let Some(fragment) = &color_fragment {
+                body.push(fragment.clone().into_bytes());
+            }
+            color_written = true;
+            continue;
+        }
+        if patch.font_family.is_some() && name == b"latin" && Some(index) == latin {
+            if let Some(fragment) = &latin_fragment {
+                body.push(fragment.clone().into_bytes());
+            }
+            latin_written = true;
+            continue;
+        }
+        // `latin` must precede these; a synthesised one goes in front of the
+        // first of them when no source `<a:latin>` marked the spot.
+        if !latin_written
+            && latin.is_none()
+            && matches!(
+                name.as_slice(),
+                b"ea" | b"cs" | b"sym" | b"hlinkClick" | b"hlinkMouseOver" | b"rtl" | b"extLst"
+            )
+            && let Some(fragment) = &latin_fragment
+        {
+            body.push(fragment.clone().into_bytes());
+            latin_written = true;
+        }
+        body.push(fragment_slice(fragment, *span));
+    }
+    if !color_written && let Some(fragment) = &color_fragment {
+        body.insert(0, fragment.clone().into_bytes());
+    }
+    if !latin_written && let Some(fragment) = &latin_fragment {
+        body.push(fragment.clone().into_bytes());
+    }
+
+    let mut output = b"<".to_vec();
+    output.extend_from_slice(&name);
+    for (key, value) in &attributes {
+        output.push(b' ');
+        output.extend_from_slice(key);
+        output.extend_from_slice(b"=\"");
+        output.extend_from_slice(value);
+        output.push(b'"');
+    }
+    if body.is_empty() {
+        output.extend_from_slice(b"/>");
+    } else {
+        output.push(b'>');
+        for piece in body {
+            output.extend_from_slice(&piece);
+        }
+        output.extend_from_slice(b"</");
+        output.extend_from_slice(&name);
+        output.push(b'>');
+    }
+    Ok(output)
+}
+
+fn fragment_slice(fragment: &[u8], span: (usize, usize)) -> Vec<u8> {
+    fragment[span.0..span.1].to_vec()
+}
+
+/// The bytes of one [`RunPiece::Styled`]: the source run re-emitted with its
+/// `<a:rPr>` patched (or synthesised) and its character data replaced.
+fn styled_run_bytes(
+    part: &str,
+    rewrite: &ParagraphRewrite,
+    bytes: &[u8],
+    run: &RunSpans,
+    target: RunRef,
+    text: &str,
+    patch: &RunStylePatch,
+) -> Result<Vec<u8>, PptxError> {
+    let text_spans = run
+        .text
+        .as_ref()
+        .ok_or_else(|| missing_run(part, rewrite, target, "has no <a:t> to write"))?;
+    let mut output = Vec::new();
+    match run.properties {
+        Some((start, end)) => {
+            output.extend_from_slice(&bytes[run.span.0..start]);
+            output.extend(patch_rpr(part, &bytes[start..end], patch)?);
+            output.extend_from_slice(&bytes[end..text_spans.data.0]);
+        }
+        None => {
+            let prefix = element_prefix(&bytes[run.span.0..run.open_end]);
+            let empty = format!("<{}rPr/>", String::from_utf8_lossy(&prefix));
+            output.extend_from_slice(&bytes[run.span.0..run.open_end]);
+            output.extend(patch_rpr(part, empty.as_bytes(), patch)?);
+            output.extend_from_slice(&bytes[run.open_end..text_spans.data.0]);
+        }
+    }
+    output.extend(render_text(part, rewrite, target, text_spans, text)?);
+    output.extend_from_slice(&bytes[text_spans.data.1..run.span.1]);
+    Ok(output)
 }
 
 fn element_name(tag: &[u8]) -> &[u8] {
@@ -1996,5 +2337,112 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("no explicit"), "{error}");
+    }
+
+    const STYLED: &str = concat!(
+        r#"<p:sld xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:txBody>"#,
+        r#"<a:p><a:r><a:rPr b="1" sz="1800"><a:solidFill><a:srgbClr val="111111"/></a:solidFill>"#,
+        r#"<a:latin typeface="Aptos"/></a:rPr><a:t>alphabet</a:t></a:r></a:p>"#,
+        r#"<a:p><a:r><a:t>bare</a:t></a:r></a:p>"#,
+        r#"</p:txBody></p:sp></p:spTree></p:cSld></p:sld>"#,
+    );
+
+    fn styled(paragraph: usize, run: usize, text: &str, patch: RunStylePatch) -> RunPiece {
+        RunPiece::Styled(RunRef { paragraph, run }, text.to_owned(), patch)
+    }
+
+    #[test]
+    fn styled_pieces_split_a_run_and_patch_its_properties() {
+        let rewrite = ParagraphRewrite {
+            shape_path: vec![0],
+            location: TextBodyLocation::Shape,
+            first_paragraph: 0,
+            source_paragraphs: 1,
+            paragraphs: vec![vec![
+                styled(0, 0, "alpha", RunStylePatch::default()),
+                styled(
+                    0,
+                    0,
+                    "bet",
+                    RunStylePatch {
+                        italic: Some(Some(true)),
+                        color_rgb: Some(Some("FF0000".to_owned())),
+                        font_size_pt: Some(Some(24.0)),
+                        ..RunStylePatch::default()
+                    },
+                ),
+            ]],
+        };
+        let out = rewrite_slide_text("s.xml", STYLED.as_bytes(), &[rewrite]).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains(r#"<a:rPr b="1" sz="1800"><a:solidFill><a:srgbClr val="111111"/></a:solidFill><a:latin typeface="Aptos"/></a:rPr><a:t>alpha</a:t>"#),
+            "the untouched half keeps its source spelling: {out}"
+        );
+        assert!(
+            out.contains(r#"<a:rPr b="1" i="1" sz="2400"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill><a:latin typeface="Aptos"/></a:rPr><a:t>bet</a:t>"#),
+            "the styled half patches size, italic and colour in place: {out}"
+        );
+    }
+
+    #[test]
+    fn styled_piece_synthesises_rpr_for_a_bare_run() {
+        let rewrite = ParagraphRewrite {
+            shape_path: vec![0],
+            location: TextBodyLocation::Shape,
+            first_paragraph: 1,
+            source_paragraphs: 1,
+            paragraphs: vec![vec![styled(
+                1,
+                0,
+                "bare",
+                RunStylePatch {
+                    bold: Some(Some(true)),
+                    ..RunStylePatch::default()
+                },
+            )]],
+        };
+        let out = rewrite_slide_text("s.xml", STYLED.as_bytes(), &[rewrite]).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains(r#"<a:r><a:rPr b="1"/><a:t>bare</a:t></a:r>"#),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn styled_piece_can_remove_a_property() {
+        let rewrite = ParagraphRewrite {
+            shape_path: vec![0],
+            location: TextBodyLocation::Shape,
+            first_paragraph: 0,
+            source_paragraphs: 1,
+            paragraphs: vec![vec![styled(
+                0,
+                0,
+                "alphabet",
+                RunStylePatch {
+                    bold: Some(None),
+                    color_rgb: Some(None),
+                    ..RunStylePatch::default()
+                },
+            )]],
+        };
+        let out = rewrite_slide_text("s.xml", STYLED.as_bytes(), &[rewrite]).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains(
+                r#"<a:rPr sz="1800"><a:latin typeface="Aptos"/></a:rPr><a:t>alphabet</a:t>"#
+            ),
+            "bold attribute and fill child are gone: {out}"
+        );
+    }
+
+    #[test]
+    fn font_sizes_that_cannot_round_trip_are_refused() {
+        assert_eq!(font_size_to_sz(24.0), Some(2400));
+        assert_eq!(font_size_to_sz(10.5), Some(1050));
+        assert_eq!(font_size_to_sz(0.001), None);
+        assert!(font_size_to_sz(24.001).is_none());
     }
 }

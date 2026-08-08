@@ -27,8 +27,9 @@ use std::ops::Range;
 
 use ooxml_drawingml::Theme;
 use pptx_parse::{
-    GraphicFrameData, ParagraphRewrite, PptxPackage, RunPiece, RunProperties, RunRef, ShapeNode,
-    ShapeTransformRewrite, TextBody, TextBodyLocation, TextParagraph, TextRun,
+    GraphicFrameData, ParagraphRewrite, PptxPackage, RunPiece, RunProperties, RunRef,
+    RunStylePatch, ShapeNode, ShapeTransformRewrite, TextBody, TextBodyLocation, TextParagraph,
+    TextRun, font_size_to_sz,
 };
 use yrs::{Map, TextRef, Transact, WriteTxn};
 
@@ -469,7 +470,10 @@ fn project_body(
     let mut predicted = source.clone();
     predicted.paragraphs.clear();
     let mut typed = current_story.clone();
-    let mut rewrites = Vec::new();
+    // Every output paragraph carries its pieces — an untouched paragraph as
+    // all-Keep — so the style pass below can turn any of them into a rewrite.
+    let mut outputs: Vec<Vec<RunPiece>> = Vec::new();
+    let mut spans: Vec<GroupSpan> = Vec::new();
     for group in &groups {
         let sources = &source.paragraphs[group.source.clone()];
         let currents = &current_story.paragraphs[group.current.clone()];
@@ -477,17 +481,28 @@ fn project_body(
             && currents.len() == 1
             && paragraph_text(&sources[0]) == snapshot_text(&currents[0])
         {
+            spans.push(GroupSpan {
+                source_start: group.source.start,
+                source_len: 1,
+                output: outputs.len()..outputs.len() + 1,
+                text_changed: false,
+            });
+            outputs.push(
+                (0..sources[0].runs.len())
+                    .map(|run| {
+                        RunPiece::Keep(RunRef {
+                            paragraph: group.source.start,
+                            run,
+                        })
+                    })
+                    .collect(),
+            );
             predicted.paragraphs.push(sources[0].clone());
             continue;
         }
         let origin = format!("{place} paragraph {}", group.source.start + 1);
         let planned = plan_group(sources, currents, group.source.start)
             .map_err(|reason| unprojectable(format!("{origin}: {reason}")))?;
-        for piece in planned.pieces.iter().flatten() {
-            if let RunPiece::Text(_, text) = piece {
-                plan.charge(text, &origin)?;
-            }
-        }
         if let Some(insertion) = &planned.insertion {
             adopt_run_style(
                 &mut typed.paragraphs[group.current.clone()],
@@ -495,13 +510,57 @@ fn project_body(
                 &style_from_run_properties(&insertion.properties, context.theme),
             );
         }
+        spans.push(GroupSpan {
+            source_start: group.source.start,
+            source_len: group.source.len(),
+            output: outputs.len()..outputs.len() + planned.pieces.len(),
+            text_changed: true,
+        });
+        outputs.extend(planned.pieces);
         predicted.paragraphs.extend(planned.paragraphs);
+    }
+
+    // Formatting pass: where a paragraph's characters agree but their styles
+    // do not, split its pieces along the typed run boundaries and patch each
+    // one's <a:rPr>. What this pass cannot express it leaves alone for the
+    // comparison below to refuse by name.
+    for (index, typed_paragraph) in typed.paragraphs.iter().enumerate() {
+        let Some(predicted_paragraph) = predicted.paragraphs.get(index) else {
+            break;
+        };
+        if paragraph_styles_match(predicted_paragraph, typed_paragraph, context.theme) {
+            continue;
+        }
+        let _ = predicted_paragraph;
+        if let Some((pieces, runs)) =
+            reconcile_paragraph(&outputs[index], source, typed_paragraph, context.theme)
+        {
+            outputs[index] = pieces;
+            predicted.paragraphs[index].runs = runs;
+            if let Some(span) = spans.iter_mut().find(|span| span.output.contains(&index)) {
+                span.text_changed = true;
+            }
+        }
+    }
+
+    let mut rewrites = Vec::new();
+    for span in &spans {
+        if !span.text_changed {
+            continue;
+        }
+        let origin = format!("{place} paragraph {}", span.source_start + 1);
+        let pieces: Vec<Vec<RunPiece>> = outputs[span.output.clone()].to_vec();
+        for piece in pieces.iter().flatten() {
+            if let RunPiece::Text(_, text) | RunPiece::Styled(_, text, _) = piece {
+                plan.charge(text, &origin)?;
+            }
+        }
         rewrites.push(ParagraphRewrite {
             shape_path: shape_path.to_vec(),
             location: location.clone(),
-            first_paragraph: group.source.start,
-            source_paragraphs: group.source.len(),
-            paragraphs: planned.pieces,
+            first_paragraph: span.source_start,
+            source_paragraphs: span.source_len,
+            paragraphs: pieces,
         });
     }
 
@@ -536,6 +595,287 @@ fn project_body(
 struct Group {
     source: Range<usize>,
     current: Range<usize>,
+}
+
+/// One planned group's place in the output, kept so the formatting pass can
+/// promote an untouched group to a rewrite when it patches a style.
+struct GroupSpan {
+    source_start: usize,
+    source_len: usize,
+    output: Range<usize>,
+    text_changed: bool,
+}
+
+/// `#RRGGBB` uppercase, so two spellings of one colour compare equal.
+fn normalize_color(color: &str) -> String {
+    let bare = color.strip_prefix('#').unwrap_or(color);
+    if bare.len() == 6 && bare.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        format!("#{}", bare.to_ascii_uppercase())
+    } else {
+        color.to_owned()
+    }
+}
+
+fn normalized_style(style: &TextStyle) -> TextStyle {
+    TextStyle {
+        color: style.color.as_deref().map(normalize_color),
+        ..style.clone()
+    }
+}
+
+/// Resolved, merged runs of both sides compare equal — colours normalised.
+fn paragraph_styles_match(
+    predicted: &TextParagraph,
+    typed: &ParagraphSnapshot,
+    theme: Option<&Theme>,
+) -> bool {
+    let merge = |runs: Vec<(String, TextStyle)>| -> Vec<(String, TextStyle)> {
+        let mut merged: Vec<(String, TextStyle)> = Vec::new();
+        for (text, style) in runs {
+            if text.is_empty() {
+                continue;
+            }
+            match merged.last_mut() {
+                Some(last) if last.1 == style => last.0.push_str(&text),
+                _ => merged.push((text, style)),
+            }
+        }
+        merged
+    };
+    let left = merge(
+        predicted
+            .runs
+            .iter()
+            .map(|run| {
+                (
+                    run.text.clone(),
+                    normalized_style(&style_from_run_properties(&run.properties, theme)),
+                )
+            })
+            .collect(),
+    );
+    let right = merge(
+        typed
+            .runs
+            .iter()
+            .map(|run| (run.text.clone(), normalized_style(&run.style)))
+            .collect(),
+    );
+    left == right
+}
+
+/// The `RunStylePatch` that takes `source` to `target`, or `None` for a
+/// difference the writer cannot spell (a size that does not round-trip).
+fn style_patch(source: &TextStyle, target: &TextStyle) -> Option<RunStylePatch> {
+    let mut patch = RunStylePatch::default();
+    if source.bold != target.bold {
+        patch.bold = Some(target.bold);
+    }
+    if source.italic != target.italic {
+        patch.italic = Some(target.italic);
+    }
+    if source.underline != target.underline {
+        patch.underline = Some(target.underline.clone());
+    }
+    if source.font_size_pt != target.font_size_pt {
+        if let Some(points) = target.font_size_pt
+            && font_size_to_sz(points).is_none()
+        {
+            return None;
+        }
+        patch.font_size_pt = Some(target.font_size_pt);
+    }
+    let source_color = source.color.as_deref().map(normalize_color);
+    let target_color = target.color.as_deref().map(normalize_color);
+    if source_color != target_color {
+        patch.color_rgb = Some(
+            target_color
+                .as_deref()
+                .map(|color| color.trim_start_matches('#').to_owned()),
+        );
+    }
+    if source.font_family != target.font_family {
+        patch.font_family = Some(target.font_family.clone());
+    }
+    Some(patch)
+}
+
+fn apply_patch_to_properties(properties: &RunProperties, patch: &RunStylePatch) -> RunProperties {
+    let mut out = properties.clone();
+    if let Some(bold) = &patch.bold {
+        out.bold = *bold;
+    }
+    if let Some(italic) = &patch.italic {
+        out.italic = *italic;
+    }
+    if let Some(underline) = &patch.underline {
+        out.underline = underline.clone();
+    }
+    if let Some(size) = &patch.font_size_pt {
+        out.font_size_pt =
+            size.and_then(|points| font_size_to_sz(points).map(|sz| sz as f64 / 100.0));
+    }
+    if let Some(color) = &patch.color_rgb {
+        out.color = color.as_ref().map(|hex| ooxml_drawingml::ColorValue {
+            rgb: Some(hex.clone()),
+            ..ooxml_drawingml::ColorValue::default()
+        });
+    }
+    if let Some(family) = &patch.font_family {
+        out.font_family = family.clone();
+    }
+    out
+}
+
+/// Splits one output paragraph's pieces along the typed run boundaries and
+/// patches each segment's style. `None` leaves the paragraph as planned, so
+/// the final comparison refuses instead of this pass guessing.
+fn reconcile_paragraph(
+    pieces: &[RunPiece],
+    source: &TextBody,
+    typed: &ParagraphSnapshot,
+    theme: Option<&Theme>,
+) -> Option<(Vec<RunPiece>, Vec<TextRun>)> {
+    // Segment list from the planned pieces: which source run each character
+    // is written from, and what it says.
+    let mut segments: Vec<(RunRef, String)> = Vec::new();
+    for piece in pieces {
+        match piece {
+            RunPiece::Keep(target) => {
+                let run = source
+                    .paragraphs
+                    .get(target.paragraph)?
+                    .runs
+                    .get(target.run)?;
+                if run.line_break || run.field_id.is_some() || run.text.is_empty() {
+                    return None;
+                }
+                segments.push((*target, run.text.clone()));
+            }
+            RunPiece::Text(target, text) => segments.push((*target, text.clone())),
+            RunPiece::Break(_) | RunPiece::Styled(_, _, _) => return None,
+        }
+    }
+    let source_run = |target: &RunRef| -> Option<&TextRun> {
+        source
+            .paragraphs
+            .get(target.paragraph)?
+            .runs
+            .get(target.run)
+    };
+    for (target, _) in &segments {
+        let run = source_run(target)?;
+        if run.line_break || run.field_id.is_some() {
+            return None;
+        }
+    }
+    let piece_text: String = segments.iter().map(|(_, text)| text.as_str()).collect();
+    let typed_text: String = typed.runs.iter().map(|run| run.text.as_str()).collect();
+    if piece_text != typed_text {
+        return None;
+    }
+
+    // Character-aligned walk over both segmentations.
+    let mut out_pieces: Vec<RunPiece> = Vec::new();
+    let mut out_runs: Vec<TextRun> = Vec::new();
+    let mut piece_iter = segments.iter();
+    let mut piece_current = piece_iter.next()?.clone();
+    let mut piece_chars: Vec<char> = piece_current.1.chars().collect();
+    let mut piece_offset = 0usize;
+    let mut typed_iter = typed.runs.iter();
+    let mut typed_current = typed_iter.next()?;
+    let mut typed_remaining = typed_current.text.chars().count();
+
+    loop {
+        // Skip empty carriers on either side.
+        while piece_offset >= piece_chars.len() {
+            match piece_iter.next() {
+                Some(next) => {
+                    piece_current = next.clone();
+                    piece_chars = piece_current.1.chars().collect();
+                    piece_offset = 0;
+                }
+                None => break,
+            }
+        }
+        while typed_remaining == 0 {
+            match typed_iter.next() {
+                Some(next) => {
+                    typed_current = next;
+                    typed_remaining = typed_current.text.chars().count();
+                }
+                None => break,
+            }
+        }
+        if piece_offset >= piece_chars.len() {
+            break;
+        }
+        if typed_remaining == 0 {
+            return None;
+        }
+        let take = (piece_chars.len() - piece_offset).min(typed_remaining);
+        let text: String = piece_chars[piece_offset..piece_offset + take]
+            .iter()
+            .collect();
+        piece_offset += take;
+        typed_remaining -= take;
+
+        let target = piece_current.0;
+        let run = source_run(&target)?;
+        let source_style = style_from_run_properties(&run.properties, theme);
+        let patch = style_patch(&source_style, &typed_current.style)?;
+
+        let piece = if patch.is_empty() {
+            if text == run.text {
+                RunPiece::Keep(target)
+            } else {
+                RunPiece::Text(target, text.clone())
+            }
+        } else {
+            RunPiece::Styled(target, text.clone(), patch.clone())
+        };
+        let properties = if patch.is_empty() {
+            run.properties.clone()
+        } else {
+            apply_patch_to_properties(&run.properties, &patch)
+        };
+
+        // Merge with the previous piece when it continues the same run with
+        // the same treatment, so an unsplit run stays one run.
+        let merged = match (out_pieces.last_mut(), out_runs.last_mut(), &piece) {
+            (
+                Some(RunPiece::Styled(last_target, last_text, last_patch)),
+                Some(last_run),
+                RunPiece::Styled(next_target, _, next_patch),
+            ) if *last_target == *next_target && *last_patch == *next_patch => {
+                last_text.push_str(&text);
+                last_run.text.push_str(&text);
+                true
+            }
+            (
+                Some(RunPiece::Text(last_target, last_text)),
+                Some(last_run),
+                RunPiece::Text(next_target, _),
+            ) if *last_target == *next_target => {
+                last_text.push_str(&text);
+                last_run.text.push_str(&text);
+                true
+            }
+            _ => false,
+        };
+        if !merged {
+            out_pieces.push(piece);
+            out_runs.push(TextRun {
+                text,
+                properties,
+                field_id: None,
+                field_type: None,
+                line_break: false,
+            });
+        }
+    }
+
+    Some((out_pieces, out_runs))
 }
 
 /// Matches current paragraphs to the source paragraphs they came from.
@@ -1017,10 +1357,11 @@ fn content(story: &StorySnapshot) -> StorySnapshot {
     for (index, paragraph) in story.paragraphs.iter_mut().enumerate() {
         paragraph.id = index.to_string();
         let mut runs: Vec<TextRunSnapshot> = Vec::new();
-        for run in std::mem::take(&mut paragraph.runs) {
+        for mut run in std::mem::take(&mut paragraph.runs) {
             if run.text.is_empty() {
                 continue;
             }
+            run.style = normalized_style(&run.style);
             match runs.last_mut() {
                 Some(last) if last.style == run.style => last.text.push_str(&run.text),
                 _ => runs.push(run),
