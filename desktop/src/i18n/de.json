@@ -40,6 +40,7 @@
       "actualSize": "Originalgröße",
       "wordCount": "Wörter zählen",
       "spellCheck": "Rechtschreibprüfung",
+      "aiAssistant": "KI-Assistent",
       "freezeTopRow": "Oberste Zeile fixieren",
       "freezeFirstColumn": "Erste Spalte fixieren",
       "unfreeze": "Fixierung aufheben",
@@ -162,6 +163,19 @@
     "none": "Keine falsch geschriebenen Wörter gefunden.",
     "countOne": "1 falsch geschriebenes Wort",
     "countMany": "{count} falsch geschriebene Wörter"
+  },
+  "agentPanel": {
+    "title": "KI-Assistent",
+    "close": "Schließen",
+    "empty": "Stelle Fragen zur geöffneten Tabelle — der Assistent liest sie vor der Antwort mit Werkzeugen.",
+    "placeholder": "Frage zu dieser Tabelle…",
+    "send": "Senden",
+    "cancel": "Stopp",
+    "thinking": "Denkt nach…",
+    "working": "{tool} läuft…",
+    "needKey": "Gib deinen DeepSeek-API-Schlüssel ein, um den Assistenten zu aktivieren. Er wird verschlüsselt auf diesem Gerät gespeichert.",
+    "keyPlaceholder": "DeepSeek-API-Schlüssel",
+    "saveKey": "Schlüssel speichern"
   },
   "update": {
     "ready": "Update {version} bereit",

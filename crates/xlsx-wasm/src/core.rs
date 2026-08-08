@@ -332,6 +332,19 @@ impl Session {
         serde_json::to_string(&self.sheet_info()?).map_err(|error| error.to_string())
     }
 
+    pub fn used_range_json(&self, sheet: u32) -> Result<String, String> {
+        let sheet = self
+            .workbook
+            .model()
+            .sheets
+            .get(sheet as usize)
+            .ok_or_else(|| format!("sheet {sheet} out of range"))?;
+        serde_json::to_string(&serde_json::json!({
+            "usedRange": sheet.used_range().map(|range| range.to_a1()),
+        }))
+        .map_err(|error| error.to_string())
+    }
+
     pub fn calculation_status_json(&self) -> Result<String, String> {
         serde_json::to_string(&CalculationStatus {
             limited_cells: self.changed_list(&self.workbook.last_calculation().limited_cells),

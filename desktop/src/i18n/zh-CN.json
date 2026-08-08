@@ -40,6 +40,7 @@
       "actualSize": "实际大小",
       "wordCount": "字数统计",
       "spellCheck": "拼写检查",
+      "aiAssistant": "AI 助手",
       "freezeTopRow": "冻结首行",
       "freezeFirstColumn": "冻结首列",
       "unfreeze": "取消冻结",
@@ -162,6 +163,19 @@
     "none": "未发现拼写错误的单词。",
     "countOne": "1 个拼写错误的单词",
     "countMany": "{count} 个拼写错误的单词"
+  },
+  "agentPanel": {
+    "title": "AI 助手",
+    "close": "关闭",
+    "empty": "询问当前打开的表格 — 助手会先用工具读取内容再回答。",
+    "placeholder": "询问此表格…",
+    "send": "发送",
+    "cancel": "停止",
+    "thinking": "思考中…",
+    "working": "正在运行 {tool}…",
+    "needKey": "输入 DeepSeek API 密钥以启用助手。密钥加密保存在本机。",
+    "keyPlaceholder": "DeepSeek API 密钥",
+    "saveKey": "保存密钥"
   },
   "update": {
     "ready": "更新 {version} 已就绪",

@@ -40,6 +40,7 @@
       "actualSize": "Rzeczywisty rozmiar",
       "wordCount": "Liczba słów",
       "spellCheck": "Sprawdzanie pisowni",
+      "aiAssistant": "Asystent AI",
       "freezeTopRow": "Zablokuj górny wiersz",
       "freezeFirstColumn": "Zablokuj pierwszą kolumnę",
       "unfreeze": "Odblokuj okienka",
@@ -162,6 +163,19 @@
     "none": "Nie znaleziono błędnie napisanych słów.",
     "countOne": "1 błędnie napisane słowo",
     "countMany": "Błędnie napisane słowa: {count}"
+  },
+  "agentPanel": {
+    "title": "Asystent AI",
+    "close": "Zamknij",
+    "empty": "Pytaj o otwarty arkusz — asystent czyta go narzędziami przed odpowiedzią.",
+    "placeholder": "Zapytaj o ten arkusz…",
+    "send": "Wyślij",
+    "cancel": "Zatrzymaj",
+    "thinking": "Myślę…",
+    "working": "Uruchamiam {tool}…",
+    "needKey": "Podaj klucz API DeepSeek, aby włączyć asystenta. Klucz jest przechowywany zaszyfrowany na tym komputerze.",
+    "keyPlaceholder": "Klucz API DeepSeek",
+    "saveKey": "Zapisz klucz"
   },
   "update": {
     "ready": "Aktualizacja {version} gotowa",

@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import {
   IPC,
+  type AgentEvent,
+  type AgentRunRequest,
+  type AgentSettings,
+  type AgentSettingsUpdate,
+  type AgentToolRequest,
   type DocumentKind,
   type EditCapabilities,
   type ExportPdfResult,
@@ -93,6 +98,32 @@ const api = {
     const listener = (_event: Electron.IpcRendererEvent, update: UpdateEvent) => handler(update)
     ipcRenderer.on(IPC.updateEvent, listener)
     return () => ipcRenderer.removeListener(IPC.updateEvent, listener)
+  },
+
+  agentGetSettings: (): Promise<AgentSettings | null> => ipcRenderer.invoke(IPC.agentSettingsGet),
+
+  agentSetSettings: (update: AgentSettingsUpdate): Promise<AgentSettings | null> =>
+    ipcRenderer.invoke(IPC.agentSettingsSet, update),
+
+  agentRun: (request: AgentRunRequest): Promise<void> => ipcRenderer.invoke(IPC.agentRun, request),
+
+  agentCancel: (): void => ipcRenderer.send(IPC.agentCancel),
+
+  agentToolResult: (id: string, result: unknown): void =>
+    ipcRenderer.send(IPC.agentToolResult, { id, result }),
+
+  onAgentEvent: (handler: (event: AgentEvent) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, agentEvent: AgentEvent) =>
+      handler(agentEvent)
+    ipcRenderer.on(IPC.agentEvent, listener)
+    return () => ipcRenderer.removeListener(IPC.agentEvent, listener)
+  },
+
+  onAgentToolRequest: (handler: (request: AgentToolRequest) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, request: AgentToolRequest) =>
+      handler(request)
+    ipcRenderer.on(IPC.agentToolRequest, listener)
+    return () => ipcRenderer.removeListener(IPC.agentToolRequest, listener)
   },
 }
 

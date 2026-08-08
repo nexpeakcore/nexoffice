@@ -40,6 +40,7 @@
       "actualSize": "Ukuran Sebenarnya",
       "wordCount": "Jumlah Kata",
       "spellCheck": "Periksa Ejaan",
+      "aiAssistant": "Asisten AI",
       "freezeTopRow": "Bekukan Baris Atas",
       "freezeFirstColumn": "Bekukan Kolom Pertama",
       "unfreeze": "Lepas Pembekuan",
@@ -162,6 +163,19 @@
     "none": "Tidak ditemukan kata yang salah eja.",
     "countOne": "1 kata salah eja",
     "countMany": "{count} kata salah eja"
+  },
+  "agentPanel": {
+    "title": "Asisten AI",
+    "close": "Tutup",
+    "empty": "Tanyakan tentang lembar kerja yang terbuka — asisten membacanya dengan alat sebelum menjawab.",
+    "placeholder": "Tanya tentang lembar ini…",
+    "send": "Kirim",
+    "cancel": "Berhenti",
+    "thinking": "Berpikir…",
+    "working": "Menjalankan {tool}…",
+    "needKey": "Masukkan kunci API DeepSeek untuk mengaktifkan asisten. Kunci disimpan terenkripsi di mesin ini.",
+    "keyPlaceholder": "Kunci API DeepSeek",
+    "saveKey": "Simpan kunci"
   },
   "update": {
     "ready": "Pembaruan {version} siap",

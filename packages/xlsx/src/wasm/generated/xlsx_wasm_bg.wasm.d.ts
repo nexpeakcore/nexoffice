@@ -40,6 +40,7 @@ export const xlsxdocument_sheetCommentsJson: (a: number, b: number, c: number) =
 export const xlsxdocument_sheetInfoJson: (a: number) => [number, number, number, number];
 export const xlsxdocument_startUpdateObservation: (a: number) => [number, number];
 export const xlsxdocument_undoJson: (a: number) => [number, number, number, number];
+export const xlsxdocument_usedRangeJson: (a: number, b: number) => [number, number, number, number];
 export const xlsxdocument_version: () => [number, number];
 export const rezip_docx: (a: any) => [number, number, number, number];
 export const sanitizeOoxml: (a: number, b: number, c: number, d: number) => [number, number, number, number];
