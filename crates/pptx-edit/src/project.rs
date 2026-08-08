@@ -1,8 +1,9 @@
 //! Projection of deck edits back onto the source package.
 //!
-//! Run text, paragraph splits, paragraph merges and soft line breaks are
-//! expressible. Everything the projection cannot write is refused by name, so a
-//! save never quietly drops an edit.
+//! Run text, paragraph splits, paragraph merges, soft line breaks, and moved
+//! or resized shapes and pictures (their explicit `<a:xfrm>` rewritten in
+//! place) are expressible. Everything the projection cannot write is refused
+//! by name, so a save never quietly drops an edit.
 //!
 //! The projection is verified twice rather than assumed. Planning re-seeds a
 //! story from the rewritten text bodies and requires the result to equal the
@@ -27,7 +28,7 @@ use std::ops::Range;
 use ooxml_drawingml::Theme;
 use pptx_parse::{
     GraphicFrameData, ParagraphRewrite, PptxPackage, RunPiece, RunProperties, RunRef, ShapeNode,
-    TextBody, TextBodyLocation, TextParagraph, TextRun,
+    ShapeTransformRewrite, TextBody, TextBodyLocation, TextParagraph, TextRun,
 };
 use yrs::{Map, TextRef, Transact, WriteTxn};
 
@@ -189,7 +190,7 @@ impl DeckSession {
             }
         }
 
-        let rewrote_parts = !plan.edits.is_empty();
+        let rewrote_parts = !plan.edits.is_empty() || !plan.transforms.is_empty();
         for (part_path, edits) in &plan.edits {
             let bytes = package
                 .part_bytes(part_path)
@@ -197,6 +198,40 @@ impl DeckSession {
             let rewritten = pptx_parse::rewrite_slide_text(part_path, bytes, edits)
                 .map_err(|error| EditError::WriteFailed(error.to_string()))?;
             package.replace_part(part_path, rewritten);
+        }
+        for (part_path, transforms) in &plan.transforms {
+            let bytes = package
+                .part_bytes(part_path)
+                .ok_or_else(|| EditError::WriteFailed(format!("part {part_path} is missing")))?;
+            let rewritten = pptx_parse::rewrite_slide_geometry(part_path, bytes, transforms)
+                .map_err(|error| {
+                    let message = error.to_string();
+                    // A shape whose placement lives in its layout has no
+                    // <a:xfrm> to rewrite — that is the user's move to undo,
+                    // not a writer bug.
+                    if message.contains("no explicit") {
+                        unprojectable(
+                            "a moved shape takes its position from the slide layout, which the \
+                             writer cannot rewrite yet",
+                        )
+                    } else {
+                        EditError::WriteFailed(message)
+                    }
+                })?;
+            package.replace_part(part_path, rewritten);
+        }
+        for moved in &plan.moved {
+            let transform = package
+                .slides
+                .get_mut(moved.slide_index)
+                .and_then(|slide| shape_transform_mut(&mut slide.shapes, &moved.shape_path))
+                .ok_or_else(|| {
+                    EditError::WriteFailed("a moved shape left the shape tree".to_owned())
+                })?;
+            transform.x = moved.x;
+            transform.y = moved.y;
+            transform.width = moved.width;
+            transform.height = moved.height;
         }
         for body in plan.bodies {
             let target = package
@@ -224,6 +259,8 @@ struct Plan<'a> {
     limits: &'a WriteLimits,
     edits: BTreeMap<String, Vec<ParagraphRewrite>>,
     bodies: Vec<ProjectedBody>,
+    transforms: BTreeMap<String, Vec<ShapeTransformRewrite>>,
+    moved: Vec<MovedShape>,
     charged_edits: usize,
     charged_bytes: usize,
 }
@@ -234,6 +271,8 @@ impl<'a> Plan<'a> {
             limits,
             edits: BTreeMap::new(),
             bodies: Vec::new(),
+            transforms: BTreeMap::new(),
+            moved: Vec::new(),
             charged_edits: 0,
             charged_bytes: 0,
         }
@@ -273,6 +312,15 @@ struct ProjectedBody {
     body: TextBody,
 }
 
+struct MovedShape {
+    slide_index: usize,
+    shape_path: Vec<usize>,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+}
+
 fn project_shape(
     context: &SlideContext<'_>,
     source: &ShapeNode,
@@ -281,6 +329,47 @@ fn project_shape(
     shape_path: &mut Vec<usize>,
     plan: &mut Plan<'_>,
 ) -> EditResult<()> {
+    // A pure move/resize is expressible for plain shapes and pictures: their
+    // <a:off>/<a:ext> are rewritten in place. Everything else about the shape
+    // must still match, so the placement is neutralised before the comparison
+    // rather than skipped by it.
+    let mut current = current.clone();
+    if baseline.x != current.x
+        || baseline.y != current.y
+        || baseline.width != current.width
+        || baseline.height != current.height
+    {
+        if !matches!(source, ShapeNode::Shape(_) | ShapeNode::Picture(_)) {
+            return Err(unprojectable(format!(
+                "shape {:?} was moved or resized, which the writer can only express for plain \
+                 shapes and pictures",
+                current.name
+            )));
+        }
+        plan.transforms
+            .entry(context.part_path.clone())
+            .or_default()
+            .push(ShapeTransformRewrite {
+                shape_path: shape_path.clone(),
+                x: current.x,
+                y: current.y,
+                width: current.width,
+                height: current.height,
+            });
+        plan.moved.push(MovedShape {
+            slide_index: context.index,
+            shape_path: shape_path.clone(),
+            x: current.x,
+            y: current.y,
+            width: current.width,
+            height: current.height,
+        });
+        current.x = baseline.x;
+        current.y = baseline.y;
+        current.width = baseline.width;
+        current.height = baseline.height;
+    }
+    let current = &current;
     require_same_shape(baseline, current)?;
     match source {
         ShapeNode::Shape(shape) => {
@@ -1128,6 +1217,26 @@ fn require_same_shape(baseline: &ShapeSnapshot, current: &ShapeSnapshot) -> Edit
         )));
     }
     Ok(())
+}
+
+fn shape_transform_mut<'a>(
+    shapes: &'a mut [ShapeNode],
+    shape_path: &[usize],
+) -> Option<&'a mut pptx_parse::ShapeTransform> {
+    let (index, rest) = shape_path.split_first()?;
+    let shape = shapes.get_mut(*index)?;
+    if let Some(_next) = rest.first() {
+        match shape {
+            ShapeNode::Group(group) => shape_transform_mut(&mut group.children, rest),
+            _ => None,
+        }
+    } else {
+        match shape {
+            ShapeNode::Shape(shape) => Some(&mut shape.base.transform),
+            ShapeNode::Picture(picture) => Some(&mut picture.base.transform),
+            _ => None,
+        }
+    }
 }
 
 fn text_body_mut<'a>(

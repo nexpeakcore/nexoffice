@@ -133,9 +133,11 @@ export interface PresentationHandle extends CollaborationReplica {
    * non-slide part, keep their source bytes; an edited slide keeps every byte
    * outside the elements the edit changed.
    *
-   * Run text, paragraph splits and merges, and soft line breaks are written
-   * today. Throws, naming the change, when the deck holds anything else — a
-   * formatting patch, a run split, a moved or added shape, a slide insert,
+   * Run text, paragraph splits and merges, soft line breaks, and moved or
+   * resized shapes and pictures (their explicit `<a:xfrm>` is rewritten in
+   * place) are written today. Throws, naming the change, when the deck holds
+   * anything else — a formatting patch, a run split, an added or removed
+   * shape, a moved shape whose placement lives in its layout, a slide insert,
    * remove or reorder — so a host can keep saving disabled instead of writing
    * a file that has lost the edit. A replica opened from `initialUpdate` alone
    * has no source bytes and always throws.

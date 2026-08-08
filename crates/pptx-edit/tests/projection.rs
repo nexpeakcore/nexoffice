@@ -1343,3 +1343,85 @@ fn taking_back_a_refused_change_lets_the_same_save_through() {
         .save_bytes()
         .expect("the deck saves once the change the refusal named is gone");
 }
+
+/// The slide's only sp spells an explicit `<a:xfrm>`, so a move and a resize
+/// splice its `<a:off>`/`<a:ext>` in place and everything round-trips.
+#[test]
+fn a_moved_and_resized_shape_saves_and_reads_back() {
+    let session = session_with(r#"<a:p><a:r><a:t>anchor</a:t></a:r></a:p>"#);
+    let snapshot = session.snapshot().unwrap();
+    let slide = &snapshot.slides[0];
+    let shape = &slide.shapes[0];
+    let context = EditCtx::local("test");
+    session
+        .move_shape(&context, &slide.id, &shape.id, 914_400, 457_200)
+        .unwrap();
+    session
+        .resize_shape(&context, &slide.id, &shape.id, 5_000_000, 2_000_000)
+        .unwrap();
+
+    let saved = session.save_bytes().unwrap();
+    let slide_xml = part_text(&saved, SLIDE_PART);
+    assert!(
+        slide_xml.contains(r#"<a:off x="914400" y="457200"/>"#),
+        "{slide_xml}"
+    );
+    assert!(
+        slide_xml.contains(r#"<a:ext cx="5000000" cy="2000000"/>"#),
+        "{slide_xml}"
+    );
+
+    let reopened = DeckSession::open(&saved, 78).unwrap();
+    let shape = reopened.snapshot().unwrap().slides[0].shapes[0].clone();
+    assert_eq!(
+        (shape.x, shape.y, shape.width, shape.height),
+        (914_400, 457_200, 5_000_000, 2_000_000)
+    );
+}
+
+/// A move combined with a text edit lands both in the same part.
+#[test]
+fn a_move_and_a_text_edit_share_one_save() {
+    let session = session_with(r#"<a:p><a:r><a:t>ab</a:t></a:r></a:p>"#);
+    let snapshot = session.snapshot().unwrap();
+    let slide = &snapshot.slides[0];
+    let shape = &slide.shapes[0];
+    let story = first_story(&session);
+    type_text(&session, &story.id, 2, "c");
+    session
+        .move_shape(&EditCtx::local("test"), &slide.id, &shape.id, 111, 222)
+        .unwrap();
+
+    let saved = session.save_bytes().unwrap();
+    let reopened = DeckSession::open(&saved, 79).unwrap();
+    let shape = reopened.snapshot().unwrap().slides[0].shapes[0].clone();
+    assert_eq!((shape.x, shape.y), (111, 222));
+    let story = first_story(&reopened);
+    assert_eq!(story.paragraphs[0].runs[0].text, "abc");
+}
+
+/// A placeholder that inherits its placement from the layout has no
+/// `<a:xfrm>` to rewrite; moving it is refused as the user's change.
+#[test]
+fn moving_a_shape_without_an_explicit_transform_is_refused() {
+    let deck = {
+        let mut package = pptx_parse::parse_pptx(FIXTURE).unwrap();
+        let xml = slide_xml(r#"<a:p><a:r><a:t>x</a:t></a:r></a:p>"#).replace(
+            r#"<a:xfrm><a:off x="0" y="0"/><a:ext cx="6096000" cy="1981200"/></a:xfrm>"#,
+            "",
+        );
+        assert!(package.replace_part(SLIDE_PART, xml.into_bytes()));
+        pptx_parse::write_pptx(&package).unwrap()
+    };
+    let session = DeckSession::open(&deck, 80).unwrap();
+    let snapshot = session.snapshot().unwrap();
+    let slide = &snapshot.slides[0];
+    let shape = &slide.shapes[0];
+    session
+        .move_shape(&EditCtx::local("test"), &slide.id, &shape.id, 5, 6)
+        .unwrap();
+
+    let error = session.save_bytes().unwrap_err();
+    assert_eq!(error.save_fault(), SaveFault::Unprojectable, "{error}");
+    assert!(error.to_string().contains("layout"), "{error}");
+}
