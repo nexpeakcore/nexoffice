@@ -40,6 +40,7 @@
       "actualSize": "Actual Size",
       "wordCount": "Word Count",
       "spellCheck": "Spell Check",
+      "aiAssistant": "AI Assistant",
       "freezeTopRow": "Freeze Top Row",
       "freezeFirstColumn": "Freeze First Column",
       "unfreeze": "Unfreeze Panes",
@@ -162,6 +163,19 @@
     "none": "No misspelled words found.",
     "countOne": "1 misspelled word",
     "countMany": "{count} misspelled words"
+  },
+  "agentPanel": {
+    "title": "AI Assistant",
+    "close": "Close",
+    "empty": "Ask about the open spreadsheet — the assistant reads it with tools before answering.",
+    "placeholder": "Ask about this spreadsheet…",
+    "send": "Send",
+    "cancel": "Stop",
+    "thinking": "Thinking…",
+    "working": "Running {tool}…",
+    "needKey": "Enter your DeepSeek API key to enable the assistant. It is stored encrypted on this machine and never leaves it except to call the model.",
+    "keyPlaceholder": "DeepSeek API key",
+    "saveKey": "Save key"
   },
   "update": {
     "ready": "Update {version} ready",

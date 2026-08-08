@@ -1,0 +1,85 @@
+import { describe, expect, it } from 'bun:test'
+import {
+  executeXlsxAgentTool,
+  rangeCellCount,
+  READ_RANGE_CELL_CAP,
+  type AgentWorkbookAccess,
+} from './agentTools'
+
+function fakeAccess(): AgentWorkbookAccess {
+  return {
+    sheetInfo: () => ({ sheetNames: ['Budget', 'Summary'], activeSheet: 1 }),
+    usedRange: (sheet) => (sheet === 0 ? 'A1:C9' : null),
+    rangeCells: (_sheet, range) => {
+      if (range === 'A1:B2') {
+        return [
+          [
+            { input: '1', isFormula: false },
+            { input: '=A1*2', isFormula: true },
+          ],
+          [
+            { input: 'x', isFormula: false },
+            { input: '', isFormula: false },
+          ],
+        ]
+      }
+      return [[{ input: '', isFormula: false }]]
+    },
+  }
+}
+
+describe('rangeCellCount', () => {
+  it('measures rectangles and single cells', () => {
+    expect(rangeCellCount('A1:F25')).toBe(150)
+    expect(rangeCellCount('B2')).toBe(1)
+    expect(rangeCellCount('$A$1:$B$2')).toBe(4)
+  })
+
+  it('rejects non-ranges', () => {
+    expect(rangeCellCount('Sheet1!A1')).toBeNull()
+    expect(rangeCellCount('1:5')).toBeNull()
+    expect(rangeCellCount('')).toBeNull()
+  })
+})
+
+describe('executeXlsxAgentTool', () => {
+  it('lists sheets with used ranges', () => {
+    expect(executeXlsxAgentTool(fakeAccess(), 'list_sheets', {})).toEqual([
+      { index: 0, name: 'Budget', active: false, usedRange: 'A1:C9' },
+      { index: 1, name: 'Summary', active: true, usedRange: null },
+    ])
+  })
+
+  it('reads a range from an explicit sheet', () => {
+    const result = executeXlsxAgentTool(fakeAccess(), 'read_range', {
+      sheet: 0,
+      range: 'A1:B2',
+    }) as { rows: unknown[][] }
+    expect(result.rows).toHaveLength(2)
+    expect(result.rows[0]![1]).toEqual({ input: '=A1*2', isFormula: true })
+  })
+
+  it('defaults to the active sheet', () => {
+    const result = executeXlsxAgentTool(fakeAccess(), 'read_range', { range: 'A1' }) as {
+      sheet: number
+    }
+    expect(result.sheet).toBe(1)
+  })
+
+  it('refuses oversized ranges instead of reading them', () => {
+    const result = executeXlsxAgentTool(fakeAccess(), 'read_range', { range: 'A1:Z100' }) as {
+      error: string
+    }
+    expect(result.error).toContain(String(READ_RANGE_CELL_CAP))
+  })
+
+  it('reports bad ranges, bad sheets, and unknown tools as model-readable errors', () => {
+    expect(executeXlsxAgentTool(fakeAccess(), 'read_range', { range: 'nope' })).toHaveProperty(
+      'error'
+    )
+    expect(
+      executeXlsxAgentTool(fakeAccess(), 'read_range', { sheet: 9, range: 'A1' })
+    ).toHaveProperty('error')
+    expect(executeXlsxAgentTool(fakeAccess(), 'write_cell', {})).toHaveProperty('error')
+  })
+})

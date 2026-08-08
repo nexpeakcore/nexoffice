@@ -22,6 +22,7 @@ import {
   type Translator,
 } from '../i18n/index.js'
 import { checkForUpdatesManually, installDownloadedUpdate, setupAutoUpdater } from './updater.js'
+import { registerAgent } from './agent/index.js'
 import {
   ALL_EDIT_CAPABILITIES,
   EXTENSIONS,
@@ -738,6 +739,7 @@ if (!app.requestSingleInstanceLock()) {
     mainWindow = createWindow()
     rebuildMenu()
     setupAutoUpdater(() => mainWindow)
+    registerAgent(() => mainWindow)
 
     for (const filePath of documentPathsFromArgv(process.argv, process.cwd())) {
       openPathInWindow(filePath)

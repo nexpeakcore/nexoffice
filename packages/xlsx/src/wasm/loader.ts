@@ -320,6 +320,8 @@ export interface WorkbookHandle extends CollaborationReplica {
   /** Observe owned update bytes from local commits and accepted remote updates. */
   onUpdate(listener: WorkbookUpdateListener): () => void;
   sheetInfo(): SheetInfo;
+  /** A1 extent of a sheet's populated cells; null when the sheet is empty (or the core predates the export). */
+  usedRange(sheet: number): string | null;
   calculationStatus(): CalculationStatus;
   displayList(viewport: Viewport): DisplayList;
   setActiveSheet(index: number): void;
@@ -629,6 +631,13 @@ export function openWorkbook(
     },
     sheetInfo(): SheetInfo {
       return parseJson(() => doc.sheetInfoJson());
+    },
+    usedRange(sheet: number): string | null {
+      return wasmCall(() => {
+        const fn = (doc as { usedRangeJson?: (sheet: number) => string }).usedRangeJson;
+        if (typeof fn !== 'function') return null;
+        return (JSON.parse(fn.call(doc, sheet)) as { usedRange: string | null }).usedRange;
+      });
     },
     calculationStatus(): CalculationStatus {
       return wasmCall(() => {

@@ -9,6 +9,7 @@ import {
   type WebEditAction,
 } from '../shared/ipc.js'
 import { SpellCheckPanel } from './components/SpellCheckPanel.js'
+import { AgentPanel } from './components/AgentPanel.js'
 import { UpdateChip } from './components/UpdateChip.js'
 import { DocxEditorView, type DocxEditorViewRef } from './editors/DocxEditorView.js'
 import { PptxEditorView, type PptxEditorViewRef } from './editors/PptxEditorView.js'
@@ -66,6 +67,7 @@ export function App() {
   const [status, setStatus] = useState<StatusMessage>({ key: 'status.ready' })
   const docxRef = useRef<DocxEditorViewRef>(null)
   const [spellPanelOpen, setSpellPanelOpen] = useState(false)
+  const [agentPanelOpen, setAgentPanelOpen] = useState(false)
   const [spellLoading, setSpellLoading] = useState(true)
   const [spellError, setSpellError] = useState<string | null>(null)
   const [misspellings, setMisspellings] = useState<Misspelling[]>([])
@@ -645,6 +647,9 @@ export function App() {
         case 'view:spellCheck':
           setSpellPanelOpen((prev) => !prev)
           break
+        case 'view:aiAssistant':
+          setAgentPanelOpen((prev) => !prev)
+          break
         case 'view:wordCount': {
           const kind = documentRef.current?.kind
           const stats = proofingEditor()?.getStats()
@@ -759,6 +764,18 @@ export function App() {
             visible={spellPanelOpen}
             getText={getEditorText}
             onClose={() => setSpellPanelOpen(false)}
+          />
+        )}
+
+        {document?.kind === 'xlsx' && (
+          <AgentPanel
+            visible={agentPanelOpen}
+            documentKind={document.kind}
+            documentName={document.name}
+            runTool={(name, args) =>
+              xlsxRef.current?.agentTool(name, args) ?? { error: 'no workbook is open' }
+            }
+            onClose={() => setAgentPanelOpen(false)}
           />
         )}
       </div>

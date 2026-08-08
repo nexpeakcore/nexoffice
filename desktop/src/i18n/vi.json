@@ -40,6 +40,7 @@
       "actualSize": "Kích thước thực",
       "wordCount": "Đếm từ",
       "spellCheck": "Kiểm tra chính tả",
+      "aiAssistant": "Trợ lý AI",
       "freezeTopRow": "Cố định hàng đầu tiên",
       "freezeFirstColumn": "Cố định cột đầu tiên",
       "unfreeze": "Bỏ cố định",
@@ -162,6 +163,19 @@
     "none": "Không tìm thấy từ sai chính tả.",
     "countOne": "1 từ sai chính tả",
     "countMany": "{count} từ sai chính tả"
+  },
+  "agentPanel": {
+    "title": "Trợ lý AI",
+    "close": "Đóng",
+    "empty": "Hỏi về bảng tính đang mở — trợ lý sẽ đọc bằng công cụ trước khi trả lời.",
+    "placeholder": "Hỏi về bảng tính này…",
+    "send": "Gửi",
+    "cancel": "Dừng",
+    "thinking": "Đang suy nghĩ…",
+    "working": "Đang chạy {tool}…",
+    "needKey": "Nhập khóa API DeepSeek để bật trợ lý. Khóa được mã hóa và lưu trên máy này.",
+    "keyPlaceholder": "Khóa API DeepSeek",
+    "saveKey": "Lưu khóa"
   },
   "update": {
     "ready": "Bản cập nhật {version} đã sẵn sàng",

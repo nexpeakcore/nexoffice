@@ -49,6 +49,8 @@ describe('wasm loader', () => {
       expect(info.initialScrollX).toBe(0);
       expect(info.initialScrollY).toBe(0);
       expect(handle.calculationStatus()).toEqual({ limitedCells: [] });
+      expect(handle.usedRange(0)).toMatch(/^[A-Z]+\d+(:[A-Z]+\d+)?$/);
+      expect(() => handle.usedRange(99)).toThrow();
       const position = handle.cellPosition(0, 7, 2);
       expect(position.x).toBeGreaterThan(0);
       expect(position.y).toBeGreaterThan(0);

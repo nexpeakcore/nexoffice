@@ -40,6 +40,7 @@
       "actualSize": "גודל אמיתי",
       "wordCount": "ספירת מילים",
       "spellCheck": "בדיקת איות",
+      "aiAssistant": "עוזר AI",
       "freezeTopRow": "הקפא שורה עליונה",
       "freezeFirstColumn": "הקפא עמודה ראשונה",
       "unfreeze": "בטל הקפאה",
@@ -162,6 +163,19 @@
     "none": "לא נמצאו מילים עם שגיאות כתיב.",
     "countOne": "מילה אחת עם שגיאת כתיב",
     "countMany": "{count} מילים עם שגיאות כתיב"
+  },
+  "agentPanel": {
+    "title": "עוזר AI",
+    "close": "סגירה",
+    "empty": "שאלו על הגיליון הפתוח — העוזר קורא אותו בעזרת כלים לפני שהוא עונה.",
+    "placeholder": "שאלה על הגיליון…",
+    "send": "שליחה",
+    "cancel": "עצירה",
+    "thinking": "חושב…",
+    "working": "מריץ {tool}…",
+    "needKey": "הזינו מפתח API של DeepSeek כדי להפעיל את העוזר. המפתח נשמר מוצפן במחשב זה.",
+    "keyPlaceholder": "מפתח API של DeepSeek",
+    "saveKey": "שמירת מפתח"
   },
   "update": {
     "ready": "עדכון {version} מוכן",

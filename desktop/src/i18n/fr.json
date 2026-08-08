@@ -40,6 +40,7 @@
       "actualSize": "Taille réelle",
       "wordCount": "Nombre de mots",
       "spellCheck": "Vérification orthographique",
+      "aiAssistant": "Assistant IA",
       "freezeTopRow": "Figer la première ligne",
       "freezeFirstColumn": "Figer la première colonne",
       "unfreeze": "Libérer les volets",
@@ -162,6 +163,19 @@
     "none": "Aucun mot mal orthographié trouvé.",
     "countOne": "1 mot mal orthographié",
     "countMany": "{count} mots mal orthographiés"
+  },
+  "agentPanel": {
+    "title": "Assistant IA",
+    "close": "Fermer",
+    "empty": "Posez des questions sur la feuille ouverte — l’assistant la lit avec des outils avant de répondre.",
+    "placeholder": "Question sur cette feuille…",
+    "send": "Envoyer",
+    "cancel": "Arrêter",
+    "thinking": "Réflexion…",
+    "working": "Exécution de {tool}…",
+    "needKey": "Saisissez votre clé API DeepSeek pour activer l’assistant. Elle est stockée chiffrée sur cette machine.",
+    "keyPlaceholder": "Clé API DeepSeek",
+    "saveKey": "Enregistrer la clé"
   },
   "update": {
     "ready": "Mise à jour {version} prête",

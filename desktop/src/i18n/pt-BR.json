@@ -40,6 +40,7 @@
       "actualSize": "Tamanho real",
       "wordCount": "Contagem de palavras",
       "spellCheck": "Verificação ortográfica",
+      "aiAssistant": "Assistente de IA",
       "freezeTopRow": "Congelar linha superior",
       "freezeFirstColumn": "Congelar primeira coluna",
       "unfreeze": "Descongelar painéis",
@@ -162,6 +163,19 @@
     "none": "Nenhuma palavra com erro de ortografia encontrada.",
     "countOne": "1 palavra com erro de ortografia",
     "countMany": "{count} palavras com erro de ortografia"
+  },
+  "agentPanel": {
+    "title": "Assistente de IA",
+    "close": "Fechar",
+    "empty": "Pergunte sobre a planilha aberta — o assistente a lê com ferramentas antes de responder.",
+    "placeholder": "Pergunte sobre esta planilha…",
+    "send": "Enviar",
+    "cancel": "Parar",
+    "thinking": "Pensando…",
+    "working": "Executando {tool}…",
+    "needKey": "Informe sua chave de API DeepSeek para ativar o assistente. Ela fica armazenada criptografada nesta máquina.",
+    "keyPlaceholder": "Chave de API DeepSeek",
+    "saveKey": "Salvar chave"
   },
   "update": {
     "ready": "Atualização {version} pronta",

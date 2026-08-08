@@ -207,6 +207,13 @@ impl XlsxDocument {
             .map_err(|e| JsValue::from_str(&e))
     }
 
+    #[wasm_bindgen(js_name = usedRangeJson)]
+    pub fn used_range_json(&self, sheet: u32) -> Result<String, JsValue> {
+        self.session
+            .used_range_json(sheet)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
     #[wasm_bindgen(js_name = calculationStatusJson)]
     pub fn calculation_status_json(&self) -> Result<String, JsValue> {
         self.session

@@ -1,6 +1,7 @@
 import { forwardRef, useImperativeHandle, useRef, useState } from 'react'
 import { XlsxEditor, type XlsxEditorApi } from '@betteroffice/xlsx-react'
 import { en as xlsxEn, locales as xlsxLocales, type PartialLocaleStrings } from '@betteroffice/xlsx-i18n'
+import { executeXlsxAgentTool } from '../services/agentTools.js'
 import { useI18n } from '../i18n.js'
 
 const editorLocales = xlsxLocales as Record<string, PartialLocaleStrings>
@@ -19,6 +20,8 @@ export interface XlsxEditorViewRef {
   freezeTopRow: () => void
   freezeFirstColumn: () => void
   unfreeze: () => void
+  /** Execute one read-only AI-assistant tool against the live workbook. */
+  agentTool: (name: string, args: Record<string, unknown>) => unknown
 }
 
 interface EditorDocument {
@@ -71,6 +74,11 @@ export const XlsxEditorView = forwardRef<XlsxEditorViewRef, XlsxEditorViewProps>
       freezeTopRow: () => setFreezePane(1, null),
       freezeFirstColumn: () => setFreezePane(null, 1),
       unfreeze: () => setFreezePane(null, null),
+      agentTool: (name: string, args: Record<string, unknown>) => {
+        const handle = apiRef.current?.handle
+        if (!handle) return { error: 'no workbook is open' }
+        return executeXlsxAgentTool(handle, name, args)
+      },
     }))
 
     if (error) {

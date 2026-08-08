@@ -221,6 +221,12 @@ export function buildMenu(context: MenuContext): Menu {
           enabled: hasProofing,
           click: send('view:spellCheck'),
         },
+        {
+          label: t('menu.view.aiAssistant'),
+          accelerator: 'CmdOrCtrl+Shift+A',
+          enabled: context.documentKind === 'xlsx',
+          click: send('view:aiAssistant'),
+        },
         { type: 'separator' },
         { label: t('menu.view.freezeTopRow'), enabled: hasFreeze, click: send('view:freezeTopRow') },
         {

@@ -118,6 +118,7 @@ export class XlsxDocument {
      * undo the last transaction; returns `{"applied":bool,"sheetInfo":{...}}`.
      */
     undoJson(): string;
+    usedRangeJson(sheet: number): string;
     /**
      * crate version string.
      */
@@ -180,6 +181,7 @@ export interface InitOutput {
     readonly xlsxdocument_sheetInfoJson: (a: number) => [number, number, number, number];
     readonly xlsxdocument_startUpdateObservation: (a: number) => [number, number];
     readonly xlsxdocument_undoJson: (a: number) => [number, number, number, number];
+    readonly xlsxdocument_usedRangeJson: (a: number, b: number) => [number, number, number, number];
     readonly xlsxdocument_version: () => [number, number];
     readonly rezip_docx: (a: any) => [number, number, number, number];
     readonly sanitizeOoxml: (a: number, b: number, c: number, d: number) => [number, number, number, number];

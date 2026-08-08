@@ -40,6 +40,7 @@
       "actualSize": "Gerçek Boyut",
       "wordCount": "Sözcük Sayısı",
       "spellCheck": "Yazım Denetimi",
+      "aiAssistant": "Yapay Zekâ Asistanı",
       "freezeTopRow": "Üst Satırı Dondur",
       "freezeFirstColumn": "İlk Sütunu Dondur",
       "unfreeze": "Bölmeleri Çöz",
@@ -162,6 +163,19 @@
     "none": "Yazım hatalı sözcük bulunamadı.",
     "countOne": "1 yazım hatalı sözcük",
     "countMany": "{count} yazım hatalı sözcük"
+  },
+  "agentPanel": {
+    "title": "Yapay Zekâ Asistanı",
+    "close": "Kapat",
+    "empty": "Açık elektronik tablo hakkında soru sorun — asistan yanıtlamadan önce onu araçlarla okur.",
+    "placeholder": "Bu tablo hakkında sorun…",
+    "send": "Gönder",
+    "cancel": "Durdur",
+    "thinking": "Düşünüyor…",
+    "working": "{tool} çalışıyor…",
+    "needKey": "Asistanı etkinleştirmek için DeepSeek API anahtarınızı girin. Anahtar bu makinede şifreli saklanır.",
+    "keyPlaceholder": "DeepSeek API anahtarı",
+    "saveKey": "Anahtarı kaydet"
   },
   "update": {
     "ready": "Güncelleme {version} hazır",

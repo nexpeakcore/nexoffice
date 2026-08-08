@@ -22,6 +22,13 @@ export const IPC = {
   updateEvent: 'update:event',
   updateCheck: 'update:check',
   updateInstall: 'update:install',
+  agentSettingsGet: 'agent:settingsGet',
+  agentSettingsSet: 'agent:settingsSet',
+  agentRun: 'agent:run',
+  agentCancel: 'agent:cancel',
+  agentEvent: 'agent:event',
+  agentToolRequest: 'agent:toolRequest',
+  agentToolResult: 'agent:toolResult',
 } as const
 
 export const PRINT_PAGE_CAP = 100
@@ -155,12 +162,65 @@ export type MenuAction =
   | 'edit:find'
   | 'view:wordCount'
   | 'view:spellCheck'
+  | 'view:aiAssistant'
   | 'view:freezeTopRow'
   | 'view:freezeFirstColumn'
   | 'view:unfreeze'
   | 'view:zoomIn'
   | 'view:zoomOut'
   | 'view:zoomReset'
+
+// ---------------------------------------------------------------------------
+// AI assistant. The model runs in the main process (which owns the API key);
+// document tools execute in the renderer against the live editor, so each tool
+// call round-trips over IPC: main sends agentToolRequest, the renderer answers
+// on agentToolResult with the matching id.
+
+export type AgentProvider = 'deepseek'
+
+export const AGENT_DEFAULT_MODELS: Record<AgentProvider, string> = {
+  deepseek: 'deepseek-chat',
+}
+
+/** What the renderer may know about the configuration — never the key itself. */
+export interface AgentSettings {
+  provider: AgentProvider
+  model: string
+  hasApiKey: boolean
+}
+
+export interface AgentSettingsUpdate {
+  provider?: AgentProvider
+  model?: string
+  /** Empty string clears the stored key; undefined leaves it untouched. */
+  apiKey?: string
+}
+
+export interface AgentRunRequest {
+  /** The whole visible transcript; main is stateless between runs. */
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>
+  documentKind: DocumentKind
+  documentName: string
+  locale: string
+}
+
+export type AgentEvent =
+  | { type: 'text'; delta: string }
+  | { type: 'tool'; name: string; summary: string }
+  | { type: 'done' }
+  | { type: 'error'; message: string }
+
+export interface AgentToolRequest {
+  id: string
+  name: string
+  args: Record<string, unknown>
+}
+
+export interface AgentToolResult {
+  id: string
+  /** JSON-serializable payload, or an `error` string the model can read. */
+  result: unknown
+}
 
 export const EXTENSIONS: Record<DocumentKind, string> = {
   docx: 'docx',
