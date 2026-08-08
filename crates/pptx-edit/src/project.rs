@@ -30,7 +30,8 @@ use pptx_parse::{
     GraphicFrameData, ParagraphRewrite, PptxPackage, RunPiece, RunProperties, RunRef,
     RunStylePatch, ShapeInsertion, ShapeNode, ShapeTransformRewrite, TextBody, TextBodyLocation,
     TextParagraph, TextRun, adjust_value_to_val, dangling_shape_reference, font_size_to_sz,
-    rewrite_slide_shape_insertions, rewrite_slide_shape_removals, serialize_shape,
+    rewrite_presentation_slide_order, rewrite_slide_shape_insertions, rewrite_slide_shape_removals,
+    serialize_shape,
 };
 use yrs::{Map, TextRef, Transact, WriteTxn};
 
@@ -156,14 +157,13 @@ impl DeckSession {
         if current.width_emu != baseline.width_emu || current.height_emu != baseline.height_emu {
             return Err(unprojectable("the slide size changed"));
         }
-        if current.slides.len() != baseline.slides.len() {
-            return Err(unprojectable("slides were added or removed"));
-        }
+        let slide_order = align_slides(&baseline.slides, &current.slides)
+            .ok_or_else(|| unprojectable("slides were added"))?;
 
         let mut plan = Plan::new(limits);
-        for (index, (baseline_slide, current_slide)) in
-            baseline.slides.iter().zip(&current.slides).enumerate()
-        {
+        for (current_position, &index) in slide_order.iter().enumerate() {
+            let baseline_slide = &baseline.slides[index];
+            let current_slide = &current.slides[current_position];
             require_same_slide(baseline_slide, current_slide)?;
             let source = package
                 .slides
@@ -240,10 +240,16 @@ impl DeckSession {
             }
         }
 
+        let slide_list_changed = slide_order.len() != baseline.slides.len()
+            || slide_order
+                .iter()
+                .enumerate()
+                .any(|(at, index)| at != *index);
         let rewrote_parts = !plan.edits.is_empty()
             || !plan.transforms.is_empty()
             || !plan.removals.is_empty()
-            || !plan.insertions.is_empty();
+            || !plan.insertions.is_empty()
+            || slide_list_changed;
         for (part_path, edits) in &plan.edits {
             let bytes = package
                 .part_bytes(part_path)
@@ -351,6 +357,24 @@ impl DeckSession {
                 ));
             }
             slide.shapes.insert(current_index, node);
+        }
+        if slide_list_changed {
+            let presentation_part = package.presentation.part_path.clone();
+            let bytes = package.part_bytes(&presentation_part).ok_or_else(|| {
+                EditError::WriteFailed(format!("part {presentation_part} is missing"))
+            })?;
+            let rewritten =
+                rewrite_presentation_slide_order(&presentation_part, bytes, &slide_order)
+                    .map_err(|error| EditError::WriteFailed(error.to_string()))?;
+            package.replace_part(&presentation_part, rewritten);
+            package.presentation.slides = slide_order
+                .iter()
+                .map(|index| package.presentation.slides[*index].clone())
+                .collect();
+            package.slides = slide_order
+                .iter()
+                .map(|index| package.slides[*index].clone())
+                .collect();
         }
         Ok((package, rewrote_parts))
     }
@@ -907,6 +931,22 @@ fn run_properties_from_style(style: &TextStyle) -> Option<RunProperties> {
         language: None,
         hyperlink_relationship_id: None,
     })
+}
+
+/// For each current slide, its baseline index — `None` for the whole deck
+/// when a current slide has no baseline identity (it was added, which this
+/// writer does not spell yet). Deletions and reorders are permutations of a
+/// subset and project.
+fn align_slides(baseline: &[SlideSnapshot], current: &[SlideSnapshot]) -> Option<Vec<usize>> {
+    let by_id: BTreeMap<&str, usize> = baseline
+        .iter()
+        .enumerate()
+        .map(|(index, slide)| (slide.id.as_str(), index))
+        .collect();
+    current
+        .iter()
+        .map(|slide| by_id.get(slide.id.as_str()).copied())
+        .collect()
 }
 
 /// How the current slide's shapes line up against the baseline's.

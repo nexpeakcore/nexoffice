@@ -1660,3 +1660,100 @@ fn removing_an_animated_shape_is_refused_by_name() {
     assert_eq!(error.save_fault(), SaveFault::Unprojectable, "{error}");
     assert!(error.to_string().contains("animation"), "{error}");
 }
+
+/// A reordered deck rewrites only the presentation's slide list; the slide
+/// parts keep their bytes and the reopened deck shows the new order.
+#[test]
+fn a_reordered_deck_saves_and_reads_back() {
+    let session = DeckSession::open(FIXTURE, 104).unwrap();
+    let snapshot = session.snapshot().unwrap();
+    let names: Vec<String> = snapshot
+        .slides
+        .iter()
+        .map(|slide| slide.id.clone())
+        .collect();
+    session
+        .move_slide(&EditCtx::local("test"), &names[0], 2)
+        .unwrap();
+
+    let saved = session.save_bytes().unwrap();
+    let reopened = DeckSession::open(&saved, 105).unwrap();
+    let reopened_snapshot = reopened.snapshot().unwrap();
+    assert_eq!(reopened_snapshot.slides.len(), 3);
+    // Slide part paths rotate with the order.
+    let original_paths: Vec<_> = snapshot
+        .slides
+        .iter()
+        .map(|s| s.source_part_path.clone())
+        .collect();
+    let reopened_paths: Vec<_> = reopened_snapshot
+        .slides
+        .iter()
+        .map(|s| s.source_part_path.clone())
+        .collect();
+    assert_eq!(
+        reopened_paths,
+        vec![
+            original_paths[1].clone(),
+            original_paths[2].clone(),
+            original_paths[0].clone()
+        ]
+    );
+}
+
+/// A deleted slide drops out of the slide list; its part goes unreferenced
+/// rather than corrupt, and the other slides keep their bytes.
+#[test]
+fn a_deleted_slide_saves_and_stays_gone() {
+    let session = DeckSession::open(FIXTURE, 106).unwrap();
+    let snapshot = session.snapshot().unwrap();
+    let victim = snapshot.slides[1].clone();
+    session
+        .delete_slide(&EditCtx::local("test"), &victim.id)
+        .unwrap();
+
+    let saved = session.save_bytes().unwrap();
+    let reopened = DeckSession::open(&saved, 107).unwrap();
+    let reopened_snapshot = reopened.snapshot().unwrap();
+    assert_eq!(reopened_snapshot.slides.len(), 2);
+    assert!(
+        reopened_snapshot
+            .slides
+            .iter()
+            .all(|slide| slide.source_part_path != victim.source_part_path),
+        "the deleted slide does not come back"
+    );
+}
+
+/// Deleting one slide, reordering the rest and typing into a survivor all
+/// land in one save.
+#[test]
+fn slide_structure_and_text_edits_share_one_save() {
+    let session = session_with(r#"<a:p><a:r><a:t>first</a:t></a:r></a:p>"#);
+    let snapshot = session.snapshot().unwrap();
+    // The story of the slide that is about to move, captured before the
+    // structural edits shuffle the snapshot order.
+    let story = first_story(&session);
+    session
+        .delete_slide(&EditCtx::local("test"), &snapshot.slides[2].id)
+        .unwrap();
+    session
+        .move_slide(&EditCtx::local("test"), &snapshot.slides[0].id, 1)
+        .unwrap();
+    type_text(&session, &story.id, 5, "!");
+
+    let saved = session.save_bytes().unwrap();
+    let reopened = DeckSession::open(&saved, 108).unwrap();
+    let reopened_snapshot = reopened.snapshot().unwrap();
+    assert_eq!(reopened_snapshot.slides.len(), 2);
+    assert_eq!(
+        reopened_snapshot.slides[1].source_part_path, snapshot.slides[0].source_part_path,
+        "the first slide moved behind the second"
+    );
+    let moved_story = reopened_snapshot.slides[1]
+        .shapes
+        .iter()
+        .find_map(|shape| shape.text_stories.first())
+        .expect("the moved slide keeps its story");
+    assert_eq!(moved_story.paragraphs[0].runs[0].text, "first!");
+}

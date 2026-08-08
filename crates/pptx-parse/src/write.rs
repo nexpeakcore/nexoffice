@@ -1815,6 +1815,83 @@ pub fn dangling_shape_reference(
     Ok(None)
 }
 
+/// Rewrites the presentation's `<p:sldIdLst>` so its `<p:sldId>` entries
+/// follow `order` — indexes into the source list; omitted indexes are
+/// dropped. Every byte outside the list's children keeps its place.
+pub fn rewrite_presentation_slide_order(
+    part: &str,
+    bytes: &[u8],
+    order: &[usize],
+) -> Result<Vec<u8>, PptxError> {
+    let mut reader = Reader::from_reader(bytes);
+    reader.config_mut().trim_text(false);
+    reader.config_mut().check_end_names = true;
+    let mut stack: Vec<Vec<u8>> = Vec::new();
+    let mut in_list_depth: Option<usize> = None;
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut open_entry: Option<usize> = None;
+    let mut list_content: Option<(usize, usize)> = None;
+    let mut list_content_start = 0usize;
+
+    loop {
+        let opens_at = reader.buffer_position() as usize;
+        let event = reader
+            .read_event()
+            .map_err(|error| malformed(part, opens_at, error.to_string()))?;
+        let ends_at = reader.buffer_position() as usize;
+        match event {
+            Event::Start(ref start) | Event::Empty(ref start) => {
+                let name = local_name(start.name().into_inner()).to_vec();
+                if in_list_depth == Some(stack.len()) && name == b"sldId" {
+                    if matches!(event, Event::Empty(_)) {
+                        spans.push((opens_at, ends_at));
+                    } else {
+                        open_entry = Some(opens_at);
+                    }
+                }
+                if matches!(event, Event::Start(_)) {
+                    if name == b"sldIdLst" && in_list_depth.is_none() {
+                        in_list_depth = Some(stack.len() + 1);
+                        list_content_start = ends_at;
+                    }
+                    stack.push(name);
+                }
+            }
+            Event::End(ref end) => {
+                let name = local_name(end.name().into_inner()).to_vec();
+                stack.pop();
+                if in_list_depth == Some(stack.len())
+                    && name == b"sldId"
+                    && let Some(start) = open_entry.take()
+                {
+                    spans.push((start, ends_at));
+                }
+                if name == b"sldIdLst" && in_list_depth == Some(stack.len() + 1) {
+                    list_content = Some((list_content_start, opens_at));
+                    in_list_depth = None;
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    let (content_start, content_end) =
+        list_content.ok_or_else(|| malformed(part, 0, "the presentation has no slide list"))?;
+    let mut replacement = Vec::new();
+    for index in order {
+        let span = spans
+            .get(*index)
+            .ok_or_else(|| malformed(part, 0, format!("slide {index} is not in the slide list")))?;
+        replacement.extend_from_slice(&bytes[span.0..span.1]);
+    }
+    let mut output = Vec::with_capacity(bytes.len());
+    output.extend_from_slice(&bytes[..content_start]);
+    output.extend_from_slice(&replacement);
+    output.extend_from_slice(&bytes[content_end..]);
+    Ok(output)
+}
+
 /// One shape's rewritten placement, in EMU.
 ///
 /// The values land in the `<a:off>`/`<a:ext>` of the `<a:xfrm>` the shape
@@ -2877,6 +2954,32 @@ mod tests {
         assert_eq!(
             dangling_shape_reference("s.xml", xml.as_bytes(), &ids(&[7])).unwrap(),
             None
+        );
+    }
+
+    #[test]
+    fn slide_order_rewrite_reorders_and_drops_entries() {
+        let xml = concat!(
+            r#"<p:presentation xmlns:p="p" xmlns:r="r"><p:sldMasterIdLst><p:sldMasterId id="1" r:id="rIdM"/></p:sldMasterIdLst>"#,
+            r#"<p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/><p:sldId id="258" r:id="rId3"/></p:sldIdLst>"#,
+            r#"<p:sldSz cx="1" cy="2"/></p:presentation>"#,
+        );
+        let out = rewrite_presentation_slide_order("p.xml", xml.as_bytes(), &[2, 0]).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains(r#"<p:sldIdLst><p:sldId id="258" r:id="rId3"/><p:sldId id="256" r:id="rId1"/></p:sldIdLst>"#),
+            "{out}"
+        );
+        assert!(
+            out.contains("sldMasterIdLst"),
+            "the master list is untouched"
+        );
+        assert!(out.contains(r#"<p:sldSz cx="1" cy="2"/>"#));
+
+        let error = rewrite_presentation_slide_order("p.xml", xml.as_bytes(), &[5]).unwrap_err();
+        assert!(
+            error.to_string().contains("not in the slide list"),
+            "{error}"
         );
     }
 }

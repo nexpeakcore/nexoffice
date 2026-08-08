@@ -373,24 +373,6 @@ fn a_change_this_slice_cannot_write_refuses_instead_of_dropping_it() {
                 presentation.insert_slide(&context(), 0, None).unwrap();
             }),
         ),
-        (
-            "a deleted slide",
-            Box::new(|presentation: &Presentation| {
-                let snapshot = presentation.snapshot().unwrap();
-                presentation
-                    .delete_slide(&context(), &snapshot.slides[1].id)
-                    .unwrap();
-            }),
-        ),
-        (
-            "a reordered deck",
-            Box::new(|presentation: &Presentation| {
-                let snapshot = presentation.snapshot().unwrap();
-                presentation
-                    .move_slide(&context(), &snapshot.slides[0].id, 2)
-                    .unwrap();
-            }),
-        ),
     ];
 
     for (label, edit) in refusals {
