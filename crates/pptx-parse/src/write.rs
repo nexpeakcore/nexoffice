@@ -27,6 +27,7 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 
 use crate::PptxError;
+use crate::model::RunProperties;
 use crate::xml::is_legal_xml_character;
 
 /// Which text body of a shape an edit addresses.
@@ -1523,6 +1524,246 @@ pub fn rewrite_slide_shape_removals(
         }
         output.extend_from_slice(&bytes[cursor..start]);
         cursor = end;
+    }
+    output.extend_from_slice(&bytes[cursor..]);
+    Ok(output)
+}
+
+/// The `fmla="val N"` literal a plain adjustment value writes as, or `None`
+/// when the value cannot round-trip exactly through the parser's
+/// `N / 100 000` reading.
+pub fn adjust_value_to_val(value: f64) -> Option<i64> {
+    let scaled = (value * 100_000.0).round();
+    if !scaled.is_finite() || scaled.abs() > 10_000_000.0 {
+        return None;
+    }
+    let written = scaled as i64;
+    (written as f64 / 100_000.0 == value).then_some(written)
+}
+
+/// Serialises one shape the projection built into a `<p:sp>` fragment.
+///
+/// This spells only the subset the editor can author — preset geometry,
+/// plain `val` adjustments, none/solid fill, a solid outline, left-to-right
+/// text with the rPr fields the model carries — and the caller must have
+/// refused everything else. The byte-level read-back verification holds this
+/// serialiser to the model: a fragment that parses back differently fails
+/// the save instead of shipping.
+pub fn serialize_shape(part: &str, shape: &crate::Shape) -> Result<Vec<u8>, PptxError> {
+    let mut out = String::new();
+    out.push_str("<p:sp><p:nvSpPr>");
+    out.push_str(&format!(
+        r#"<p:cNvPr id="{}" name="{}"/>"#,
+        shape.base.id,
+        escape_attribute(&shape.base.name)
+    ));
+    out.push_str("<p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>");
+    let transform = &shape.base.transform;
+    out.push_str(&format!(
+        r#"<a:xfrm><a:off x="{}" y="{}"/><a:ext cx="{}" cy="{}"/></a:xfrm>"#,
+        transform.x, transform.y, transform.width, transform.height
+    ));
+    out.push_str(&format!(
+        r#"<a:prstGeom prst="{}"><a:avLst>"#,
+        escape_attribute(&shape.geometry)
+    ));
+    for (name, value) in &shape.adjust_values {
+        let val = adjust_value_to_val(*value).ok_or_else(|| {
+            malformed(
+                part,
+                0,
+                format!("adjustment {name}={value} cannot be written exactly"),
+            )
+        })?;
+        out.push_str(&format!(
+            r#"<a:gd name="{}" fmla="val {val}"/>"#,
+            escape_attribute(name)
+        ));
+    }
+    out.push_str("</a:avLst></a:prstGeom>");
+    if let Some(fill) = &shape.fill {
+        match fill.fill_type.as_str() {
+            "none" => out.push_str("<a:noFill/>"),
+            "solid" => {
+                let rgb = fill
+                    .color
+                    .as_ref()
+                    .and_then(|color| color.rgb.as_deref())
+                    .ok_or_else(|| malformed(part, 0, "a solid fill without a plain colour"))?;
+                out.push_str(&format!(
+                    r#"<a:solidFill><a:srgbClr val="{}"/></a:solidFill>"#,
+                    escape_attribute(rgb)
+                ));
+            }
+            other => {
+                return Err(malformed(
+                    part,
+                    0,
+                    format!("a {other} fill cannot be written"),
+                ));
+            }
+        }
+    }
+    if let Some(outline) = &shape.outline {
+        out.push_str("<a:ln");
+        if let Some(width) = outline.width {
+            if width.fract() != 0.0 || !(0.0..=20_116_800.0).contains(&width) {
+                return Err(malformed(part, 0, "an outline width that is not whole EMU"));
+            }
+            out.push_str(&format!(r#" w="{}""#, width as i64));
+        }
+        out.push('>');
+        if let Some(color) = outline
+            .color
+            .as_ref()
+            .and_then(|color| color.rgb.as_deref())
+        {
+            out.push_str(&format!(
+                r#"<a:solidFill><a:srgbClr val="{}"/></a:solidFill>"#,
+                escape_attribute(color)
+            ));
+        }
+        if let Some(style) = &outline.style {
+            out.push_str(&format!(
+                r#"<a:prstDash val="{}"/>"#,
+                escape_attribute(style)
+            ));
+        }
+        out.push_str("</a:ln>");
+    }
+    out.push_str("</p:spPr>");
+    if let Some(text) = &shape.text {
+        out.push_str("<p:txBody><a:bodyPr/><a:lstStyle/>");
+        for paragraph in &text.paragraphs {
+            out.push_str("<a:p>");
+            let properties = &paragraph.properties;
+            if properties.alignment.is_some() || properties.level > 0 {
+                out.push_str("<a:pPr");
+                if properties.level > 0 {
+                    out.push_str(&format!(r#" lvl="{}""#, properties.level));
+                }
+                if let Some(alignment) = &properties.alignment {
+                    out.push_str(&format!(r#" algn="{}""#, escape_attribute(alignment)));
+                }
+                out.push_str("/>");
+            }
+            for run in &paragraph.runs {
+                out.push_str("<a:r>");
+                let rpr = run_properties_fragment(part, &run.properties)?;
+                out.push_str(&rpr);
+                out.push_str("<a:t>");
+                out.push_str(&escape_attribute(&run.text));
+                out.push_str("</a:t></a:r>");
+            }
+            out.push_str("</a:p>");
+        }
+        out.push_str("</p:txBody>");
+    }
+    out.push_str("</p:sp>");
+    Ok(out.into_bytes())
+}
+
+/// The `<a:rPr .../>` a set of run properties writes as — empty string when
+/// every field is silent, so a plain run stays a plain `<a:r>`.
+fn run_properties_fragment(part: &str, properties: &RunProperties) -> Result<String, PptxError> {
+    let patch = RunStylePatch {
+        bold: properties.bold.map(Some),
+        italic: properties.italic.map(Some),
+        underline: properties.underline.clone().map(Some),
+        font_size_pt: properties.font_size_pt.map(Some),
+        color_rgb: properties
+            .color
+            .as_ref()
+            .map(|color| color.rgb.clone()),
+        font_family: properties.font_family.clone().map(Some),
+    };
+    if patch.is_empty() {
+        return Ok(String::new());
+    }
+    let bytes = patch_rpr(part, b"<a:rPr/>", &patch)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// One synthesised shape and where it goes: before the source top-level shape
+/// at `before`, or at the end of the tree when `None`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapeInsertion {
+    pub before: Option<usize>,
+    pub xml: Vec<u8>,
+}
+
+/// Inserts synthesised shape fragments into the slide's `<p:spTree>`, leaving
+/// every existing byte in place.
+pub fn rewrite_slide_shape_insertions(
+    part: &str,
+    bytes: &[u8],
+    insertions: &[ShapeInsertion],
+) -> Result<Vec<u8>, PptxError> {
+    if insertions.is_empty() {
+        return Ok(bytes.to_vec());
+    }
+    let mut reader = Reader::from_reader(bytes);
+    reader.config_mut().trim_text(false);
+    reader.config_mut().check_end_names = true;
+    let mut stack: Vec<Vec<u8>> = Vec::new();
+    let mut in_tree_depth: Option<usize> = None;
+    let mut next_shape = 0usize;
+    let mut starts: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut tree_end: Option<usize> = None;
+
+    loop {
+        let opens_at = reader.buffer_position() as usize;
+        let event = reader
+            .read_event()
+            .map_err(|error| malformed(part, opens_at, error.to_string()))?;
+        match event {
+            Event::Start(ref start) | Event::Empty(ref start) => {
+                let name = local_name(start.name().into_inner()).to_vec();
+                if in_tree_depth == Some(stack.len())
+                    && matches!(name.as_slice(), b"sp" | b"pic" | b"graphicFrame" | b"grpSp")
+                {
+                    starts.insert(next_shape, opens_at);
+                    next_shape += 1;
+                }
+                if matches!(event, Event::Start(_)) {
+                    if name == b"spTree" && in_tree_depth.is_none() {
+                        in_tree_depth = Some(stack.len() + 1);
+                    }
+                    stack.push(name);
+                }
+            }
+            Event::End(_) => {
+                if in_tree_depth == Some(stack.len()) && tree_end.is_none() {
+                    tree_end = Some(opens_at);
+                }
+                stack.pop();
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    let mut splices: Vec<(usize, Vec<u8>)> = Vec::new();
+    for insertion in insertions {
+        let at = match insertion.before {
+            Some(index) => *starts.get(&index).ok_or_else(|| {
+                malformed(part, 0, format!("shape {index} is not in the shape tree"))
+            })?,
+            None => tree_end
+                .ok_or_else(|| malformed(part, 0, "the slide has no shape tree to insert into"))?,
+        };
+        splices.push((at, insertion.xml.clone()));
+    }
+    splices.sort_by_key(|(at, _)| *at);
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut cursor = 0;
+    for (at, xml) in splices {
+        if at < cursor || at > bytes.len() {
+            return Err(malformed(part, at, "two insertions overlap in the part"));
+        }
+        output.extend_from_slice(&bytes[cursor..at]);
+        output.extend_from_slice(&xml);
+        cursor = at;
     }
     output.extend_from_slice(&bytes[cursor..]);
     Ok(output)

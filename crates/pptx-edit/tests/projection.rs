@@ -1496,3 +1496,141 @@ fn a_removal_and_a_text_edit_share_one_save() {
         other_slide.shapes.len() - 1
     );
 }
+
+/// A text box added this session is synthesised into the slide and survives
+/// the round trip with its text and style.
+#[test]
+fn an_added_text_box_saves_and_reads_back() {
+    let session = DeckSession::open(FIXTURE, 98).unwrap();
+    let snapshot = session.snapshot().unwrap();
+    let slide = &snapshot.slides[0];
+    session
+        .add_text_box(
+            &EditCtx::local("test"),
+            &slide.id,
+            &pptx_edit::ShapeDraft {
+                name: "Note".to_owned(),
+                rect: pptx_edit::ShapeRect {
+                    x: 914_400,
+                    y: 914_400,
+                    width: 2_000_000,
+                    height: 500_000,
+                },
+                text: "hello box".to_owned(),
+                style: TextStyle {
+                    bold: Some(true),
+                    color: Some("#325EE6".to_owned()),
+                    ..TextStyle::default()
+                },
+            },
+        )
+        .unwrap();
+
+    let saved = session.save_bytes().unwrap();
+    let reopened = DeckSession::open(&saved, 99).unwrap();
+    let reopened_slide = &reopened.snapshot().unwrap().slides[0];
+    assert_eq!(reopened_slide.shapes.len(), slide.shapes.len() + 1);
+    let added = reopened_slide
+        .shapes
+        .iter()
+        .find(|shape| shape.name == "Note")
+        .expect("the new text box is in the reopened deck");
+    assert_eq!(
+        (added.x, added.y, added.width, added.height),
+        (914_400, 914_400, 2_000_000, 500_000)
+    );
+    let run = &added.text_stories[0].paragraphs[0].runs[0];
+    assert_eq!(run.text, "hello box");
+    assert_eq!(run.style.bold, Some(true));
+    assert_eq!(run.style.color.as_deref(), Some("#325EE6"));
+}
+
+/// A preset shape with a fill and default adjustments round-trips.
+#[test]
+fn an_added_preset_shape_saves_with_fill_and_adjustments() {
+    let session = DeckSession::open(FIXTURE, 100).unwrap();
+    let snapshot = session.snapshot().unwrap();
+    let slide = &snapshot.slides[0];
+    session
+        .add_shape(
+            &EditCtx::local("test"),
+            &slide.id,
+            &pptx_edit::PresetShapeDraft {
+                name: "Badge".to_owned(),
+                geometry: "roundRect".to_owned(),
+                rect: pptx_edit::ShapeRect {
+                    x: 0,
+                    y: 0,
+                    width: 1_000_000,
+                    height: 1_000_000,
+                },
+                fill: Some("#FF0000".to_owned()),
+            },
+        )
+        .unwrap();
+
+    let saved = session.save_bytes().unwrap();
+    let reopened = DeckSession::open(&saved, 101).unwrap();
+    let added = reopened.snapshot().unwrap().slides[0]
+        .shapes
+        .iter()
+        .find(|shape| shape.name == "Badge")
+        .cloned()
+        .expect("the new shape is in the reopened deck");
+    assert_eq!(added.geometry, "roundRect");
+    assert!(!added.adjust_values.is_empty(), "adjustments survive");
+    assert_eq!(
+        added
+            .fill
+            .as_ref()
+            .and_then(|fill| fill.color.as_ref())
+            .and_then(|color| color.rgb.as_deref()),
+        Some("FF0000")
+    );
+}
+
+/// Adding, removing and typing in one save all land together.
+#[test]
+fn an_add_a_remove_and_a_text_edit_share_one_save() {
+    let session = session_with(r#"<a:p><a:r><a:t>base</a:t></a:r></a:p>"#);
+    let snapshot = session.snapshot().unwrap();
+    let second = &snapshot.slides[1];
+    let victim = second.shapes[0].clone();
+    session
+        .remove_shape(&EditCtx::local("test"), &second.id, &victim.id)
+        .unwrap();
+    session
+        .add_text_box(
+            &EditCtx::local("test"),
+            &snapshot.slides[0].id,
+            &pptx_edit::ShapeDraft {
+                name: "Note".to_owned(),
+                rect: pptx_edit::ShapeRect {
+                    x: 0,
+                    y: 0,
+                    width: 914_400,
+                    height: 914_400,
+                },
+                text: "n".to_owned(),
+                style: TextStyle::default(),
+            },
+        )
+        .unwrap();
+    let story = first_story(&session);
+    type_text(&session, &story.id, 4, "!");
+
+    let saved = session.save_bytes().unwrap();
+    let reopened = DeckSession::open(&saved, 102).unwrap();
+    let reopened_snapshot = reopened.snapshot().unwrap();
+    assert_eq!(first_story(&reopened).paragraphs[0].runs[0].text, "base!");
+    assert_eq!(
+        reopened_snapshot.slides[1].shapes.len(),
+        second.shapes.len() - 1
+    );
+    assert!(
+        reopened_snapshot.slides[0]
+            .shapes
+            .iter()
+            .any(|shape| shape.name == "Note")
+    );
+}

@@ -1,5 +1,5 @@
 use betteroffice_pptx::{
-    DeckSnapshot, EditCtx, Error, Presentation, SaveFault, ShapeDraft, ShapeRect, ShapeSnapshot,
+    DeckSnapshot, EditCtx, Error, Presentation, SaveFault, ShapeSnapshot,
     StorySnapshot, TextStyle, TextStylePatch,
 };
 
@@ -368,29 +368,6 @@ fn a_change_this_slice_cannot_write_refuses_instead_of_dropping_it() {
             }),
         ),
         (
-            "a new shape",
-            Box::new(|presentation: &Presentation| {
-                let snapshot = presentation.snapshot().unwrap();
-                presentation
-                    .add_text_box(
-                        &context(),
-                        &snapshot.slides[0].id,
-                        &ShapeDraft {
-                            name: "Added".to_owned(),
-                            rect: ShapeRect {
-                                x: 0,
-                                y: 0,
-                                width: 100_000,
-                                height: 100_000,
-                            },
-                            text: "hello".to_owned(),
-                            style: TextStyle::default(),
-                        },
-                    )
-                    .unwrap();
-            }),
-        ),
-        (
             "a new slide",
             Box::new(|presentation: &Presentation| {
                 presentation.insert_slide(&context(), 0, None).unwrap();
@@ -438,29 +415,14 @@ fn a_change_this_slice_cannot_write_refuses_instead_of_dropping_it() {
 }
 
 #[test]
-fn undoing_an_unwritable_edit_restores_a_savable_deck() {
+fn taking_back_an_unwritable_change_restores_a_savable_deck() {
     let presentation = Presentation::open(FIXTURE).unwrap();
-    let snapshot = presentation.snapshot().unwrap();
-    presentation
-        .add_text_box(
-            &context(),
-            &snapshot.slides[0].id,
-            &ShapeDraft {
-                name: "Added".to_owned(),
-                rect: ShapeRect {
-                    x: 0,
-                    y: 0,
-                    width: 100_000,
-                    height: 100_000,
-                },
-                text: "hello".to_owned(),
-                style: TextStyle::default(),
-            },
-        )
-        .unwrap();
+    let inserted = presentation.insert_slide(&context(), 0, None).unwrap();
     assert!(presentation.save().is_err());
 
-    assert!(presentation.undo());
+    presentation
+        .delete_slide(&context(), &inserted.slide_id)
+        .unwrap();
     assert_eq!(parts(&presentation.save().unwrap()), parts(FIXTURE));
 }
 
