@@ -75,7 +75,12 @@
     "panelLabel": null,
     "fallbackTitle": null,
     "canvasLabel": null,
-    "canvasLabelWithSelection": null
+    "canvasLabelWithSelection": null,
+    "menuLabel": "Folienaktionen",
+    "menuNewSlide": "Neue Folie",
+    "menuDeleteSlide": "Folie löschen",
+    "menuMoveUp": "Nach oben",
+    "menuMoveDown": "Nach unten"
   },
   "editor": {
     "appLabel": null,

@@ -333,6 +333,7 @@ function PptxEditorContent({
   const [model, setModel] = useState<EditorModel | null>(null);
   const [selection, setSelection] = useState<PptxTextSelection | null>(null);
   const [shapeSelection, setShapeSelection] = useState<PptxShapeSelection | null>(null);
+  const [slideMenu, setSlideMenu] = useState<{ index: number; x: number; y: number } | null>(null);
   const [dragPreview, setDragPreview] = useState<ShapeDragPreview | null>(null);
   const [textBoxPreview, setTextBoxPreview] = useState<TextBoxPreview | null>(null);
   const [textStyle, setTextStyle] = useState(initialStyle);
@@ -1182,6 +1183,11 @@ function PptxEditorContent({
       history(event.shiftKey ? 'redo' : 'undo');
       return;
     }
+    if (!selection && shapeSelection && (event.key === 'Delete' || event.key === 'Backspace')) {
+      event.preventDefault();
+      removeSelectedShape();
+      return;
+    }
     if (!selection && !selectedShapeStoryId) return;
     if (modifier && (event.key === 'b' || event.key === 'B')) {
       event.preventDefault();
@@ -1374,6 +1380,52 @@ function PptxEditorContent({
     }
   };
 
+  /** Context-menu slide actions, all keyed by the thumbnail's index. */
+  const insertSlideAfter = (index: number) => {
+    const handle = handleRef.current;
+    const current = modelRef.current;
+    if (!handle || !current) return;
+    try {
+      const layout = current.snapshot.slides[index]?.layoutPartPath ?? undefined;
+      handle.insertSlide(index + 1, layout);
+      setSelection(null);
+      setShapeSelection(null);
+      refreshAt(index + 1, true, true);
+    } catch (value) {
+      reportError(value);
+    }
+  };
+
+  const deleteSlideAt = (index: number) => {
+    const handle = handleRef.current;
+    const current = modelRef.current;
+    const slide = current?.snapshot.slides[index];
+    if (!handle || !current || !slide || current.snapshot.slides.length <= 1) return;
+    try {
+      handle.deleteSlide(slide.id);
+      setSelection(null);
+      setShapeSelection(null);
+      refreshAt(Math.min(index, current.snapshot.slides.length - 2), true, true);
+    } catch (value) {
+      reportError(value);
+    }
+  };
+
+  const moveSlideBy = (index: number, delta: number) => {
+    const handle = handleRef.current;
+    const current = modelRef.current;
+    const slide = current?.snapshot.slides[index];
+    const target = index + delta;
+    if (!handle || !current || !slide) return;
+    if (target < 0 || target >= current.snapshot.slides.length) return;
+    try {
+      handle.moveSlide(slide.id, target);
+      refreshAt(target, true, true);
+    } catch (value) {
+      reportError(value);
+    }
+  };
+
   const history = (direction: 'undo' | 'redo') => {
     const handle = handleRef.current;
     if (!handle) return;
@@ -1423,6 +1475,28 @@ function PptxEditorContent({
 
   const deleteSelectedText = () => deleteTextSelection(clipboardHost);
 
+  /** Removes the selected shape from its slide (Delete key, Edit menu). */
+  const removeSelectedShape = () => {
+    const handle = handleRef.current;
+    if (!handle || !shapeSelection) return;
+    try {
+      handle.removeShape(shapeSelection.slideId, shapeSelection.shapeId);
+      setShapeSelection(null);
+      refreshAt(undefined, true, true);
+    } catch (value) {
+      reportError(value);
+    }
+  };
+
+  /** Shape selected with no text caret: Edit → Delete removes the shape. */
+  const deleteSelectionAction = () => {
+    if (!selection && shapeSelection) {
+      removeSelectedShape();
+      return;
+    }
+    deleteSelectedText();
+  };
+
   const copySelectedText = () =>
     enqueueClipboardTask(async () => {
       await copyTextSelection(clipboardHost);
@@ -1469,7 +1543,7 @@ function PptxEditorContent({
     copySelection: copySelectedText,
     cutSelection: cutSelectedText,
     pasteSelection: pasteText,
-    deleteSelection: deleteSelectedText,
+    deleteSelection: deleteSelectionAction,
     selectAll: selectAllText,
     getSelectionState: () => selectionState,
     getZoom: () => scale,
@@ -1557,6 +1631,11 @@ function PptxEditorContent({
                 aria-current={index === currentSlide ? 'page' : undefined}
                 style={slideButton(index === currentSlide)}
                 onClick={() => selectSlide(index)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  selectSlide(index);
+                  setSlideMenu({ index, x: event.clientX, y: event.clientY });
+                }}
               >
                 <span style={styles.slideNumber}>{index + 1}</span>
                 <span style={styles.slidePreview}>
@@ -1598,6 +1677,88 @@ function PptxEditorContent({
             );
           })}
         </aside>
+        {slideMenu ? (
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 40 }}
+            onClick={() => setSlideMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setSlideMenu(null);
+            }}
+          >
+            <div
+              role="menu"
+              aria-label={t('slides.menuLabel')}
+              style={{
+                position: 'fixed',
+                top: slideMenu.y,
+                left: slideMenu.x,
+                zIndex: 41,
+                minWidth: 168,
+                background: '#ffffff',
+                border: '1px solid #d4d4d8',
+                borderRadius: 8,
+                boxShadow: '0 8px 24px rgba(0,0,0,0.14)',
+                padding: 4,
+                display: 'flex',
+                flexDirection: 'column',
+              }}
+              onClick={(event) => event.stopPropagation()}
+            >
+              {(
+                [
+                  {
+                    key: 'new',
+                    label: t('slides.menuNewSlide'),
+                    disabled: false,
+                    run: () => insertSlideAfter(slideMenu.index),
+                  },
+                  {
+                    key: 'delete',
+                    label: t('slides.menuDeleteSlide'),
+                    disabled: (model?.snapshot.slides.length ?? 0) <= 1,
+                    run: () => deleteSlideAt(slideMenu.index),
+                  },
+                  {
+                    key: 'up',
+                    label: t('slides.menuMoveUp'),
+                    disabled: slideMenu.index === 0,
+                    run: () => moveSlideBy(slideMenu.index, -1),
+                  },
+                  {
+                    key: 'down',
+                    label: t('slides.menuMoveDown'),
+                    disabled: slideMenu.index >= (model?.snapshot.slides.length ?? 0) - 1,
+                    run: () => moveSlideBy(slideMenu.index, 1),
+                  },
+                ] as const
+              ).map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  role="menuitem"
+                  disabled={item.disabled}
+                  style={{
+                    textAlign: 'left',
+                    padding: '6px 10px',
+                    border: 'none',
+                    background: 'transparent',
+                    borderRadius: 6,
+                    fontSize: 13,
+                    cursor: item.disabled ? 'default' : 'pointer',
+                    color: item.disabled ? '#a1a1aa' : '#18181b',
+                  }}
+                  onClick={() => {
+                    setSlideMenu(null);
+                    item.run();
+                  }}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
         <div
           ref={stageRef}
           style={styles.stage}

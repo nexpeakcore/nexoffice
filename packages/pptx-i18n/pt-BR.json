@@ -75,7 +75,12 @@
     "panelLabel": null,
     "fallbackTitle": null,
     "canvasLabel": null,
-    "canvasLabelWithSelection": null
+    "canvasLabelWithSelection": null,
+    "menuLabel": "Ações do slide",
+    "menuNewSlide": "Novo slide",
+    "menuDeleteSlide": "Excluir slide",
+    "menuMoveUp": "Mover para cima",
+    "menuMoveDown": "Mover para baixo"
   },
   "editor": {
     "appLabel": null,

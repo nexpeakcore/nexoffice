@@ -75,7 +75,12 @@
     "panelLabel": null,
     "fallbackTitle": null,
     "canvasLabel": null,
-    "canvasLabelWithSelection": null
+    "canvasLabelWithSelection": null,
+    "menuLabel": "幻灯片操作",
+    "menuNewSlide": "新建幻灯片",
+    "menuDeleteSlide": "删除幻灯片",
+    "menuMoveUp": "上移",
+    "menuMoveDown": "下移"
   },
   "editor": {
     "appLabel": null,

@@ -75,7 +75,12 @@
     "panelLabel": "Slides",
     "fallbackTitle": "Slide {number}",
     "canvasLabel": "Slide {current} of {total}",
-    "canvasLabelWithSelection": "Slide {current} of {total}; selected object {name}"
+    "canvasLabelWithSelection": "Slide {current} of {total}; selected object {name}",
+    "menuLabel": "Slide actions",
+    "menuNewSlide": "New slide",
+    "menuDeleteSlide": "Delete slide",
+    "menuMoveUp": "Move up",
+    "menuMoveDown": "Move down"
   },
   "editor": {
     "appLabel": "Presentation slide editor",

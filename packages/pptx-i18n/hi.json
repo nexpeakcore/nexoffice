@@ -75,7 +75,12 @@
     "panelLabel": null,
     "fallbackTitle": null,
     "canvasLabel": null,
-    "canvasLabelWithSelection": null
+    "canvasLabelWithSelection": null,
+    "menuLabel": "स्लाइड क्रियाएँ",
+    "menuNewSlide": "नई स्लाइड",
+    "menuDeleteSlide": "स्लाइड हटाएँ",
+    "menuMoveUp": "ऊपर ले जाएँ",
+    "menuMoveDown": "नीचे ले जाएँ"
   },
   "editor": {
     "appLabel": null,

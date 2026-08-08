@@ -75,7 +75,12 @@
     "panelLabel": null,
     "fallbackTitle": null,
     "canvasLabel": null,
-    "canvasLabelWithSelection": null
+    "canvasLabelWithSelection": null,
+    "menuLabel": "Akcje slajdu",
+    "menuNewSlide": "Nowy slajd",
+    "menuDeleteSlide": "Usuń slajd",
+    "menuMoveUp": "Przenieś wyżej",
+    "menuMoveDown": "Przenieś niżej"
   },
   "editor": {
     "appLabel": null,
