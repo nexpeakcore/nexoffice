@@ -125,7 +125,7 @@ describe('PPTX wasm boundary', () => {
     expect(movedReopen.snapshot().slides[0].shapes[0]).toMatchObject({ x: 10, y: 20 });
     movedReopen.dispose();
 
-    editor.deleteSlide(snapshot.slides[0].id);
+    editor.insertSlide(0);
     expect(saveFault(caught(() => editor.save()))).toMatchObject({
       code: 'unprojectable',
       undoingHelps: true,
@@ -140,7 +140,7 @@ describe('PPTX wasm boundary', () => {
   test('tells the ways a save can stop apart by code, not by wording', () => {
     const editor = openPresentation(fixture, { clientId: 9301 });
     const snapshot = editor.snapshot();
-    editor.deleteSlide(snapshot.slides[0].id);
+    editor.insertSlide(0);
     const refused = saveFault(caught(() => editor.save()));
     expect(refused?.code).toBe('unprojectable');
     expect(refused?.undoingHelps).toBe(true);
