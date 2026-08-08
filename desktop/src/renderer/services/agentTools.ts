@@ -9,7 +9,10 @@ export const WRITE_CELLS_CAP = 50
 export interface AgentWorkbookAccess {
   sheetInfo(): { sheetNames: string[]; activeSheet: number }
   usedRange(sheet: number): string | null
-  rangeCells(sheet: number, range: string): Array<Array<{ input: string; isFormula: boolean }>>
+  rangeCells(
+    sheet: number,
+    range: string
+  ): Array<Array<{ input: string; isFormula: boolean; filterText?: string }>>
   editCells(sheet: number, edits: Array<{ row: number; col: number; input: string }>): unknown
 }
 
@@ -73,13 +76,21 @@ export function validateWriteCells(
   return { proposal: { sheet, sheetName: info.sheetNames[sheet]!, edits } }
 }
 
-/** Apply an approved proposal as one batch (one undo step). */
+/**
+ * Apply an approved proposal as one batch (one undo step), then read the
+ * written cells back so the model sees computed results — a formula that
+ * evaluated to #NAME? is visible immediately instead of on the next read.
+ */
 export function applyWriteCells(access: AgentWorkbookAccess, proposal: WriteCellsProposal): unknown {
   access.editCells(
     proposal.sheet,
     proposal.edits.map(({ row, col, input }) => ({ row, col, input }))
   )
-  return { applied: true, sheet: proposal.sheet, cells: proposal.edits.map((edit) => edit.a1) }
+  const cells = proposal.edits.map((edit) => {
+    const readBack = access.rangeCells(proposal.sheet, edit.a1)[0]?.[0]
+    return { a1: edit.a1, value: readBack ? (readBack.filterText ?? readBack.input) : '' }
+  })
+  return { applied: true, sheet: proposal.sheet, cells }
 }
 
 /** Cell count of an A1 rectangle, or null when it does not parse. */
@@ -132,7 +143,13 @@ export function executeXlsxAgentTool(
       return {
         sheet,
         range,
-        rows: grid.map((row) => row.map(({ input, isFormula }) => ({ input, isFormula }))),
+        rows: grid.map((row) =>
+          row.map(({ input, isFormula, filterText }) => ({
+            input,
+            isFormula,
+            value: filterText ?? input,
+          }))
+        ),
       }
     }
     default:
