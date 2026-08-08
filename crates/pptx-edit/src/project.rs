@@ -29,7 +29,7 @@ use ooxml_drawingml::Theme;
 use pptx_parse::{
     GraphicFrameData, ParagraphRewrite, PptxPackage, RunPiece, RunProperties, RunRef,
     RunStylePatch, ShapeNode, ShapeTransformRewrite, TextBody, TextBodyLocation, TextParagraph,
-    TextRun, font_size_to_sz,
+    TextRun, font_size_to_sz, rewrite_slide_shape_removals,
 };
 use yrs::{Map, TextRef, Transact, WriteTxn};
 
@@ -173,25 +173,33 @@ impl DeckSession {
                 part_path: source.part_path.clone(),
                 theme: theme_for_layout(&package, source.layout_part_path.as_deref()),
             };
-            if source.shapes.len() != current_slide.shapes.len() {
-                return Err(unprojectable(format!(
-                    "slide {} added or removed shapes",
-                    index + 1
-                )));
-            }
+            let alignment = align_removed_shapes(&baseline_slide.shapes, &current_slide.shapes)
+                .ok_or_else(|| {
+                    unprojectable(format!("slide {} added or rearranged shapes", index + 1))
+                })?;
             for (shape_index, source_shape) in source.shapes.iter().enumerate() {
-                project_shape(
-                    &context,
-                    source_shape,
-                    &baseline_slide.shapes[shape_index],
-                    &current_slide.shapes[shape_index],
-                    &mut vec![shape_index],
-                    &mut plan,
-                )?;
+                match alignment[shape_index] {
+                    Some(current_index) => project_shape(
+                        &context,
+                        source_shape,
+                        &baseline_slide.shapes[shape_index],
+                        &current_slide.shapes[current_index],
+                        &mut vec![shape_index],
+                        &mut plan,
+                    )?,
+                    None => {
+                        plan.removals
+                            .entry(context.part_path.clone())
+                            .or_default()
+                            .push(shape_index);
+                        plan.removed.push((index, shape_index));
+                    }
+                }
             }
         }
 
-        let rewrote_parts = !plan.edits.is_empty() || !plan.transforms.is_empty();
+        let rewrote_parts =
+            !plan.edits.is_empty() || !plan.transforms.is_empty() || !plan.removals.is_empty();
         for (part_path, edits) in &plan.edits {
             let bytes = package
                 .part_bytes(part_path)
@@ -221,6 +229,14 @@ impl DeckSession {
                 })?;
             package.replace_part(part_path, rewritten);
         }
+        for (part_path, removals) in &plan.removals {
+            let bytes = package
+                .part_bytes(part_path)
+                .ok_or_else(|| EditError::WriteFailed(format!("part {part_path} is missing")))?;
+            let rewritten = rewrite_slide_shape_removals(part_path, bytes, removals)
+                .map_err(|error| EditError::WriteFailed(error.to_string()))?;
+            package.replace_part(part_path, rewritten);
+        }
         for moved in &plan.moved {
             let transform = package
                 .slides
@@ -246,6 +262,19 @@ impl DeckSession {
                 })?;
             *target = body.body;
         }
+        let mut removed = plan.removed.clone();
+        removed.sort_by(|a, b| b.cmp(a));
+        for (slide_index, shape_index) in removed {
+            let slide = package.slides.get_mut(slide_index).ok_or_else(|| {
+                EditError::WriteFailed("a removed shape left the slide list".to_owned())
+            })?;
+            if shape_index >= slide.shapes.len() {
+                return Err(EditError::WriteFailed(
+                    "a removed shape left the shape tree".to_owned(),
+                ));
+            }
+            slide.shapes.remove(shape_index);
+        }
         Ok((package, rewrote_parts))
     }
 }
@@ -262,6 +291,8 @@ struct Plan<'a> {
     bodies: Vec<ProjectedBody>,
     transforms: BTreeMap<String, Vec<ShapeTransformRewrite>>,
     moved: Vec<MovedShape>,
+    removals: BTreeMap<String, Vec<usize>>,
+    removed: Vec<(usize, usize)>,
     charged_edits: usize,
     charged_bytes: usize,
 }
@@ -274,6 +305,8 @@ impl<'a> Plan<'a> {
             bodies: Vec::new(),
             transforms: BTreeMap::new(),
             moved: Vec::new(),
+            removals: BTreeMap::new(),
+            removed: Vec::new(),
             charged_edits: 0,
             charged_bytes: 0,
         }
@@ -595,6 +628,29 @@ fn project_body(
 struct Group {
     source: Range<usize>,
     current: Range<usize>,
+}
+
+/// For each baseline shape, its slot in the current slide — `None` when the
+/// deck deleted it. `None` for the whole slide when the current shapes are not
+/// an in-order subset of the baseline's (something was added or rearranged).
+fn align_removed_shapes(
+    baseline: &[ShapeSnapshot],
+    current: &[ShapeSnapshot],
+) -> Option<Vec<Option<usize>>> {
+    let mut result = Vec::with_capacity(baseline.len());
+    let mut cursor = 0;
+    for shape in baseline {
+        if current
+            .get(cursor)
+            .is_some_and(|candidate| candidate.id == shape.id)
+        {
+            result.push(Some(cursor));
+            cursor += 1;
+        } else {
+            result.push(None);
+        }
+    }
+    (cursor == current.len()).then_some(result)
 }
 
 /// One planned group's place in the output, kept so the formatting pass can
