@@ -175,7 +175,10 @@
     "working": "{tool} çalışıyor…",
     "needKey": "Asistanı etkinleştirmek için DeepSeek API anahtarınızı girin. Anahtar bu makinede şifreli saklanır.",
     "keyPlaceholder": "DeepSeek API anahtarı",
-    "saveKey": "Anahtarı kaydet"
+    "saveKey": "Anahtarı kaydet",
+    "proposalTitle": "Önerilen değişiklik: “{sheet}” sayfasında {count} hücre",
+    "apply": "Uygula",
+    "reject": "Reddet"
   },
   "update": {
     "ready": "Güncelleme {version} hazır",

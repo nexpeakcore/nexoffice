@@ -772,9 +772,15 @@ export function App() {
             visible={agentPanelOpen}
             documentKind={document.kind}
             documentName={document.name}
-            runTool={(name, args) =>
-              xlsxRef.current?.agentTool(name, args) ?? { error: 'no workbook is open' }
-            }
+            bridge={{
+              runReadTool: (name, args) =>
+                xlsxRef.current?.agentTool(name, args) ?? { error: 'no workbook is open' },
+              validateWrite: (args) =>
+                xlsxRef.current?.agentValidateWrite(args) ?? { error: 'no workbook is open' },
+              applyWrite: (proposal) =>
+                xlsxRef.current?.agentApplyWrite(proposal) ?? { error: 'no workbook is open' },
+            }}
+            onRequestOpen={() => setAgentPanelOpen(true)}
             onClose={() => setAgentPanelOpen(false)}
           />
         )}

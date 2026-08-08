@@ -175,7 +175,10 @@
     "working": "正在运行 {tool}…",
     "needKey": "输入 DeepSeek API 密钥以启用助手。密钥加密保存在本机。",
     "keyPlaceholder": "DeepSeek API 密钥",
-    "saveKey": "保存密钥"
+    "saveKey": "保存密钥",
+    "proposalTitle": "拟更改：“{sheet}”上的 {count} 个单元格",
+    "apply": "应用",
+    "reject": "拒绝"
   },
   "update": {
     "ready": "更新 {version} 已就绪",

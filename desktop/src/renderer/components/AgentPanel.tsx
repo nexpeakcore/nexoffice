@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentSettings, DocumentKind } from '../../shared/ipc.js'
+import type { WriteCellsProposal } from '../services/agentTools.js'
 import { useI18n } from '../i18n.js'
 
 interface ChatMessage {
@@ -7,15 +8,37 @@ interface ChatMessage {
   content: string
 }
 
+interface PendingProposal {
+  toolCallId: string
+  proposal: WriteCellsProposal
+}
+
+export interface AgentDocumentBridge {
+  runReadTool: (name: string, args: Record<string, unknown>) => unknown
+  validateWrite: (
+    args: Record<string, unknown>
+  ) => { proposal: WriteCellsProposal } | { error: string }
+  applyWrite: (proposal: WriteCellsProposal) => unknown
+}
+
 interface AgentPanelProps {
   visible: boolean
   documentKind: DocumentKind
   documentName: string
-  runTool: (name: string, args: Record<string, unknown>) => unknown
+  bridge: AgentDocumentBridge
+  /** A write proposal arriving while the panel is hidden must surface it. */
+  onRequestOpen: () => void
   onClose: () => void
 }
 
-export function AgentPanel({ visible, documentKind, documentName, runTool, onClose }: AgentPanelProps) {
+export function AgentPanel({
+  visible,
+  documentKind,
+  documentName,
+  bridge,
+  onRequestOpen,
+  onClose,
+}: AgentPanelProps) {
   const { locale, t } = useI18n()
   const [settings, setSettings] = useState<AgentSettings | null>(null)
   const [keyDraft, setKeyDraft] = useState('')
@@ -23,9 +46,14 @@ export function AgentPanel({ visible, documentKind, documentName, runTool, onClo
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [pending, setPending] = useState<PendingProposal | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
-  const runToolRef = useRef(runTool)
-  runToolRef.current = runTool
+  const bridgeRef = useRef(bridge)
+  bridgeRef.current = bridge
+  const onRequestOpenRef = useRef(onRequestOpen)
+  onRequestOpenRef.current = onRequestOpen
+  const pendingRef = useRef<PendingProposal | null>(null)
+  pendingRef.current = pending
 
   useEffect(() => {
     if (!visible) return
@@ -68,9 +96,19 @@ export function AgentPanel({ visible, documentKind, documentName, runTool, onClo
       }
     })
     const offTool = window.nexoffice.onAgentToolRequest((request) => {
+      if (request.name === 'write_cells') {
+        const validated = bridgeRef.current.validateWrite(request.args)
+        if ('error' in validated) {
+          window.nexoffice.agentToolResult(request.id, validated)
+          return
+        }
+        setPending({ toolCallId: request.id, proposal: validated.proposal })
+        onRequestOpenRef.current()
+        return
+      }
       let result: unknown
       try {
-        result = runToolRef.current(request.name, request.args)
+        result = bridgeRef.current.runReadTool(request.name, request.args)
       } catch (error) {
         result = { error: error instanceof Error ? error.message : String(error) }
       }
@@ -100,6 +138,30 @@ export function AgentPanel({ visible, documentKind, documentName, runTool, onClo
       locale,
     })
   }, [draft, busy, messages, documentKind, documentName, locale])
+
+  const resolveProposal = useCallback((approve: boolean) => {
+    const current = pendingRef.current
+    if (!current) return
+    setPending(null)
+    let result: unknown
+    if (approve) {
+      try {
+        result = bridgeRef.current.applyWrite(current.proposal)
+      } catch (error) {
+        result = { error: error instanceof Error ? error.message : String(error) }
+      }
+    } else {
+      result = { rejected: true, reason: 'the user rejected this proposal' }
+    }
+    window.nexoffice.agentToolResult(current.toolCallId, result ?? null)
+  }, [])
+
+  const cancelRun = useCallback(() => {
+    // A pending proposal belongs to the run being cancelled — resolve it so
+    // the main-process tool round-trip never dangles until its timeout.
+    resolveProposal(false)
+    window.nexoffice.agentCancel()
+  }, [resolveProposal])
 
   const saveKey = useCallback(() => {
     const apiKey = keyDraft.trim()
@@ -172,7 +234,45 @@ export function AgentPanel({ visible, documentKind, documentName, runTool, onClo
                 </div>
               )
             )}
-            {busy && (
+            {pending && (
+              <div className="rounded-lg border border-amber-300 bg-amber-50 p-2">
+                <p className="text-xs font-medium text-amber-900">
+                  {t('agentPanel.proposalTitle', {
+                    count: pending.proposal.edits.length,
+                    sheet: pending.proposal.sheetName,
+                  })}
+                </p>
+                <div className="mt-1.5 max-h-40 overflow-auto">
+                  <table className="w-full text-xs text-neutral-800">
+                    <tbody>
+                      {pending.proposal.edits.map((edit) => (
+                        <tr key={edit.a1} className="border-t border-amber-200/60">
+                          <td className="py-0.5 pe-2 font-mono text-neutral-500">{edit.a1}</td>
+                          <td className="break-all py-0.5 font-mono">
+                            {edit.input === '' ? '∅' : edit.input}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="mt-2 flex justify-end gap-2">
+                  <button
+                    onClick={() => resolveProposal(false)}
+                    className="rounded px-2 py-1 text-xs text-neutral-600 hover:bg-amber-100"
+                  >
+                    {t('agentPanel.reject')}
+                  </button>
+                  <button
+                    onClick={() => resolveProposal(true)}
+                    className="rounded bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-700"
+                  >
+                    {t('agentPanel.apply')}
+                  </button>
+                </div>
+              </div>
+            )}
+            {busy && !pending && (
               <p className="text-xs text-neutral-400">
                 {notice ? t('agentPanel.working', { tool: notice }) : t('agentPanel.thinking')}
               </p>
@@ -195,7 +295,7 @@ export function AgentPanel({ visible, documentKind, documentName, runTool, onClo
             <div className="mt-1 flex justify-end gap-2">
               {busy && (
                 <button
-                  onClick={() => window.nexoffice.agentCancel()}
+                  onClick={cancelRun}
                   className="rounded px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100"
                 >
                   {t('agentPanel.cancel')}

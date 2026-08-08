@@ -175,7 +175,10 @@
     "working": "{tool} läuft…",
     "needKey": "Gib deinen DeepSeek-API-Schlüssel ein, um den Assistenten zu aktivieren. Er wird verschlüsselt auf diesem Gerät gespeichert.",
     "keyPlaceholder": "DeepSeek-API-Schlüssel",
-    "saveKey": "Schlüssel speichern"
+    "saveKey": "Schlüssel speichern",
+    "proposalTitle": "Vorgeschlagene Änderung: {count} Zelle(n) in „{sheet}“",
+    "apply": "Anwenden",
+    "reject": "Ablehnen"
   },
   "update": {
     "ready": "Update {version} bereit",

@@ -175,7 +175,10 @@
     "working": "Menjalankan {tool}…",
     "needKey": "Masukkan kunci API DeepSeek untuk mengaktifkan asisten. Kunci disimpan terenkripsi di mesin ini.",
     "keyPlaceholder": "Kunci API DeepSeek",
-    "saveKey": "Simpan kunci"
+    "saveKey": "Simpan kunci",
+    "proposalTitle": "Perubahan yang diusulkan: {count} sel di “{sheet}”",
+    "apply": "Terapkan",
+    "reject": "Tolak"
   },
   "update": {
     "ready": "Pembaruan {version} siap",
