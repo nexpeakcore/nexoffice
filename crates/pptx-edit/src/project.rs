@@ -29,8 +29,8 @@ use ooxml_drawingml::Theme;
 use pptx_parse::{
     GraphicFrameData, ParagraphRewrite, PptxPackage, RunPiece, RunProperties, RunRef,
     RunStylePatch, ShapeInsertion, ShapeNode, ShapeTransformRewrite, TextBody, TextBodyLocation,
-    TextParagraph, TextRun, adjust_value_to_val, font_size_to_sz, rewrite_slide_shape_insertions,
-    rewrite_slide_shape_removals, serialize_shape,
+    TextParagraph, TextRun, adjust_value_to_val, dangling_shape_reference, font_size_to_sz,
+    rewrite_slide_shape_insertions, rewrite_slide_shape_removals, serialize_shape,
 };
 use yrs::{Map, TextRef, Transact, WriteTxn};
 
@@ -193,6 +193,10 @@ impl DeckSession {
                             .entry(context.part_path.clone())
                             .or_default()
                             .push(shape_index);
+                        plan.removed_ids
+                            .entry(context.part_path.clone())
+                            .or_default()
+                            .insert(source_shape.id());
                         plan.removed.push((index, shape_index));
                     }
                 }
@@ -275,6 +279,18 @@ impl DeckSession {
                 .ok_or_else(|| EditError::WriteFailed(format!("part {part_path} is missing")))?;
             let rewritten = rewrite_slide_shape_removals(part_path, bytes, removals)
                 .map_err(|error| EditError::WriteFailed(error.to_string()))?;
+            // Connectors and timing are not in the parse model, so a
+            // reference they keep to a removed id would survive read-back
+            // verification; refuse instead of writing dangling ids.
+            if let Some(ids) = plan.removed_ids.get(part_path)
+                && let Some(id) = dangling_shape_reference(part_path, &rewritten, ids)
+                    .map_err(|error| EditError::WriteFailed(error.to_string()))?
+            {
+                return Err(unprojectable(format!(
+                    "a deleted shape (drawing id {id}) is still the target of a connector or \
+                     an animation on its slide"
+                )));
+            }
             package.replace_part(part_path, rewritten);
         }
         for (part_path, insertions) in &plan.insertions {
@@ -354,6 +370,7 @@ struct Plan<'a> {
     moved: Vec<MovedShape>,
     removals: BTreeMap<String, Vec<usize>>,
     removed: Vec<(usize, usize)>,
+    removed_ids: BTreeMap<String, BTreeSet<u32>>,
     insertions: BTreeMap<String, Vec<ShapeInsertion>>,
     added: Vec<(usize, usize, ShapeNode)>,
     charged_edits: usize,
@@ -370,6 +387,7 @@ impl<'a> Plan<'a> {
             moved: Vec::new(),
             removals: BTreeMap::new(),
             removed: Vec::new(),
+            removed_ids: BTreeMap::new(),
             insertions: BTreeMap::new(),
             added: Vec::new(),
             charged_edits: 0,

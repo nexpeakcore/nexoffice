@@ -1634,3 +1634,29 @@ fn an_add_a_remove_and_a_text_edit_share_one_save() {
             .any(|shape| shape.name == "Note")
     );
 }
+
+/// A shape an animation still targets cannot be deleted: the timing block is
+/// invisible to the parse model, so the writer refuses rather than leaving a
+/// dangling id behind.
+#[test]
+fn removing_an_animated_shape_is_refused_by_name() {
+    let deck = {
+        let mut package = pptx_parse::parse_pptx(FIXTURE).unwrap();
+        let xml = slide_xml(r#"<a:p><a:r><a:t>x</a:t></a:r></a:p>"#).replace(
+            "</p:cSld></p:sld>",
+            r#"</p:cSld><p:timing><p:spTgt spid="2"/></p:timing></p:sld>"#,
+        );
+        assert!(package.replace_part(SLIDE_PART, xml.into_bytes()));
+        pptx_parse::write_pptx(&package).unwrap()
+    };
+    let session = DeckSession::open(&deck, 103).unwrap();
+    let snapshot = session.snapshot().unwrap();
+    let slide = &snapshot.slides[0];
+    session
+        .remove_shape(&EditCtx::local("test"), &slide.id, &slide.shapes[0].id)
+        .unwrap();
+
+    let error = session.save_bytes().unwrap_err();
+    assert_eq!(error.save_fault(), SaveFault::Unprojectable, "{error}");
+    assert!(error.to_string().contains("animation"), "{error}");
+}
