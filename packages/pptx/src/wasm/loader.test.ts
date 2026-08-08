@@ -139,7 +139,6 @@ describe('PPTX wasm boundary', () => {
   // that does not exist for the other.
   test('tells the ways a save can stop apart by code, not by wording', () => {
     const editor = openPresentation(fixture, { clientId: 9301 });
-    const snapshot = editor.snapshot();
     editor.insertSlide(0);
     const refused = saveFault(caught(() => editor.save()));
     expect(refused?.code).toBe('unprojectable');
