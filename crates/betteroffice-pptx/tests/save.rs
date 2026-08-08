@@ -368,9 +368,21 @@ fn a_change_this_slice_cannot_write_refuses_instead_of_dropping_it() {
             }),
         ),
         (
-            "a new slide",
+            "a font size no sz can spell",
             Box::new(|presentation: &Presentation| {
-                presentation.insert_slide(&context(), 0, None).unwrap();
+                let (story_id, _) = story_holding(presentation, "A Rust-native");
+                presentation
+                    .format_text(
+                        &context(),
+                        &story_id,
+                        0,
+                        4,
+                        &TextStylePatch {
+                            font_size_pt: Some(10.333_333),
+                            ..TextStylePatch::default()
+                        },
+                    )
+                    .unwrap();
             }),
         ),
     ];
@@ -399,12 +411,22 @@ fn a_change_this_slice_cannot_write_refuses_instead_of_dropping_it() {
 #[test]
 fn taking_back_an_unwritable_change_restores_a_savable_deck() {
     let presentation = Presentation::open(FIXTURE).unwrap();
-    let inserted = presentation.insert_slide(&context(), 0, None).unwrap();
+    let (story_id, _) = story_holding(&presentation, "A Rust-native");
+    presentation
+        .format_text(
+            &context(),
+            &story_id,
+            0,
+            4,
+            &TextStylePatch {
+                font_size_pt: Some(10.333_333),
+                ..TextStylePatch::default()
+            },
+        )
+        .unwrap();
     assert!(presentation.save().is_err());
 
-    presentation
-        .delete_slide(&context(), &inserted.slide_id)
-        .unwrap();
+    assert!(presentation.undo());
     assert_eq!(parts(&presentation.save().unwrap()), parts(FIXTURE));
 }
 

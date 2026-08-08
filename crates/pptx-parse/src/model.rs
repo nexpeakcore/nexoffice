@@ -27,6 +27,23 @@ impl PptxPackage {
             .map(|part| part.bytes.as_slice())
     }
 
+    /// Every part path in the package, in zip order.
+    pub fn part_paths(&self) -> impl Iterator<Item = &str> {
+        self.parts.iter().map(|part| part.path.as_str())
+    }
+
+    /// Adds a new part; `false` (and no change) when the path already exists.
+    pub fn add_part(&mut self, path: &str, bytes: Vec<u8>) -> bool {
+        if self.parts.iter().any(|part| part.path == path) {
+            return false;
+        }
+        self.parts.push(PackagePart {
+            path: path.to_owned(),
+            bytes,
+        });
+        true
+    }
+
     pub fn replace_part(&mut self, path: &str, bytes: Vec<u8>) -> bool {
         let Some(part) = self.parts.iter_mut().find(|part| part.path == path) else {
             return false;

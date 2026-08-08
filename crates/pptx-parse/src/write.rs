@@ -1823,6 +1823,29 @@ pub fn rewrite_presentation_slide_order(
     bytes: &[u8],
     order: &[usize],
 ) -> Result<Vec<u8>, PptxError> {
+    let entries: Vec<SlideListEntry> = order
+        .iter()
+        .map(|index| SlideListEntry::Source(*index))
+        .collect();
+    rewrite_presentation_slide_list(part, bytes, &entries)
+}
+
+/// One entry of the rewritten `<p:sldIdLst>`: a source `<p:sldId>` re-emitted
+/// byte for byte, or a synthesised one for a slide the deck created.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SlideListEntry {
+    Source(usize),
+    New { id: u32, relationship_id: String },
+}
+
+/// Rewrites the presentation's `<p:sldIdLst>` to the given entries — source
+/// indexes re-emit their bytes, new entries are spelled fresh — leaving every
+/// byte outside the list's children in place.
+pub fn rewrite_presentation_slide_list(
+    part: &str,
+    bytes: &[u8],
+    entries: &[SlideListEntry],
+) -> Result<Vec<u8>, PptxError> {
     let mut reader = Reader::from_reader(bytes);
     reader.config_mut().trim_text(false);
     reader.config_mut().check_end_names = true;
@@ -1878,17 +1901,75 @@ pub fn rewrite_presentation_slide_order(
 
     let (content_start, content_end) =
         list_content.ok_or_else(|| malformed(part, 0, "the presentation has no slide list"))?;
+    // The prefix the source list spells, so a synthesised entry matches it.
+    let prefix = spans
+        .first()
+        .map(|span| element_prefix(&bytes[span.0..span.1]))
+        .unwrap_or_else(|| b"p:".to_vec());
+    let prefix = String::from_utf8_lossy(&prefix).into_owned();
     let mut replacement = Vec::new();
-    for index in order {
-        let span = spans
-            .get(*index)
-            .ok_or_else(|| malformed(part, 0, format!("slide {index} is not in the slide list")))?;
-        replacement.extend_from_slice(&bytes[span.0..span.1]);
+    for entry in entries {
+        match entry {
+            SlideListEntry::Source(index) => {
+                let span = spans.get(*index).ok_or_else(|| {
+                    malformed(part, 0, format!("slide {index} is not in the slide list"))
+                })?;
+                replacement.extend_from_slice(&bytes[span.0..span.1]);
+            }
+            SlideListEntry::New {
+                id,
+                relationship_id,
+            } => {
+                replacement.extend_from_slice(
+                    format!(
+                        r#"<{prefix}sldId id="{id}" r:id="{}"/>"#,
+                        escape_attribute(relationship_id)
+                    )
+                    .as_bytes(),
+                );
+            }
+        }
     }
     let mut output = Vec::with_capacity(bytes.len());
     output.extend_from_slice(&bytes[..content_start]);
     output.extend_from_slice(&replacement);
     output.extend_from_slice(&bytes[content_end..]);
+    Ok(output)
+}
+
+/// Splices `fragment` immediately before the root element's close tag —
+/// how a `<Relationship>` joins a rels part or an `<Override>` joins
+/// `[Content_Types].xml` without touching any existing byte.
+pub fn append_xml_child(part: &str, bytes: &[u8], fragment: &[u8]) -> Result<Vec<u8>, PptxError> {
+    let mut reader = Reader::from_reader(bytes);
+    reader.config_mut().trim_text(false);
+    reader.config_mut().check_end_names = true;
+    let mut depth = 0usize;
+    let mut close_at: Option<usize> = None;
+    loop {
+        let opens_at = reader.buffer_position() as usize;
+        let event = reader
+            .read_event()
+            .map_err(|error| malformed(part, opens_at, error.to_string()))?;
+        match event {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => {
+                depth -= 1;
+                if depth == 0 {
+                    close_at = Some(opens_at);
+                    break;
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    let close_at =
+        close_at.ok_or_else(|| malformed(part, 0, "the part has no root element to append to"))?;
+    let mut output = Vec::with_capacity(bytes.len() + fragment.len());
+    output.extend_from_slice(&bytes[..close_at]);
+    output.extend_from_slice(fragment);
+    output.extend_from_slice(&bytes[close_at..]);
     Ok(output)
 }
 
