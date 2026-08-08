@@ -94,20 +94,25 @@ fn opens_edits_renders_saves_and_reopens() {
         story.paragraphs[0].runs
     );
 
-    let inserted = presentation
-        .insert_slide(&EditCtx::local("facade-test"), 1, None)
+    presentation
+        .format_text(
+            &EditCtx::local("facade-test"),
+            &story_id,
+            0,
+            2,
+            &TextStylePatch {
+                font_size_pt: Some(10.333_333),
+                ..TextStylePatch::default()
+            },
+        )
         .unwrap();
     let refusal = presentation.save().unwrap_err().to_string();
     assert!(
         refusal.contains("cannot save yet"),
-        "an inserted slide is refused: {refusal}"
+        "a size no sz can spell is refused: {refusal}"
     );
 
-    // Deleting the inserted slide restores a savable deck: the projection
-    // compares states, not the operations that led to them.
-    presentation
-        .delete_slide(&EditCtx::local("facade-test"), &inserted.slide_id)
-        .unwrap();
+    assert!(presentation.undo());
     let saved = presentation.save().unwrap();
     let reopened = Presentation::open(&saved).unwrap();
     assert_eq!(reopened.slides().len(), 3);

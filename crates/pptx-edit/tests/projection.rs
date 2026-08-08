@@ -1757,3 +1757,69 @@ fn slide_structure_and_text_edits_share_one_save() {
         .expect("the moved slide keeps its story");
     assert_eq!(moved_story.paragraphs[0].runs[0].text, "first!");
 }
+
+/// A slide the deck created is spelled as a fresh part: it joins the slide
+/// list, references its layout, and its shapes survive the round trip.
+#[test]
+fn an_inserted_slide_saves_and_reads_back() {
+    let session = DeckSession::open(FIXTURE, 109).unwrap();
+    let snapshot = session.snapshot().unwrap();
+    let layout = snapshot.slides[0].layout_part_path.clone();
+    let receipt = session
+        .insert_slide(&EditCtx::local("test"), 1, layout.as_deref())
+        .unwrap();
+    session
+        .add_text_box(
+            &EditCtx::local("test"),
+            &receipt.slide_id,
+            &pptx_edit::ShapeDraft {
+                name: "Fresh".to_owned(),
+                rect: pptx_edit::ShapeRect {
+                    x: 914_400,
+                    y: 914_400,
+                    width: 3_000_000,
+                    height: 600_000,
+                },
+                text: "brand new".to_owned(),
+                style: TextStyle::default(),
+            },
+        )
+        .unwrap();
+
+    let saved = session.save_bytes().unwrap();
+    let reopened = DeckSession::open(&saved, 110).unwrap();
+    let reopened_snapshot = reopened.snapshot().unwrap();
+    assert_eq!(reopened_snapshot.slides.len(), 4);
+    let inserted = &reopened_snapshot.slides[1];
+    assert_eq!(inserted.layout_part_path, layout);
+    assert_eq!(inserted.shapes.len(), 1);
+    assert_eq!(
+        inserted.shapes[0].text_stories[0].paragraphs[0].runs[0].text,
+        "brand new"
+    );
+    // The other slides keep their identities and order.
+    assert_eq!(
+        reopened_snapshot.slides[0].source_part_path,
+        snapshot.slides[0].source_part_path
+    );
+    assert_eq!(
+        reopened_snapshot.slides[2].source_part_path,
+        snapshot.slides[1].source_part_path
+    );
+}
+
+/// An inserted slide without a layout still saves, with no rels part at all.
+#[test]
+fn an_inserted_slide_without_a_layout_saves() {
+    let session = DeckSession::open(FIXTURE, 111).unwrap();
+    session
+        .insert_slide(&EditCtx::local("test"), 3, None)
+        .unwrap();
+
+    let saved = session.save_bytes().unwrap();
+    let reopened = DeckSession::open(&saved, 112).unwrap();
+    let reopened_snapshot = reopened.snapshot().unwrap();
+    assert_eq!(reopened_snapshot.slides.len(), 4);
+    assert_eq!(reopened_snapshot.slides[3].layout_part_path, None);
+    assert!(reopened_snapshot.slides[3].shapes.is_empty());
+}

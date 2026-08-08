@@ -27,10 +27,11 @@ use std::ops::Range;
 
 use ooxml_drawingml::Theme;
 use pptx_parse::{
-    GraphicFrameData, ParagraphRewrite, PptxPackage, RunPiece, RunProperties, RunRef,
-    RunStylePatch, ShapeInsertion, ShapeNode, ShapeTransformRewrite, TextBody, TextBodyLocation,
-    TextParagraph, TextRun, adjust_value_to_val, dangling_shape_reference, font_size_to_sz,
-    rewrite_presentation_slide_order, rewrite_slide_shape_insertions, rewrite_slide_shape_removals,
+    GraphicFrameData, ParagraphRewrite, PptxPackage, Relationship, RunPiece, RunProperties, RunRef,
+    RunStylePatch, ShapeInsertion, ShapeNode, ShapeTransformRewrite, SlideListEntry, TargetMode,
+    TextBody, TextBodyLocation, TextParagraph, TextRun, adjust_value_to_val, append_xml_child,
+    dangling_shape_reference, font_size_to_sz, resolve_relationship_target,
+    rewrite_presentation_slide_list, rewrite_slide_shape_insertions, rewrite_slide_shape_removals,
     serialize_shape,
 };
 use yrs::{Map, TextRef, Transact, WriteTxn};
@@ -157,13 +158,25 @@ impl DeckSession {
         if current.width_emu != baseline.width_emu || current.height_emu != baseline.height_emu {
             return Err(unprojectable("the slide size changed"));
         }
-        let slide_order = align_slides(&baseline.slides, &current.slides)
-            .ok_or_else(|| unprojectable("slides were added"))?;
+        let slide_alignment = align_slides(&baseline.slides, &current.slides);
 
         let mut plan = Plan::new(limits);
-        for (current_position, &index) in slide_order.iter().enumerate() {
-            let baseline_slide = &baseline.slides[index];
+        let mut slide_entries: Vec<SlideListEntry> = Vec::new();
+        let mut allocator = SlidePartAllocator::new(&package);
+        for (current_position, paired) in slide_alignment.iter().enumerate() {
             let current_slide = &current.slides[current_position];
+            let Some(index) = *paired else {
+                let new_slide =
+                    build_added_slide(current_slide, current_position, &package, &mut allocator)?;
+                slide_entries.push(SlideListEntry::New {
+                    id: new_slide.sld_id,
+                    relationship_id: new_slide.relationship_id.clone(),
+                });
+                plan.new_slides.push(new_slide);
+                continue;
+            };
+            slide_entries.push(SlideListEntry::Source(index));
+            let baseline_slide = &baseline.slides[index];
             require_same_slide(baseline_slide, current_slide)?;
             let source = package
                 .slides
@@ -240,15 +253,16 @@ impl DeckSession {
             }
         }
 
-        let slide_list_changed = slide_order.len() != baseline.slides.len()
-            || slide_order
+        let slide_list_changed = slide_entries.len() != baseline.slides.len()
+            || slide_entries
                 .iter()
                 .enumerate()
-                .any(|(at, index)| at != *index);
+                .any(|(at, entry)| *entry != SlideListEntry::Source(at));
         let rewrote_parts = !plan.edits.is_empty()
             || !plan.transforms.is_empty()
             || !plan.removals.is_empty()
             || !plan.insertions.is_empty()
+            || !plan.new_slides.is_empty()
             || slide_list_changed;
         for (part_path, edits) in &plan.edits {
             let bytes = package
@@ -358,23 +372,109 @@ impl DeckSession {
             }
             slide.shapes.insert(current_index, node);
         }
+        for new_slide in &plan.new_slides {
+            if !package.add_part(&new_slide.part_path, new_slide.part_bytes.clone()) {
+                return Err(EditError::WriteFailed(format!(
+                    "part {} already exists",
+                    new_slide.part_path
+                )));
+            }
+            if let Some((rels_path, rels_bytes)) = &new_slide.rels
+                && !package.add_part(rels_path, rels_bytes.clone())
+            {
+                return Err(EditError::WriteFailed(format!(
+                    "part {rels_path} already exists"
+                )));
+            }
+            let content_types = package.part_bytes("[Content_Types].xml").ok_or_else(|| {
+                EditError::WriteFailed("the package has no content types part".to_owned())
+            })?;
+            let with_override = append_xml_child(
+                "[Content_Types].xml",
+                content_types,
+                format!(
+                    r#"<Override PartName="/{}" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>"#,
+                    new_slide.part_path
+                )
+                .as_bytes(),
+            )
+            .map_err(|error| EditError::WriteFailed(error.to_string()))?;
+            package.replace_part("[Content_Types].xml", with_override);
+
+            let presentation_rels_path = presentation_rels_path(&package.presentation.part_path);
+            let rels_bytes = package.part_bytes(&presentation_rels_path).ok_or_else(|| {
+                EditError::WriteFailed(format!("part {presentation_rels_path} is missing"))
+            })?;
+            let target = new_slide
+                .part_path
+                .strip_prefix("ppt/")
+                .unwrap_or(&new_slide.part_path)
+                .to_owned();
+            let with_relationship = append_xml_child(
+                &presentation_rels_path,
+                rels_bytes,
+                format!(
+                    r#"<Relationship Id="{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="{target}"/>"#,
+                    new_slide.relationship_id
+                )
+                .as_bytes(),
+            )
+            .map_err(|error| EditError::WriteFailed(error.to_string()))?;
+            package.replace_part(&presentation_rels_path, with_relationship);
+            package
+                .relationships
+                .entry(package.presentation.part_path.clone())
+                .or_default()
+                .push(Relationship {
+                    id: new_slide.relationship_id.clone(),
+                    relationship_type:
+                        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"
+                            .to_owned(),
+                    target: target.clone(),
+                    target_mode: TargetMode::Internal,
+                    resolved_target: Some(new_slide.part_path.clone()),
+                });
+            if let Some(relationships) = &new_slide.rels_model {
+                package
+                    .relationships
+                    .insert(new_slide.part_path.clone(), relationships.clone());
+            }
+        }
         if slide_list_changed {
             let presentation_part = package.presentation.part_path.clone();
             let bytes = package.part_bytes(&presentation_part).ok_or_else(|| {
                 EditError::WriteFailed(format!("part {presentation_part} is missing"))
             })?;
             let rewritten =
-                rewrite_presentation_slide_order(&presentation_part, bytes, &slide_order)
+                rewrite_presentation_slide_list(&presentation_part, bytes, &slide_entries)
                     .map_err(|error| EditError::WriteFailed(error.to_string()))?;
             package.replace_part(&presentation_part, rewritten);
-            package.presentation.slides = slide_order
-                .iter()
-                .map(|index| package.presentation.slides[*index].clone())
-                .collect();
-            package.slides = slide_order
-                .iter()
-                .map(|index| package.slides[*index].clone())
-                .collect();
+            let old_references = package.presentation.slides.clone();
+            let old_slides = package.slides.clone();
+            let mut new_iter = plan.new_slides.iter();
+            let mut references = Vec::new();
+            let mut slides = Vec::new();
+            for entry in &slide_entries {
+                match entry {
+                    SlideListEntry::Source(index) => {
+                        references.push(old_references[*index].clone());
+                        slides.push(old_slides[*index].clone());
+                    }
+                    SlideListEntry::New { .. } => {
+                        let new_slide = new_iter.next().ok_or_else(|| {
+                            EditError::WriteFailed("a new slide left the plan".to_owned())
+                        })?;
+                        references.push(pptx_parse::SlideReference {
+                            id: new_slide.sld_id,
+                            relationship_id: new_slide.relationship_id.clone(),
+                            part_path: new_slide.part_path.clone(),
+                        });
+                        slides.push(new_slide.model.clone());
+                    }
+                }
+            }
+            package.presentation.slides = references;
+            package.slides = slides;
         }
         Ok((package, rewrote_parts))
     }
@@ -397,6 +497,7 @@ struct Plan<'a> {
     removed_ids: BTreeMap<String, BTreeSet<u32>>,
     insertions: BTreeMap<String, Vec<ShapeInsertion>>,
     added: Vec<(usize, usize, ShapeNode)>,
+    new_slides: Vec<NewSlide>,
     charged_edits: usize,
     charged_bytes: usize,
 }
@@ -414,6 +515,7 @@ impl<'a> Plan<'a> {
             removed_ids: BTreeMap::new(),
             insertions: BTreeMap::new(),
             added: Vec::new(),
+            new_slides: Vec::new(),
             charged_edits: 0,
             charged_bytes: 0,
         }
@@ -737,6 +839,207 @@ struct Group {
     current: Range<usize>,
 }
 
+/// Everything one deck-created slide needs to join the package.
+struct NewSlide {
+    part_path: String,
+    part_bytes: Vec<u8>,
+    rels: Option<(String, Vec<u8>)>,
+    rels_model: Option<Vec<Relationship>>,
+    relationship_id: String,
+    sld_id: u32,
+    model: pptx_parse::Slide,
+}
+
+/// Hands out part numbers, relationship ids and slide-list ids that collide
+/// with nothing the package already holds.
+struct SlidePartAllocator {
+    next_part: usize,
+    next_relationship: usize,
+    next_sld_id: u32,
+}
+
+impl SlidePartAllocator {
+    fn new(package: &PptxPackage) -> Self {
+        let part_number = |path: &str| -> Option<usize> {
+            path.strip_prefix("ppt/slides/slide")?
+                .strip_suffix(".xml")?
+                .parse()
+                .ok()
+        };
+        let next_part = package
+            .part_paths()
+            .filter_map(part_number)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let next_relationship = package
+            .relationships
+            .get(&package.presentation.part_path)
+            .into_iter()
+            .flatten()
+            .filter_map(|relationship| relationship.id.strip_prefix("rId")?.parse::<usize>().ok())
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let next_sld_id = package
+            .presentation
+            .slides
+            .iter()
+            .map(|slide| slide.id)
+            .max()
+            .unwrap_or(255)
+            .max(255)
+            + 1;
+        Self {
+            next_part,
+            next_relationship,
+            next_sld_id,
+        }
+    }
+
+    fn take(&mut self) -> (String, String, u32) {
+        let part = format!("ppt/slides/slide{}.xml", self.next_part);
+        let relationship = format!("rId{}", self.next_relationship);
+        let sld_id = self.next_sld_id;
+        self.next_part += 1;
+        self.next_relationship += 1;
+        self.next_sld_id += 1;
+        (part, relationship, sld_id)
+    }
+}
+
+/// The rels part path of a source part, `ppt/presentation.xml` →
+/// `ppt/_rels/presentation.xml.rels`.
+fn presentation_rels_path(part_path: &str) -> String {
+    match part_path.rsplit_once('/') {
+        Some((directory, filename)) => format!("{directory}/_rels/{filename}.rels"),
+        None => format!("_rels/{part_path}.rels"),
+    }
+}
+
+/// A package-ready slide for one the deck created, or a named refusal for
+/// anything its shapes cannot spell.
+fn build_added_slide(
+    snapshot: &SlideSnapshot,
+    position: usize,
+    package: &PptxPackage,
+    allocator: &mut SlidePartAllocator,
+) -> EditResult<NewSlide> {
+    let (part_path, relationship_id, sld_id) = allocator.take();
+    let context = SlideContext {
+        index: position,
+        part_path: part_path.clone(),
+        theme: None,
+    };
+    let mut shapes_xml = Vec::new();
+    let mut shape_models = Vec::new();
+    for (next_drawing_id, shape) in (2u32..).zip(snapshot.shapes.iter()) {
+        let built = build_added_shape(shape, next_drawing_id, &context)?;
+        shapes_xml.extend(
+            serialize_shape(&part_path, &built)
+                .map_err(|error| EditError::WriteFailed(error.to_string()))?,
+        );
+        shape_models.push(ShapeNode::Shape(built));
+    }
+
+    let name = snapshot.name.clone();
+    let name_attribute = name
+        .as_deref()
+        .map(|value| {
+            format!(
+                r#" name="{}""#,
+                value
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+                    .replace('"', "&quot;")
+            )
+        })
+        .unwrap_or_default();
+    let mut part = String::new();
+    part.push_str(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#);
+    part.push_str(concat!(
+        r#"<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main""#,
+        r#" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships""#,
+        r#" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">"#,
+    ));
+    part.push_str(&format!("<p:cSld{name_attribute}><p:spTree>"));
+    part.push_str(concat!(
+        r#"<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"#,
+        "<p:grpSpPr/>",
+    ));
+    part.push_str(&String::from_utf8_lossy(&shapes_xml));
+    part.push_str("</p:spTree></p:cSld></p:sld>");
+
+    let (rels, rels_model, layout_part_path) = match &snapshot.layout_part_path {
+        None => (None, None, None),
+        Some(layout) => {
+            if !package
+                .layouts
+                .iter()
+                .any(|entry| &entry.part_path == layout)
+            {
+                return Err(unprojectable(format!(
+                    "added slide {:?} uses a layout the package does not hold",
+                    snapshot.name
+                )));
+            }
+            let target = format!(
+                "../{}",
+                layout.strip_prefix("ppt/").unwrap_or(layout.as_str())
+            );
+            let resolved = resolve_relationship_target(&part_path, &target)
+                .map_err(|error| EditError::WriteFailed(error.to_string()))?;
+            if &resolved != layout {
+                return Err(EditError::WriteFailed(format!(
+                    "layout target {target} resolves to {resolved}, not {layout}"
+                )));
+            }
+            let rels_path = presentation_rels_path(&part_path);
+            let rels_bytes = format!(
+                concat!(
+                    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+                    r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+                    r#"<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="{target}"/>"#,
+                    "</Relationships>",
+                ),
+                target = target
+            );
+            let model = vec![Relationship {
+                id: "rId1".to_owned(),
+                relationship_type:
+                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout"
+                        .to_owned(),
+                target,
+                target_mode: TargetMode::Internal,
+                resolved_target: Some(layout.clone()),
+            }];
+            (
+                Some((rels_path, rels_bytes.into_bytes())),
+                Some(model),
+                Some(layout.clone()),
+            )
+        }
+    };
+
+    Ok(NewSlide {
+        model: pptx_parse::Slide {
+            part_path: part_path.clone(),
+            name,
+            layout_part_path,
+            show_master_shapes: true,
+            background: None,
+            shapes: shape_models,
+        },
+        part_path,
+        part_bytes: part.into_bytes(),
+        rels,
+        rels_model,
+        relationship_id,
+        sld_id,
+    })
+}
+
 /// The largest drawing id a shape subtree spells, so a synthesised shape can
 /// take the next free one.
 fn max_drawing_id(node: &ShapeNode) -> u32 {
@@ -937,7 +1240,7 @@ fn run_properties_from_style(style: &TextStyle) -> Option<RunProperties> {
 /// when a current slide has no baseline identity (it was added, which this
 /// writer does not spell yet). Deletions and reorders are permutations of a
 /// subset and project.
-fn align_slides(baseline: &[SlideSnapshot], current: &[SlideSnapshot]) -> Option<Vec<usize>> {
+fn align_slides(baseline: &[SlideSnapshot], current: &[SlideSnapshot]) -> Vec<Option<usize>> {
     let by_id: BTreeMap<&str, usize> = baseline
         .iter()
         .enumerate()

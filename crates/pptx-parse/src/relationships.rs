@@ -36,6 +36,13 @@ impl Relationship {
     }
 }
 
+/// Resolves a relationship target against its source part, exactly as parsing
+/// does — so a constructed relationship carries the same `resolved_target` a
+/// read-back of its bytes will.
+pub fn resolve_relationship_target(source: &str, target: &str) -> Result<String, PptxError> {
+    resolve_target(source, target)
+}
+
 pub(crate) fn parse_relationships(
     xml: &[u8],
     relationship_part: &str,
