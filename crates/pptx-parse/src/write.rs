@@ -1092,6 +1092,185 @@ fn malformed(part: &str, offset: usize, message: impl Into<String>) -> PptxError
     }
 }
 
+/// One shape's rewritten placement, in EMU.
+///
+/// The values land in the `<a:off>`/`<a:ext>` of the `<a:xfrm>` the shape
+/// already spells inside its `<p:spPr>`; a shape whose position lives in a
+/// layout (no explicit `<a:xfrm>`) is refused rather than given one, so the
+/// writer keeps re-emitting only structure the part already holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShapeTransformRewrite {
+    /// Child indexes into the shape tree, counting `sp`/`pic`/`graphicFrame`/
+    /// `grpSp` the way the parser does.
+    pub shape_path: Vec<usize>,
+    pub x: i64,
+    pub y: i64,
+    pub width: i64,
+    pub height: i64,
+}
+
+/// Rewrites the named shapes' `<a:off>`/`<a:ext>`, leaving every other byte in
+/// place. Only `sp` and `pic` shapes qualify: groups and graphic frames keep
+/// child geometry that plain offset/extent splices cannot express.
+pub fn rewrite_slide_geometry(
+    part: &str,
+    bytes: &[u8],
+    rewrites: &[ShapeTransformRewrite],
+) -> Result<Vec<u8>, PptxError> {
+    if rewrites.is_empty() {
+        return Ok(bytes.to_vec());
+    }
+    let mut wanted: BTreeMap<Vec<usize>, &ShapeTransformRewrite> = BTreeMap::new();
+    for rewrite in rewrites {
+        if wanted.insert(rewrite.shape_path.clone(), rewrite).is_some() {
+            return Err(malformed(part, 0, "two rewrites cover the same shape"));
+        }
+    }
+
+    struct GeoFrame {
+        name: Vec<u8>,
+        counts_shapes: bool,
+        next_shape: usize,
+        pushed_shape: bool,
+    }
+
+    /// The full byte span and qualified tag name of one `<a:off>`/`<a:ext>`.
+    type TagSpan = (usize, usize, Vec<u8>);
+
+    let mut reader = Reader::from_reader(bytes);
+    reader.config_mut().trim_text(false);
+    reader.config_mut().check_end_names = true;
+    let mut frames: Vec<GeoFrame> = Vec::new();
+    let mut shape_path: Vec<usize> = Vec::new();
+    // The target's spPr>xfrm child spans, keyed by the covered shape path.
+    let mut found: BTreeMap<Vec<usize>, (Option<TagSpan>, Option<TagSpan>)> = BTreeMap::new();
+
+    let target_state = |frames: &[GeoFrame],
+                        shape_path: &[usize],
+                        wanted: &BTreeMap<Vec<usize>, &ShapeTransformRewrite>|
+     -> bool {
+        // Directly inside the wanted shape's own spPr>xfrm: the frame under
+        // the spPr must be the shape frame itself, and its path the target's.
+        wanted.contains_key(shape_path) && frames.last().is_some_and(|frame| frame.pushed_shape)
+    };
+
+    loop {
+        let opens_at = reader.buffer_position() as usize;
+        let event = reader
+            .read_event()
+            .map_err(|error| malformed(part, opens_at, error.to_string()))?;
+        let ends_at = reader.buffer_position() as usize;
+        match event {
+            Event::Start(ref start) | Event::Empty(ref start) => {
+                let raw_name = start.name().into_inner().to_vec();
+                let name = local_name(&raw_name).to_vec();
+                let parent_counts = frames.last().is_some_and(|frame| frame.counts_shapes);
+                let mut pushed_shape = false;
+                if matches!(name.as_slice(), b"sp" | b"pic" | b"graphicFrame" | b"grpSp")
+                    && parent_counts
+                {
+                    let parent = frames.last_mut().expect("counting parent");
+                    shape_path.push(parent.next_shape);
+                    parent.next_shape += 1;
+                    pushed_shape = true;
+                }
+                let in_xfrm = frames.last().is_some_and(|frame| frame.name == b"xfrm")
+                    && frames.len() >= 2
+                    && frames[frames.len() - 2].name == b"spPr"
+                    && target_state(&frames[..frames.len() - 2], &shape_path, &wanted);
+                if in_xfrm && matches!(name.as_slice(), b"off" | b"ext") {
+                    if !matches!(event, Event::Empty(_)) {
+                        return Err(malformed(
+                            part,
+                            opens_at,
+                            "an <a:off>/<a:ext> with children cannot be rewritten",
+                        ));
+                    }
+                    let slot = found.entry(shape_path.clone()).or_default();
+                    let record = (opens_at, ends_at, raw_name.clone());
+                    if name == b"off" {
+                        slot.0.get_or_insert(record);
+                    } else {
+                        slot.1.get_or_insert(record);
+                    }
+                }
+                match event {
+                    Event::Start(_) => frames.push(GeoFrame {
+                        counts_shapes: name == b"spTree" || (name == b"grpSp" && pushed_shape),
+                        name,
+                        next_shape: 0,
+                        pushed_shape,
+                    }),
+                    _ => {
+                        // An empty element opens no frame; a shape spelled
+                        // `<p:sp/>` still consumed its index.
+                        if pushed_shape {
+                            shape_path.pop();
+                        }
+                    }
+                }
+            }
+            Event::End(_) => {
+                if let Some(frame) = frames.pop()
+                    && frame.pushed_shape
+                {
+                    shape_path.pop();
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    let mut splices: Vec<(usize, usize, Vec<u8>)> = Vec::new();
+    for (path, rewrite) in &wanted {
+        let Some((off, ext)) = found.get(path).map(|(off, ext)| (off.clone(), ext.clone())) else {
+            return Err(malformed(
+                part,
+                0,
+                format!("shape {path:?} spells no explicit <a:xfrm> to rewrite"),
+            ));
+        };
+        let (Some(off), Some(ext)) = (off, ext) else {
+            return Err(malformed(
+                part,
+                0,
+                format!("shape {path:?} spells no explicit <a:off>/<a:ext> to rewrite"),
+            ));
+        };
+        let off_name = String::from_utf8_lossy(&off.2).into_owned();
+        let ext_name = String::from_utf8_lossy(&ext.2).into_owned();
+        splices.push((
+            off.0,
+            off.1,
+            format!(r#"<{off_name} x="{}" y="{}"/>"#, rewrite.x, rewrite.y).into_bytes(),
+        ));
+        splices.push((
+            ext.0,
+            ext.1,
+            format!(
+                r#"<{ext_name} cx="{}" cy="{}"/>"#,
+                rewrite.width, rewrite.height
+            )
+            .into_bytes(),
+        ));
+    }
+
+    splices.sort_by_key(|(start, _, _)| *start);
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut cursor = 0;
+    for (start, end, replacement) in splices {
+        if start < cursor || end < start || end > bytes.len() {
+            return Err(malformed(part, start, "two geometry rewrites overlap"));
+        }
+        output.extend_from_slice(&bytes[cursor..start]);
+        output.extend_from_slice(&replacement);
+        cursor = end;
+    }
+    output.extend_from_slice(&bytes[cursor..]);
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1719,5 +1898,103 @@ mod tests {
                 "{start}..{end} was accepted as an element"
             );
         }
+    }
+
+    const GEOMETRY: &str = concat!(
+        r#"<p:sld xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree>"#,
+        r#"<p:sp><p:spPr><a:xfrm rot="0"><a:off x="10" y="20"/><a:ext cx="30" cy="40"/></a:xfrm>"#,
+        r#"<a:prstGeom prst="rect"/></p:spPr><p:txBody><a:p><a:r><a:t>t</a:t></a:r></a:p></p:txBody></p:sp>"#,
+        r#"<p:pic><p:spPr><a:xfrm><a:off x="1" y="2"/><a:ext cx="3" cy="4"/></a:xfrm></p:spPr></p:pic>"#,
+        r#"<p:sp><p:spPr><a:prstGeom prst="rect"/></p:spPr></p:sp>"#,
+        r#"<p:grpSp><p:grpSpPr><a:xfrm><a:off x="5" y="6"/><a:ext cx="7" cy="8"/>"#,
+        r#"<a:chOff x="0" y="0"/><a:chExt cx="7" cy="8"/></a:xfrm></p:grpSpPr>"#,
+        r#"<p:sp><p:spPr><a:xfrm><a:off x="100" y="200"/><a:ext cx="300" cy="400"/></a:xfrm></p:spPr></p:sp></p:grpSp>"#,
+        r#"</p:spTree></p:cSld></p:sld>"#,
+    );
+
+    fn transform(
+        shape_path: Vec<usize>,
+        x: i64,
+        y: i64,
+        width: i64,
+        height: i64,
+    ) -> ShapeTransformRewrite {
+        ShapeTransformRewrite {
+            shape_path,
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn geometry_rewrites_off_and_ext_of_the_named_shape() {
+        let out = rewrite_slide_geometry(
+            "s.xml",
+            GEOMETRY.as_bytes(),
+            &[transform(vec![0], 111, 222, 333, 444)],
+        )
+        .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains(
+            r#"<a:xfrm rot="0"><a:off x="111" y="222"/><a:ext cx="333" cy="444"/></a:xfrm>"#
+        ));
+        assert!(
+            out.contains(r#"<a:off x="1" y="2"/>"#),
+            "the pic was untouched"
+        );
+        assert!(
+            out.contains(r#"<a:off x="100" y="200"/>"#),
+            "the group child was untouched"
+        );
+    }
+
+    #[test]
+    fn geometry_rewrites_a_picture_and_a_nested_child_independently() {
+        let out = rewrite_slide_geometry(
+            "s.xml",
+            GEOMETRY.as_bytes(),
+            &[
+                transform(vec![1], 9, 8, 7, 6),
+                transform(vec![3, 0], 990, 991, 992, 993),
+            ],
+        )
+        .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains(r#"<a:off x="9" y="8"/><a:ext cx="7" cy="6"/>"#));
+        assert!(out.contains(r#"<a:off x="990" y="991"/><a:ext cx="992" cy="993"/>"#));
+        assert!(
+            out.contains(r#"<a:off x="10" y="20"/>"#),
+            "shape 0 was untouched"
+        );
+        assert!(
+            out.contains(r#"<a:off x="5" y="6"/>"#),
+            "the group's own xfrm was untouched"
+        );
+    }
+
+    #[test]
+    fn geometry_refuses_a_shape_without_an_explicit_xfrm() {
+        let error = rewrite_slide_geometry(
+            "s.xml",
+            GEOMETRY.as_bytes(),
+            &[transform(vec![2], 1, 2, 3, 4)],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("no explicit"), "{error}");
+    }
+
+    #[test]
+    fn geometry_never_touches_a_group_xfrm_via_the_group_path() {
+        // The group's own grpSpPr xfrm is not inside an spPr, so the walk
+        // finds nothing for path [3] and refuses instead of guessing.
+        let error = rewrite_slide_geometry(
+            "s.xml",
+            GEOMETRY.as_bytes(),
+            &[transform(vec![3], 1, 2, 3, 4)],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("no explicit"), "{error}");
     }
 }

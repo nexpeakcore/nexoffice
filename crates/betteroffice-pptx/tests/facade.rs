@@ -1,4 +1,4 @@
-use betteroffice_pptx::{EditCtx, Error, Presentation, ShapeNode};
+use betteroffice_pptx::{EditCtx, Error, Presentation, ShapeNode, TextStylePatch};
 
 const FIXTURE: &[u8] = include_bytes!("../../../apps/demo/public/betteroffice-demo.pptx");
 const FONT: &[u8] = include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
@@ -48,10 +48,38 @@ fn opens_edits_renders_saves_and_reopens() {
     );
     assert!(!rendered.display_list.primitives.is_empty());
 
+    let saved_moved = presentation.save().unwrap();
+    let reopened_moved = Presentation::open(&saved_moved).unwrap();
+    let moved = reopened_moved.snapshot().unwrap();
+    assert_eq!(
+        (moved.slides[0].shapes[0].x, moved.slides[0].shapes[0].y),
+        (1_111_111, 2_222_222),
+        "a moved shape survives the save"
+    );
+
+    let story_id = after.slides[0]
+        .shapes
+        .iter()
+        .find_map(|shape| shape.text_stories.first())
+        .expect("the fixture has a text story")
+        .id
+        .clone();
+    presentation
+        .format_text(
+            &EditCtx::local("facade-test"),
+            &story_id,
+            1,
+            3,
+            &TextStylePatch {
+                italic: Some(true),
+                ..TextStylePatch::default()
+            },
+        )
+        .unwrap();
     let refusal = presentation.save().unwrap_err().to_string();
     assert!(
-        refusal.contains("cannot save yet") && refusal.contains("Cobalt rail"),
-        "moving a shape is refused by name: {refusal}"
+        refusal.contains("cannot save yet"),
+        "a mid-run formatting patch is refused: {refusal}"
     );
 
     assert!(presentation.undo());

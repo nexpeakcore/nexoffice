@@ -395,21 +395,6 @@ fn a_change_this_slice_cannot_write_refuses_instead_of_dropping_it() {
             }),
         ),
         (
-            "a moved shape",
-            Box::new(|presentation: &Presentation| {
-                let snapshot = presentation.snapshot().unwrap();
-                presentation
-                    .move_shape(
-                        &context(),
-                        &snapshot.slides[0].id,
-                        &snapshot.slides[0].shapes[0].id,
-                        10,
-                        20,
-                    )
-                    .unwrap();
-            }),
-        ),
-        (
             "a new shape",
             Box::new(|presentation: &Presentation| {
                 let snapshot = presentation.snapshot().unwrap();
@@ -482,6 +467,30 @@ fn a_change_this_slice_cannot_write_refuses_instead_of_dropping_it() {
 #[test]
 fn undoing_an_unwritable_edit_restores_a_savable_deck() {
     let presentation = Presentation::open(FIXTURE).unwrap();
+    let (story_id, _) = story_holding(&presentation, "A Rust-native");
+    presentation
+        .format_text(
+            &context(),
+            &story_id,
+            0,
+            4,
+            &TextStylePatch {
+                bold: Some(true),
+                ..TextStylePatch::default()
+            },
+        )
+        .unwrap();
+    assert!(presentation.save().is_err());
+
+    assert!(presentation.undo());
+    assert_eq!(parts(&presentation.save().unwrap()), parts(FIXTURE));
+}
+
+/// A pure move is no longer a refusal: the shape's own `<a:xfrm>` is spliced
+/// and every untouched part keeps its source bytes.
+#[test]
+fn a_moved_shape_saves_with_every_other_part_untouched() {
+    let presentation = Presentation::open(FIXTURE).unwrap();
     let snapshot = presentation.snapshot().unwrap();
     presentation
         .move_shape(
@@ -492,8 +501,19 @@ fn undoing_an_unwritable_edit_restores_a_savable_deck() {
             20,
         )
         .unwrap();
-    assert!(presentation.save().is_err());
 
-    assert!(presentation.undo());
-    assert_eq!(parts(&presentation.save().unwrap()), parts(FIXTURE));
+    let saved = presentation.save().unwrap();
+    let (before, after) = (parts(FIXTURE), parts(&saved));
+    assert_eq!(before.len(), after.len());
+    let changed: Vec<&str> = before
+        .iter()
+        .zip(&after)
+        .filter(|(source, written)| source != written)
+        .map(|(source, _)| source.0.as_str())
+        .collect();
+    assert_eq!(changed, ["ppt/slides/slide1.xml"]);
+
+    let reopened = Presentation::open(&saved).unwrap();
+    let shape = &reopened.snapshot().unwrap().slides[0].shapes[0];
+    assert_eq!((shape.x, shape.y), (10, 20));
 }
