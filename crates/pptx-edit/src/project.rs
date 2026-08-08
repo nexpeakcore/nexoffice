@@ -28,8 +28,9 @@ use std::ops::Range;
 use ooxml_drawingml::Theme;
 use pptx_parse::{
     GraphicFrameData, ParagraphRewrite, PptxPackage, RunPiece, RunProperties, RunRef,
-    RunStylePatch, ShapeNode, ShapeTransformRewrite, TextBody, TextBodyLocation, TextParagraph,
-    TextRun, font_size_to_sz, rewrite_slide_shape_removals,
+    RunStylePatch, ShapeInsertion, ShapeNode, ShapeTransformRewrite, TextBody, TextBodyLocation,
+    TextParagraph, TextRun, adjust_value_to_val, font_size_to_sz, rewrite_slide_shape_insertions,
+    rewrite_slide_shape_removals, serialize_shape,
 };
 use yrs::{Map, TextRef, Transact, WriteTxn};
 
@@ -173,12 +174,12 @@ impl DeckSession {
                 part_path: source.part_path.clone(),
                 theme: theme_for_layout(&package, source.layout_part_path.as_deref()),
             };
-            let alignment = align_removed_shapes(&baseline_slide.shapes, &current_slide.shapes)
+            let alignment = align_shapes(&baseline_slide.shapes, &current_slide.shapes)
                 .ok_or_else(|| {
-                    unprojectable(format!("slide {} added or rearranged shapes", index + 1))
+                    unprojectable(format!("slide {} rearranged its shapes", index + 1))
                 })?;
             for (shape_index, source_shape) in source.shapes.iter().enumerate() {
-                match alignment[shape_index] {
+                match alignment.pairs[shape_index] {
                     Some(current_index) => project_shape(
                         &context,
                         source_shape,
@@ -196,10 +197,49 @@ impl DeckSession {
                     }
                 }
             }
+            if !alignment.added.is_empty() {
+                let next_id = source
+                    .shapes
+                    .iter()
+                    .map(max_drawing_id)
+                    .max()
+                    .unwrap_or(1)
+                    .saturating_add(1);
+                for (offset, (current_index, before)) in alignment.added.iter().enumerate() {
+                    let snapshot_shape = &current_slide.shapes[*current_index];
+                    let built =
+                        build_added_shape(snapshot_shape, next_id + offset as u32, &context)?;
+                    let xml = serialize_shape(&context.part_path, &built)
+                        .map_err(|error| EditError::WriteFailed(error.to_string()))?;
+                    plan.charge(&String::from_utf8_lossy(&xml), "an added shape")?;
+                    // The insertion pass walks bytes the removal pass has
+                    // already rewritten, so "before" is remapped onto the
+                    // kept shapes: the next surviving baseline shape at its
+                    // post-removal index, or the end of the tree.
+                    let before = before.and_then(|baseline_index| {
+                        (baseline_index..alignment.pairs.len())
+                            .find(|next| alignment.pairs[*next].is_some())
+                            .map(|kept| {
+                                kept - alignment.pairs[..kept]
+                                    .iter()
+                                    .filter(|pair| pair.is_none())
+                                    .count()
+                            })
+                    });
+                    plan.insertions
+                        .entry(context.part_path.clone())
+                        .or_default()
+                        .push(ShapeInsertion { before, xml });
+                    plan.added
+                        .push((index, *current_index, ShapeNode::Shape(built)));
+                }
+            }
         }
 
-        let rewrote_parts =
-            !plan.edits.is_empty() || !plan.transforms.is_empty() || !plan.removals.is_empty();
+        let rewrote_parts = !plan.edits.is_empty()
+            || !plan.transforms.is_empty()
+            || !plan.removals.is_empty()
+            || !plan.insertions.is_empty();
         for (part_path, edits) in &plan.edits {
             let bytes = package
                 .part_bytes(part_path)
@@ -234,6 +274,14 @@ impl DeckSession {
                 .part_bytes(part_path)
                 .ok_or_else(|| EditError::WriteFailed(format!("part {part_path} is missing")))?;
             let rewritten = rewrite_slide_shape_removals(part_path, bytes, removals)
+                .map_err(|error| EditError::WriteFailed(error.to_string()))?;
+            package.replace_part(part_path, rewritten);
+        }
+        for (part_path, insertions) in &plan.insertions {
+            let bytes = package
+                .part_bytes(part_path)
+                .ok_or_else(|| EditError::WriteFailed(format!("part {part_path} is missing")))?;
+            let rewritten = rewrite_slide_shape_insertions(part_path, bytes, insertions)
                 .map_err(|error| EditError::WriteFailed(error.to_string()))?;
             package.replace_part(part_path, rewritten);
         }
@@ -275,6 +323,19 @@ impl DeckSession {
             }
             slide.shapes.remove(shape_index);
         }
+        let mut added = plan.added;
+        added.sort_by_key(|(slide, current_index, _)| (*slide, *current_index));
+        for (slide_index, current_index, node) in added {
+            let slide = package.slides.get_mut(slide_index).ok_or_else(|| {
+                EditError::WriteFailed("an added shape left the slide list".to_owned())
+            })?;
+            if current_index > slide.shapes.len() {
+                return Err(EditError::WriteFailed(
+                    "an added shape left the shape tree".to_owned(),
+                ));
+            }
+            slide.shapes.insert(current_index, node);
+        }
         Ok((package, rewrote_parts))
     }
 }
@@ -293,6 +354,8 @@ struct Plan<'a> {
     moved: Vec<MovedShape>,
     removals: BTreeMap<String, Vec<usize>>,
     removed: Vec<(usize, usize)>,
+    insertions: BTreeMap<String, Vec<ShapeInsertion>>,
+    added: Vec<(usize, usize, ShapeNode)>,
     charged_edits: usize,
     charged_bytes: usize,
 }
@@ -307,6 +370,8 @@ impl<'a> Plan<'a> {
             moved: Vec::new(),
             removals: BTreeMap::new(),
             removed: Vec::new(),
+            insertions: BTreeMap::new(),
+            added: Vec::new(),
             charged_edits: 0,
             charged_bytes: 0,
         }
@@ -630,27 +695,239 @@ struct Group {
     current: Range<usize>,
 }
 
-/// For each baseline shape, its slot in the current slide — `None` when the
-/// deck deleted it. `None` for the whole slide when the current shapes are not
-/// an in-order subset of the baseline's (something was added or rearranged).
-fn align_removed_shapes(
-    baseline: &[ShapeSnapshot],
-    current: &[ShapeSnapshot],
-) -> Option<Vec<Option<usize>>> {
-    let mut result = Vec::with_capacity(baseline.len());
-    let mut cursor = 0;
-    for shape in baseline {
-        if current
-            .get(cursor)
-            .is_some_and(|candidate| candidate.id == shape.id)
-        {
-            result.push(Some(cursor));
-            cursor += 1;
-        } else {
-            result.push(None);
+/// The largest drawing id a shape subtree spells, so a synthesised shape can
+/// take the next free one.
+fn max_drawing_id(node: &ShapeNode) -> u32 {
+    let own = node.id();
+    let children = match node {
+        ShapeNode::Group(group) => group.children.iter().map(max_drawing_id).max().unwrap_or(0),
+        _ => 0,
+    };
+    own.max(children)
+}
+
+/// A parse-model shape for one the deck created, or a named refusal for
+/// anything the shape serialiser cannot spell.
+fn build_added_shape(
+    snapshot: &ShapeSnapshot,
+    id: u32,
+    context: &SlideContext<'_>,
+) -> EditResult<pptx_parse::Shape> {
+    let refuse = |what: &str| {
+        unprojectable(format!(
+            "slide {} added shape {:?} with {what}, which the writer cannot spell yet",
+            context.index + 1,
+            snapshot.name
+        ))
+    };
+    if snapshot.kind != crate::ShapeKind::Shape {
+        return Err(refuse("a non-shape kind"));
+    }
+    if snapshot.rotation_deg != 0.0 || snapshot.flip_h || snapshot.flip_v {
+        return Err(refuse("a rotation or flip"));
+    }
+    if !snapshot.children.is_empty() {
+        return Err(refuse("children"));
+    }
+    if snapshot.graphic.is_some() || snapshot.media_part_path.is_some() {
+        return Err(refuse("graphic content"));
+    }
+    if snapshot.placeholder.is_some() {
+        return Err(refuse("a placeholder binding"));
+    }
+    if snapshot.geometry == "custom" {
+        return Err(refuse("custom geometry"));
+    }
+    for (name, value) in &snapshot.adjust_values {
+        if adjust_value_to_val(*value).is_none() {
+            return Err(refuse(&format!(
+                "adjustment {name} that does not round-trip"
+            )));
         }
     }
-    (cursor == current.len()).then_some(result)
+    let fill = match &snapshot.fill {
+        None => None,
+        Some(fill) if fill.fill_type == "none" => Some(fill.clone()),
+        Some(fill) if fill.fill_type == "solid" => {
+            if fill
+                .color
+                .as_ref()
+                .and_then(|color| color.rgb.as_deref())
+                .is_none()
+            {
+                return Err(refuse("a solid fill without a plain colour"));
+            }
+            Some(fill.clone())
+        }
+        Some(_) => return Err(refuse("a gradient or picture fill")),
+    };
+    let outline = match &snapshot.outline {
+        None => None,
+        Some(outline) => {
+            if outline.cap.is_some()
+                || outline.join.is_some()
+                || outline.head_end.is_some()
+                || outline.tail_end.is_some()
+            {
+                return Err(refuse("outline caps, joins or arrowheads"));
+            }
+            if outline
+                .color
+                .as_ref()
+                .is_some_and(|color| color.rgb.is_none())
+            {
+                return Err(refuse("an outline colour that is not a plain colour"));
+            }
+            if outline.width.is_some_and(|width| width.fract() != 0.0) {
+                return Err(refuse("an outline width that is not whole EMU"));
+            }
+            Some(outline.clone())
+        }
+    };
+    let paragraphs_of = |story: &StorySnapshot| -> EditResult<Vec<TextParagraph>> {
+        story
+            .paragraphs
+            .iter()
+            .map(|paragraph| {
+                if paragraph.bullet_json.is_some() {
+                    return Err(refuse("a bullet"));
+                }
+                let runs = paragraph
+                    .runs
+                    .iter()
+                    .filter(|run| !run.text.is_empty())
+                    .map(|run| {
+                        if run.text.chars().any(|character| character.is_control()) {
+                            return Err(refuse("a line break inside a new shape"));
+                        }
+                        Ok(TextRun {
+                            text: run.text.clone(),
+                            properties: run_properties_from_style(&run.style)
+                                .ok_or_else(|| refuse("a font size that does not round-trip"))?,
+                            field_id: None,
+                            field_type: None,
+                            line_break: false,
+                        })
+                    })
+                    .collect::<EditResult<Vec<_>>>()?;
+                Ok(TextParagraph {
+                    properties: pptx_parse::ParagraphProperties {
+                        alignment: paragraph.alignment.clone(),
+                        level: paragraph.level,
+                        ..pptx_parse::ParagraphProperties::default()
+                    },
+                    runs,
+                    end_properties: None,
+                })
+            })
+            .collect()
+    };
+    let text = match snapshot.text_stories.as_slice() {
+        [] => None,
+        [story] => Some(TextBody {
+            anchor: None,
+            vertical: None,
+            autofit: None,
+            inset_left: None,
+            inset_top: None,
+            inset_right: None,
+            inset_bottom: None,
+            paragraphs: paragraphs_of(story)?,
+        }),
+        _ => return Err(refuse("more than one text body")),
+    };
+    Ok(pptx_parse::Shape {
+        base: pptx_parse::ShapeBase {
+            id,
+            name: snapshot.name.clone(),
+            description: None,
+            hidden: false,
+            placeholder: None,
+            transform: pptx_parse::ShapeTransform {
+                x: snapshot.x,
+                y: snapshot.y,
+                width: snapshot.width,
+                height: snapshot.height,
+                rotation_deg: 0.0,
+                flip_h: false,
+                flip_v: false,
+                child_x: None,
+                child_y: None,
+                child_width: None,
+                child_height: None,
+            },
+        },
+        geometry: snapshot.geometry.clone(),
+        adjust_values: snapshot.adjust_values.clone(),
+        fill,
+        outline,
+        text,
+    })
+}
+
+/// The parse-model run properties a typed style writes as, `None` for a size
+/// that cannot round-trip.
+fn run_properties_from_style(style: &TextStyle) -> Option<RunProperties> {
+    if let Some(points) = style.font_size_pt
+        && font_size_to_sz(points).is_none()
+    {
+        return None;
+    }
+    Some(RunProperties {
+        font_size_pt: style.font_size_pt,
+        bold: style.bold,
+        italic: style.italic,
+        underline: style.underline.clone(),
+        font_family: style.font_family.clone(),
+        color: style
+            .color
+            .as_ref()
+            .map(|color| ooxml_drawingml::ColorValue {
+                rgb: Some(color.trim_start_matches('#').to_owned()),
+                ..ooxml_drawingml::ColorValue::default()
+            }),
+        language: None,
+        hyperlink_relationship_id: None,
+    })
+}
+
+/// How the current slide's shapes line up against the baseline's.
+struct ShapeAlignment {
+    /// For each baseline shape, its slot in the current slide — `None` when
+    /// the deck deleted it.
+    pairs: Vec<Option<usize>>,
+    /// Shapes the deck created: their current index, and the baseline shape
+    /// they precede (`None` appends at the end of the tree).
+    added: Vec<(usize, Option<usize>)>,
+}
+
+/// `None` when the kept shapes changed order — a rearrangement this writer
+/// does not express.
+fn align_shapes(baseline: &[ShapeSnapshot], current: &[ShapeSnapshot]) -> Option<ShapeAlignment> {
+    let baseline_ids: BTreeSet<&str> = baseline.iter().map(|shape| shape.id.as_str()).collect();
+    let mut pairs = vec![None; baseline.len()];
+    let mut added = Vec::new();
+    let mut cursor = 0usize;
+    for (current_index, shape) in current.iter().enumerate() {
+        if !baseline_ids.contains(shape.id.as_str()) {
+            // Created this session: it precedes the next baseline shape that
+            // is still ahead of the cursor, or the tree end.
+            let before = (cursor < baseline.len()).then_some(cursor);
+            added.push((current_index, before));
+            continue;
+        }
+        // Skip over deleted baseline shapes to find this one; seeing an id
+        // that is not the next unmatched baseline id means a reorder.
+        while cursor < baseline.len() && baseline[cursor].id != shape.id {
+            cursor += 1;
+        }
+        if cursor >= baseline.len() {
+            return None;
+        }
+        pairs[cursor] = Some(current_index);
+        cursor += 1;
+    }
+    Some(ShapeAlignment { pairs, added })
 }
 
 /// One planned group's place in the output, kept so the formatting pass can

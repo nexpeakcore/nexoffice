@@ -94,30 +94,20 @@ fn opens_edits_renders_saves_and_reopens() {
         story.paragraphs[0].runs
     );
 
-    presentation
-        .add_text_box(
-            &EditCtx::local("facade-test"),
-            &slide_id,
-            &betteroffice_pptx::ShapeDraft {
-                name: "Added".to_owned(),
-                rect: betteroffice_pptx::ShapeRect {
-                    x: 0,
-                    y: 0,
-                    width: 100_000,
-                    height: 100_000,
-                },
-                text: "hello".to_owned(),
-                style: betteroffice_pptx::TextStyle::default(),
-            },
-        )
+    let inserted = presentation
+        .insert_slide(&EditCtx::local("facade-test"), 1, None)
         .unwrap();
     let refusal = presentation.save().unwrap_err().to_string();
     assert!(
         refusal.contains("cannot save yet"),
-        "an added shape is refused: {refusal}"
+        "an inserted slide is refused: {refusal}"
     );
 
-    assert!(presentation.undo());
+    // Deleting the inserted slide restores a savable deck: the projection
+    // compares states, not the operations that led to them.
+    presentation
+        .delete_slide(&EditCtx::local("facade-test"), &inserted.slide_id)
+        .unwrap();
     let saved = presentation.save().unwrap();
     let reopened = Presentation::open(&saved).unwrap();
     assert_eq!(reopened.slides().len(), 3);
