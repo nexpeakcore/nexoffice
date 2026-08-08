@@ -60,7 +60,9 @@ export const XlsxEditorView = forwardRef<XlsxEditorViewRef, XlsxEditorViewProps>
       undo: () => apiRef.current?.undo(),
       redo: () => apiRef.current?.redo(),
       cut: () => apiRef.current?.cutSelection() ?? Promise.resolve(),
-      copy: () => apiRef.current?.copySelection() ?? Promise.resolve(),
+      copy: async () => {
+        await apiRef.current?.copySelection()
+      },
       paste: () => apiRef.current?.pasteSelection() ?? Promise.resolve(),
       deleteSelection: () => apiRef.current?.clearSelection(),
       selectAll: () => apiRef.current?.selectAll(),
