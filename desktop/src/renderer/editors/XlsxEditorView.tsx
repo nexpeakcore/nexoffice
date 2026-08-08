@@ -1,7 +1,12 @@
 import { forwardRef, useImperativeHandle, useRef, useState } from 'react'
 import { XlsxEditor, type XlsxEditorApi } from '@betteroffice/xlsx-react'
 import { en as xlsxEn, locales as xlsxLocales, type PartialLocaleStrings } from '@betteroffice/xlsx-i18n'
-import { executeXlsxAgentTool } from '../services/agentTools.js'
+import {
+  applyWriteCells,
+  executeXlsxAgentTool,
+  validateWriteCells,
+  type WriteCellsProposal,
+} from '../services/agentTools.js'
 import { useI18n } from '../i18n.js'
 
 const editorLocales = xlsxLocales as Record<string, PartialLocaleStrings>
@@ -22,6 +27,12 @@ export interface XlsxEditorViewRef {
   unfreeze: () => void
   /** Execute one read-only AI-assistant tool against the live workbook. */
   agentTool: (name: string, args: Record<string, unknown>) => unknown
+  /** Validate a write_cells request into a reviewable proposal (no mutation). */
+  agentValidateWrite: (
+    args: Record<string, unknown>
+  ) => { proposal: WriteCellsProposal } | { error: string }
+  /** Apply a user-approved proposal as one undo step. */
+  agentApplyWrite: (proposal: WriteCellsProposal) => unknown
 }
 
 interface EditorDocument {
@@ -78,6 +89,18 @@ export const XlsxEditorView = forwardRef<XlsxEditorViewRef, XlsxEditorViewProps>
         const handle = apiRef.current?.handle
         if (!handle) return { error: 'no workbook is open' }
         return executeXlsxAgentTool(handle, name, args)
+      },
+      agentValidateWrite: (args: Record<string, unknown>) => {
+        const handle = apiRef.current?.handle
+        if (!handle) return { error: 'no workbook is open' }
+        return validateWriteCells(handle, args)
+      },
+      agentApplyWrite: (proposal: WriteCellsProposal) => {
+        const handle = apiRef.current?.handle
+        if (!handle) return { error: 'no workbook is open' }
+        const result = applyWriteCells(handle, proposal)
+        onChangeRef.current?.()
+        return result
       },
     }))
 

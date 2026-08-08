@@ -1,13 +1,25 @@
 import { describe, expect, it } from 'bun:test'
 import {
+  a1ToRowCol,
+  applyWriteCells,
   executeXlsxAgentTool,
   rangeCellCount,
   READ_RANGE_CELL_CAP,
+  validateWriteCells,
+  WRITE_CELLS_CAP,
   type AgentWorkbookAccess,
 } from './agentTools'
 
-function fakeAccess(): AgentWorkbookAccess {
+function fakeAccess(): AgentWorkbookAccess & {
+  edited: Array<{ sheet: number; edits: unknown[] }>
+} {
+  const edited: Array<{ sheet: number; edits: unknown[] }> = []
   return {
+    edited,
+    editCells: (sheet, edits) => {
+      edited.push({ sheet, edits })
+      return {}
+    },
     sheetInfo: () => ({ sheetNames: ['Budget', 'Summary'], activeSheet: 1 }),
     usedRange: (sheet) => (sheet === 0 ? 'A1:C9' : null),
     rangeCells: (_sheet, range) => {
@@ -71,6 +83,58 @@ describe('executeXlsxAgentTool', () => {
       error: string
     }
     expect(result.error).toContain(String(READ_RANGE_CELL_CAP))
+  })
+
+  it('parses A1 cells', () => {
+    expect(a1ToRowCol('B7')).toEqual({ row: 6, col: 1 })
+    expect(a1ToRowCol('$AA$10')).toEqual({ row: 9, col: 26 })
+    expect(a1ToRowCol('B7:C9')).toBeNull()
+    expect(a1ToRowCol('7B')).toBeNull()
+  })
+
+  it('validates write proposals without mutating', () => {
+    const access = fakeAccess()
+    const validated = validateWriteCells(access, {
+      sheet: 0,
+      edits: [
+        { a1: 'b7', input: '=SUM(B1:B6)' },
+        { a1: 'C1', input: '' },
+      ],
+    })
+    expect(validated).toEqual({
+      proposal: {
+        sheet: 0,
+        sheetName: 'Budget',
+        edits: [
+          { a1: 'B7', row: 6, col: 1, input: '=SUM(B1:B6)' },
+          { a1: 'C1', row: 0, col: 2, input: '' },
+        ],
+      },
+    })
+    expect(access.edited).toHaveLength(0)
+  })
+
+  it('rejects oversized, malformed, and empty write requests', () => {
+    const access = fakeAccess()
+    const oversized = validateWriteCells(access, {
+      edits: Array.from({ length: WRITE_CELLS_CAP + 1 }, (_, i) => ({ a1: `A${i + 1}`, input: 'x' })),
+    })
+    expect(oversized).toHaveProperty('error')
+    expect(validateWriteCells(access, { edits: [] })).toHaveProperty('error')
+    expect(validateWriteCells(access, { edits: [{ a1: 'A1:B2', input: 'x' }] })).toHaveProperty('error')
+    expect(validateWriteCells(access, { edits: [{ a1: 'A1' }] })).toHaveProperty('error')
+    expect(validateWriteCells(access, { sheet: 5, edits: [{ a1: 'A1', input: 'x' }] })).toHaveProperty('error')
+  })
+
+  it('applies an approved proposal as one batch', () => {
+    const access = fakeAccess()
+    const validated = validateWriteCells(access, {
+      edits: [{ a1: 'A1', input: '42' }],
+    })
+    if (!('proposal' in validated)) throw new Error('expected a proposal')
+    const result = applyWriteCells(access, validated.proposal)
+    expect(access.edited).toEqual([{ sheet: 1, edits: [{ row: 0, col: 0, input: '42' }] }])
+    expect(result).toEqual({ applied: true, sheet: 1, cells: ['A1'] })
   })
 
   it('reports bad ranges, bad sheets, and unknown tools as model-readable errors', () => {

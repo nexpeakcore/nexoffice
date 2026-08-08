@@ -175,7 +175,10 @@
     "working": "Exécution de {tool}…",
     "needKey": "Saisissez votre clé API DeepSeek pour activer l’assistant. Elle est stockée chiffrée sur cette machine.",
     "keyPlaceholder": "Clé API DeepSeek",
-    "saveKey": "Enregistrer la clé"
+    "saveKey": "Enregistrer la clé",
+    "proposalTitle": "Modification proposée : {count} cellule(s) sur « {sheet} »",
+    "apply": "Appliquer",
+    "reject": "Refuser"
   },
   "update": {
     "ready": "Mise à jour {version} prête",

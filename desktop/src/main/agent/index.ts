@@ -15,7 +15,7 @@ import {
 } from '../../shared/ipc.js'
 import { runAgentLoop } from './loop.js'
 import { streamChatTurn, type ChatMessage } from './openaiStream.js'
-import { agentSystemPrompt, toolsForDocument } from './tools.js'
+import { agentSystemPrompt, APPROVAL_TOOLS, toolsForDocument } from './tools.js'
 
 const PROVIDER_BASE_URLS: Record<AgentProvider, string> = {
   deepseek: 'https://api.deepseek.com',
@@ -26,6 +26,8 @@ function providerBaseUrl(provider: AgentProvider): string {
 }
 
 const TOOL_TIMEOUT_MS = 15_000
+// Approval-gated tools wait on a human decision, not on computation.
+const APPROVAL_TIMEOUT_MS = 5 * 60_000
 
 interface AgentConfig {
   provider: AgentProvider
@@ -151,10 +153,13 @@ export function registerAgent(getWindow: () => BrowserWindow | null): void {
     const executeTool = (name: string, args: Record<string, unknown>): Promise<unknown> =>
       new Promise((resolve) => {
         const id = randomUUID()
-        const timer = setTimeout(() => {
-          pendingTools.delete(id)
-          resolve({ error: 'tool call timed out' })
-        }, TOOL_TIMEOUT_MS)
+        const timer = setTimeout(
+          () => {
+            pendingTools.delete(id)
+            resolve({ error: 'tool call timed out' })
+          },
+          APPROVAL_TOOLS.has(name) ? APPROVAL_TIMEOUT_MS : TOOL_TIMEOUT_MS
+        )
         pendingTools.set(id, { resolve, timer })
         const toolRequest: AgentToolRequest = { id, name, args }
         if (window.isDestroyed()) {

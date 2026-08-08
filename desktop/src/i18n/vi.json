@@ -175,7 +175,10 @@
     "working": "Đang chạy {tool}…",
     "needKey": "Nhập khóa API DeepSeek để bật trợ lý. Khóa được mã hóa và lưu trên máy này.",
     "keyPlaceholder": "Khóa API DeepSeek",
-    "saveKey": "Lưu khóa"
+    "saveKey": "Lưu khóa",
+    "proposalTitle": "Đề xuất thay đổi: {count} ô trên “{sheet}”",
+    "apply": "Áp dụng",
+    "reject": "Từ chối"
   },
   "update": {
     "ready": "Bản cập nhật {version} đã sẵn sàng",

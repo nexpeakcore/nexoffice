@@ -175,7 +175,10 @@
     "working": "Running {tool}…",
     "needKey": "Enter your DeepSeek API key to enable the assistant. It is stored encrypted on this machine and never leaves it except to call the model.",
     "keyPlaceholder": "DeepSeek API key",
-    "saveKey": "Save key"
+    "saveKey": "Save key",
+    "proposalTitle": "Proposed change: {count} cell(s) on “{sheet}”",
+    "apply": "Apply",
+    "reject": "Reject"
   },
   "update": {
     "ready": "Update {version} ready",

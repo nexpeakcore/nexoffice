@@ -175,7 +175,10 @@
     "working": "Uruchamiam {tool}…",
     "needKey": "Podaj klucz API DeepSeek, aby włączyć asystenta. Klucz jest przechowywany zaszyfrowany na tym komputerze.",
     "keyPlaceholder": "Klucz API DeepSeek",
-    "saveKey": "Zapisz klucz"
+    "saveKey": "Zapisz klucz",
+    "proposalTitle": "Proponowana zmiana: {count} komórek w „{sheet}”",
+    "apply": "Zastosuj",
+    "reject": "Odrzuć"
   },
   "update": {
     "ready": "Aktualizacja {version} gotowa",

@@ -175,7 +175,10 @@
     "working": "מריץ {tool}…",
     "needKey": "הזינו מפתח API של DeepSeek כדי להפעיל את העוזר. המפתח נשמר מוצפן במחשב זה.",
     "keyPlaceholder": "מפתח API של DeepSeek",
-    "saveKey": "שמירת מפתח"
+    "saveKey": "שמירת מפתח",
+    "proposalTitle": "שינוי מוצע: {count} תאים בגיליון \"{sheet}\"",
+    "apply": "החל",
+    "reject": "דחה"
   },
   "update": {
     "ready": "עדכון {version} מוכן",
