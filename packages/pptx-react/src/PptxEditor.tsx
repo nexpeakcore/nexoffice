@@ -333,7 +333,9 @@ function PptxEditorContent({
   const [model, setModel] = useState<EditorModel | null>(null);
   const [selection, setSelection] = useState<PptxTextSelection | null>(null);
   const [shapeSelection, setShapeSelection] = useState<PptxShapeSelection | null>(null);
-  const [slideMenu, setSlideMenu] = useState<{ index: number; x: number; y: number } | null>(null);
+  const [slideMenu, setSlideMenu] = useState<{ slideId: string; x: number; y: number } | null>(
+    null
+  );
   const [resizePreview, setResizePreview] = useState<{
     x: number;
     y: number;
@@ -603,6 +605,11 @@ function PptxEditorContent({
     return findShape(slide.shapes, shapeSelection.shapeId);
   }, [model, shapeSelection]);
   const selectedShapeStoryId = selectedShape?.textStories[0]?.id ?? null;
+  const slideMenuIndex = useMemo(() => {
+    if (!slideMenu || !model) return null;
+    const index = model.snapshot.slides.findIndex((slide) => slide.id === slideMenu.slideId);
+    return index >= 0 ? index : null;
+  }, [slideMenu, model]);
   const selectedShapeFormatting = useMemo(
     () => shapeFormattingFromShape(selectedShape),
     [selectedShape]
@@ -850,7 +857,6 @@ function PptxEditorContent({
     }
   };
 
-  /** Applies a resize handle's client-pixel drag to a rectangle. */
   const resizedRect = <T extends { x: number; y: number; width: number; height: number }>(
     rect: T,
     handle: string,
@@ -1505,7 +1511,6 @@ function PptxEditorContent({
     }
   };
 
-  /** Context-menu slide actions, all keyed by the thumbnail's index. */
   const insertSlideAfter = (index: number) => {
     const handle = handleRef.current;
     const current = modelRef.current;
@@ -1600,7 +1605,6 @@ function PptxEditorContent({
 
   const deleteSelectedText = () => deleteTextSelection(clipboardHost);
 
-  /** Removes the selected shape from its slide (Delete key, Edit menu). */
   const removeSelectedShape = () => {
     const handle = handleRef.current;
     if (!handle || !shapeSelection) return;
@@ -1613,7 +1617,6 @@ function PptxEditorContent({
     }
   };
 
-  /** Shape selected with no text caret: Edit → Delete removes the shape. */
   const deleteSelectionAction = () => {
     if (!selection && shapeSelection) {
       removeSelectedShape();
@@ -1759,7 +1762,12 @@ function PptxEditorContent({
                 onContextMenu={(event) => {
                   event.preventDefault();
                   selectSlide(index);
-                  setSlideMenu({ index, x: event.clientX, y: event.clientY });
+                  setSlideMenu({
+                    slideId: slide.id,
+                    // Clamped so every command stays reachable near an edge.
+                    x: Math.min(event.clientX, window.innerWidth - 188),
+                    y: Math.min(event.clientY, window.innerHeight - 152),
+                  });
                 }}
               >
                 <span style={styles.slideNumber}>{index + 1}</span>
@@ -1802,7 +1810,7 @@ function PptxEditorContent({
             );
           })}
         </aside>
-        {slideMenu ? (
+        {slideMenuIndex !== null && slideMenu ? (
           <div
             style={{ position: 'fixed', inset: 0, zIndex: 40 }}
             onClick={() => setSlideMenu(null)}
@@ -1829,6 +1837,24 @@ function PptxEditorContent({
                 flexDirection: 'column',
               }}
               onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setSlideMenu(null);
+                  return;
+                }
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  const items = [
+                    ...event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                      '[role=menuitem]:not(:disabled)'
+                    ),
+                  ];
+                  const at = items.indexOf(document.activeElement as HTMLButtonElement);
+                  const delta = event.key === 'ArrowDown' ? 1 : -1;
+                  items[(at + delta + items.length) % items.length]?.focus();
+                }
+              }}
             >
               {(
                 [
@@ -1836,33 +1862,34 @@ function PptxEditorContent({
                     key: 'new',
                     label: t('slides.menuNewSlide'),
                     disabled: false,
-                    run: () => insertSlideAfter(slideMenu.index),
+                    run: () => insertSlideAfter(slideMenuIndex),
                   },
                   {
                     key: 'delete',
                     label: t('slides.menuDeleteSlide'),
                     disabled: (model?.snapshot.slides.length ?? 0) <= 1,
-                    run: () => deleteSlideAt(slideMenu.index),
+                    run: () => deleteSlideAt(slideMenuIndex),
                   },
                   {
                     key: 'up',
                     label: t('slides.menuMoveUp'),
-                    disabled: slideMenu.index === 0,
-                    run: () => moveSlideBy(slideMenu.index, -1),
+                    disabled: slideMenuIndex === 0,
+                    run: () => moveSlideBy(slideMenuIndex, -1),
                   },
                   {
                     key: 'down',
                     label: t('slides.menuMoveDown'),
-                    disabled: slideMenu.index >= (model?.snapshot.slides.length ?? 0) - 1,
-                    run: () => moveSlideBy(slideMenu.index, 1),
+                    disabled: slideMenuIndex >= (model?.snapshot.slides.length ?? 0) - 1,
+                    run: () => moveSlideBy(slideMenuIndex, 1),
                   },
                 ] as const
-              ).map((item) => (
+              ).map((item, itemIndex) => (
                 <button
                   key={item.key}
                   type="button"
                   role="menuitem"
                   disabled={item.disabled}
+                  autoFocus={itemIndex === 0}
                   style={{
                     textAlign: 'left',
                     padding: '6px 10px',
@@ -1972,7 +1999,12 @@ function PptxEditorContent({
                     aria-hidden="true"
                   />
                 ) : null}
-                {selectedShapeBounds && selectedShape && canMoveShape(selectedShape)
+                {selectedShapeBounds &&
+                selectedShape &&
+                canMoveShape(selectedShape) &&
+                selectedShape.rotationDeg === 0 &&
+                !selectedShape.flipH &&
+                !selectedShape.flipV
                   ? (
                       [
                         ['nw', 0, 0, 'nwse-resize'],

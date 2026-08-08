@@ -18,8 +18,9 @@ pub use relationships::{
 pub use write::{
     ParagraphRewrite, RunPiece, RunRef, RunStylePatch, ShapeInsertion, ShapeTransformRewrite,
     SlideListEntry, TextBodyLocation, adjust_value_to_val, append_xml_child,
-    dangling_shape_reference, font_size_to_sz, rewrite_presentation_slide_list,
-    rewrite_presentation_slide_order, rewrite_slide_geometry, rewrite_slide_shape_insertions,
-    rewrite_slide_shape_removals, rewrite_slide_text, serialize_shape,
+    custom_show_slide_reference, dangling_shape_reference, font_size_to_sz,
+    rewrite_presentation_slide_list, rewrite_presentation_slide_order, rewrite_slide_geometry,
+    rewrite_slide_shape_insertions, rewrite_slide_shape_removals, rewrite_slide_text,
+    serialize_shape,
 };
 pub use xml::{ParseLimits, is_legal_xml_character, sanitize_xml_text};

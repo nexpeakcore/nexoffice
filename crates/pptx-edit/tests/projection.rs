@@ -1823,3 +1823,82 @@ fn an_inserted_slide_without_a_layout_saves() {
     assert_eq!(reopened_snapshot.slides[3].layout_part_path, None);
     assert!(reopened_snapshot.slides[3].shapes.is_empty());
 }
+
+/// Deleting a whole group refuses when an animation targets one of its
+/// children — the child's id leaves with the group.
+#[test]
+fn removing_a_group_with_an_animated_child_is_refused() {
+    let deck = {
+        let mut package = pptx_parse::parse_pptx(FIXTURE).unwrap();
+        let xml = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+            r#"<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main""#,
+            r#" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships""#,
+            r#" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">"#,
+            r#"<p:cSld><p:spTree>"#,
+            r#"<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>"#,
+            r#"<p:grpSp><p:nvGrpSpPr><p:cNvPr id="2" name="Group"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"#,
+            r#"<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/>"#,
+            r#"<a:chOff x="0" y="0"/><a:chExt cx="914400" cy="914400"/></a:xfrm></p:grpSpPr>"#,
+            r#"<p:sp><p:nvSpPr><p:cNvPr id="3" name="Child"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>"#,
+            r#"<p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm></p:spPr></p:sp>"#,
+            r#"</p:grpSp>"#,
+            r#"</p:spTree></p:cSld><p:timing><p:spTgt spid="3"/></p:timing></p:sld>"#,
+        );
+        assert!(package.replace_part(SLIDE_PART, xml.as_bytes().to_vec()));
+        pptx_parse::write_pptx(&package).unwrap()
+    };
+    let session = DeckSession::open(&deck, 113).unwrap();
+    let snapshot = session.snapshot().unwrap();
+    let slide = &snapshot.slides[0];
+    session
+        .remove_shape(&EditCtx::local("test"), &slide.id, &slide.shapes[0].id)
+        .unwrap();
+
+    let error = session.save_bytes().unwrap_err();
+    assert_eq!(error.save_fault(), SaveFault::Unprojectable, "{error}");
+    assert!(error.to_string().contains("animation"), "{error}");
+}
+
+/// Deleting a slide a custom show still presents refuses by name.
+#[test]
+fn deleting_a_slide_in_a_custom_show_is_refused() {
+    let deck = {
+        let mut package = pptx_parse::parse_pptx(FIXTURE).unwrap();
+        let presentation_path = package.presentation.part_path.clone();
+        let bytes = package.part_bytes(&presentation_path).unwrap().to_vec();
+        let text = String::from_utf8(bytes).unwrap();
+        let with_show = text.replace(
+            "</p:presentation>",
+            r#"<p:custShowLst><p:custShow name="short" id="0"><p:sldLst><p:sld r:id="rId3"/></p:sldLst></p:custShow></p:custShowLst></p:presentation>"#,
+        );
+        assert!(package.replace_part(&presentation_path, with_show.into_bytes()));
+        pptx_parse::write_pptx(&package).unwrap()
+    };
+    let session = DeckSession::open(&deck, 114).unwrap();
+    let snapshot = session.snapshot().unwrap();
+    let shown = snapshot
+        .slides
+        .iter()
+        .find(|slide| {
+            slide.source_part_path.as_deref().is_some_and(|path| {
+                pptx_parse::parse_pptx(&deck)
+                    .unwrap()
+                    .presentation
+                    .slides
+                    .iter()
+                    .any(|entry| entry.relationship_id == "rId3" && entry.part_path == path)
+            })
+        })
+        .cloned();
+    let Some(shown) = shown else {
+        panic!("the fixture has no slide bound to rId3");
+    };
+    session
+        .delete_slide(&EditCtx::local("test"), &shown.id)
+        .unwrap();
+
+    let error = session.save_bytes().unwrap_err();
+    assert_eq!(error.save_fault(), SaveFault::Unprojectable, "{error}");
+    assert!(error.to_string().contains("custom show"), "{error}");
+}

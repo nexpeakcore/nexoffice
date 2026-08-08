@@ -1854,6 +1854,7 @@ pub fn rewrite_presentation_slide_list(
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut open_entry: Option<usize> = None;
     let mut list_content: Option<(usize, usize)> = None;
+    let mut empty_list: Option<(usize, usize, Vec<u8>)> = None;
     let mut list_content_start = 0usize;
 
     loop {
@@ -1872,11 +1873,23 @@ pub fn rewrite_presentation_slide_list(
                         open_entry = Some(opens_at);
                     }
                 }
-                if matches!(event, Event::Start(_)) {
-                    if name == b"sldIdLst" && in_list_depth.is_none() {
+                // Only the presentation's own list qualifies: a direct child
+                // of the root element, once — sectioned decks nest more
+                // `sldIdLst` spellings inside `p14` extension data.
+                if name == b"sldIdLst"
+                    && stack.len() == 1
+                    && list_content.is_none()
+                    && empty_list.is_none()
+                    && in_list_depth.is_none()
+                {
+                    if matches!(event, Event::Empty(_)) {
+                        empty_list = Some((opens_at, ends_at, start.name().into_inner().to_vec()));
+                    } else {
                         in_list_depth = Some(stack.len() + 1);
                         list_content_start = ends_at;
                     }
+                }
+                if matches!(event, Event::Start(_)) {
                     stack.push(name);
                 }
             }
@@ -1899,14 +1912,23 @@ pub fn rewrite_presentation_slide_list(
         }
     }
 
-    let (content_start, content_end) =
-        list_content.ok_or_else(|| malformed(part, 0, "the presentation has no slide list"))?;
-    // The prefix the source list spells, so a synthesised entry matches it.
+    let (content_start, content_end, wrap) = match (list_content, &empty_list) {
+        (Some((start, end)), _) => (start, end, None),
+        (None, Some((start, end, tag))) => (*start, *end, Some(tag.clone())),
+        (None, None) => {
+            return Err(malformed(part, 0, "the presentation has no slide list"));
+        }
+    };
+    // The prefixes the source list spells, so a synthesised entry matches it.
     let prefix = spans
         .first()
         .map(|span| element_prefix(&bytes[span.0..span.1]))
         .unwrap_or_else(|| b"p:".to_vec());
     let prefix = String::from_utf8_lossy(&prefix).into_owned();
+    let relationship_prefix = spans
+        .first()
+        .and_then(|span| relationship_attribute_prefix(&bytes[span.0..span.1]))
+        .unwrap_or_else(|| "r".to_owned());
     let mut replacement = Vec::new();
     for entry in entries {
         match entry {
@@ -1922,7 +1944,7 @@ pub fn rewrite_presentation_slide_list(
             } => {
                 replacement.extend_from_slice(
                     format!(
-                        r#"<{prefix}sldId id="{id}" r:id="{}"/>"#,
+                        r#"<{prefix}sldId id="{id}" {relationship_prefix}:id="{}"/>"#,
                         escape_attribute(relationship_id)
                     )
                     .as_bytes(),
@@ -1932,9 +1954,89 @@ pub fn rewrite_presentation_slide_list(
     }
     let mut output = Vec::with_capacity(bytes.len());
     output.extend_from_slice(&bytes[..content_start]);
-    output.extend_from_slice(&replacement);
+    if let Some(tag) = wrap {
+        // `<p:sldIdLst/>` expands around its first entries.
+        output.push(b'<');
+        output.extend_from_slice(&tag);
+        output.push(b'>');
+        output.extend_from_slice(&replacement);
+        output.extend_from_slice(b"</");
+        output.extend_from_slice(&tag);
+        output.push(b'>');
+    } else {
+        output.extend_from_slice(&replacement);
+    }
     output.extend_from_slice(&bytes[content_end..]);
     Ok(output)
+}
+
+/// The first deleted slide relationship a custom show still references: a
+/// `p:custShowLst` names slides by `p:sld r:id`, which the slide-list
+/// rewrite does not touch and the parse model does not carry.
+pub fn custom_show_slide_reference(
+    part: &str,
+    bytes: &[u8],
+    relationship_ids: &BTreeSet<String>,
+) -> Result<Option<String>, PptxError> {
+    if relationship_ids.is_empty() {
+        return Ok(None);
+    }
+    let mut reader = Reader::from_reader(bytes);
+    reader.config_mut().trim_text(false);
+    reader.config_mut().check_end_names = true;
+    let mut in_custom_shows = 0usize;
+    loop {
+        let opens_at = reader.buffer_position() as usize;
+        let event = reader
+            .read_event()
+            .map_err(|error| malformed(part, opens_at, error.to_string()))?;
+        match event {
+            Event::Start(ref start) | Event::Empty(ref start) => {
+                let name = local_name(start.name().into_inner()).to_vec();
+                if name == b"custShowLst" && matches!(event, Event::Start(_)) {
+                    in_custom_shows += 1;
+                }
+                if in_custom_shows > 0 && name == b"sld" {
+                    for attribute in start.attributes() {
+                        let attribute = attribute
+                            .map_err(|error| malformed(part, opens_at, error.to_string()))?;
+                        if local_name(attribute.key.into_inner()) != b"id" {
+                            continue;
+                        }
+                        if let Ok(value) = std::str::from_utf8(&attribute.value)
+                            && relationship_ids.contains(value.trim())
+                        {
+                            return Ok(Some(value.trim().to_owned()));
+                        }
+                    }
+                }
+            }
+            Event::End(ref end) => {
+                if local_name(end.name().into_inner()) == b"custShowLst" {
+                    in_custom_shows = in_custom_shows.saturating_sub(1);
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+/// The namespace prefix of a source `sldId`'s relationship attribute
+/// (`r:id="…"` → `r`), read from its bytes so a synthesised sibling binds the
+/// same namespace whatever the deck called it.
+fn relationship_attribute_prefix(tag: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(tag).ok()?;
+    for (index, _) in text.match_indices(":id=") {
+        let head = &text[..index];
+        let start = head.rfind(|character: char| character.is_whitespace())? + 1;
+        let prefix = &head[start..];
+        if !prefix.is_empty() && prefix.chars().all(|character| character.is_alphanumeric()) {
+            return Some(prefix.to_owned());
+        }
+    }
+    None
 }
 
 /// Splices `fragment` immediately before the root element's close tag —
@@ -3061,6 +3163,72 @@ mod tests {
         assert!(
             error.to_string().contains("not in the slide list"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn slide_list_rewrite_ignores_nested_section_lists() {
+        let xml = concat!(
+            r#"<p:presentation xmlns:p="p" xmlns:r="r" xmlns:p14="p14">"#,
+            r#"<p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst>"#,
+            r#"<p:extLst><p:ext><p14:sectionLst><p14:section>"#,
+            r#"<p14:sldIdLst><p14:sldId id="256"/><p14:sldId id="257"/></p14:sldIdLst>"#,
+            r#"</p14:section></p14:sectionLst></p:ext></p:extLst></p:presentation>"#,
+        );
+        let out = rewrite_presentation_slide_order("p.xml", xml.as_bytes(), &[1, 0]).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains(r#"<p:sldIdLst><p:sldId id="257" r:id="rId2"/><p:sldId id="256" r:id="rId1"/></p:sldIdLst>"#),
+            "the presentation list reorders: {out}"
+        );
+        assert!(
+            out.contains(
+                r#"<p14:sldIdLst><p14:sldId id="256"/><p14:sldId id="257"/></p14:sldIdLst>"#
+            ),
+            "the section extension keeps its bytes: {out}"
+        );
+    }
+
+    #[test]
+    fn slide_list_rewrite_expands_an_empty_list() {
+        let xml = r#"<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst/><p:sldSz cx="1" cy="2"/></p:presentation>"#;
+        let out = rewrite_presentation_slide_list(
+            "p.xml",
+            xml.as_bytes(),
+            &[SlideListEntry::New {
+                id: 256,
+                relationship_id: "rId9".to_owned(),
+            }],
+        )
+        .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains(r#"<p:sldIdLst><p:sldId id="256" r:id="rId9"/></p:sldIdLst>"#),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn custom_show_scan_sees_deleted_slide_references() {
+        let xml = concat!(
+            r#"<p:presentation xmlns:p="p" xmlns:r="r">"#,
+            r#"<p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>"#,
+            r#"<p:custShowLst><p:custShow name="s" id="0"><p:sldLst>"#,
+            r#"<p:sld r:id="rId2"/></p:sldLst></p:custShow></p:custShowLst></p:presentation>"#,
+        );
+        let ids = |list: &[&str]| {
+            list.iter()
+                .map(|id| (*id).to_owned())
+                .collect::<BTreeSet<String>>()
+        };
+        assert_eq!(
+            custom_show_slide_reference("p.xml", xml.as_bytes(), &ids(&["rId2"])).unwrap(),
+            Some("rId2".to_owned())
+        );
+        assert_eq!(
+            custom_show_slide_reference("p.xml", xml.as_bytes(), &ids(&["rId1"])).unwrap(),
+            None,
+            "the main list's own entries are not custom-show references"
         );
     }
 }

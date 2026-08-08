@@ -30,9 +30,9 @@ use pptx_parse::{
     GraphicFrameData, ParagraphRewrite, PptxPackage, Relationship, RunPiece, RunProperties, RunRef,
     RunStylePatch, ShapeInsertion, ShapeNode, ShapeTransformRewrite, SlideListEntry, TargetMode,
     TextBody, TextBodyLocation, TextParagraph, TextRun, adjust_value_to_val, append_xml_child,
-    dangling_shape_reference, font_size_to_sz, resolve_relationship_target,
-    rewrite_presentation_slide_list, rewrite_slide_shape_insertions, rewrite_slide_shape_removals,
-    serialize_shape,
+    custom_show_slide_reference, dangling_shape_reference, font_size_to_sz,
+    resolve_relationship_target, rewrite_presentation_slide_list, rewrite_slide_shape_insertions,
+    rewrite_slide_shape_removals, serialize_shape,
 };
 use yrs::{Map, TextRef, Transact, WriteTxn};
 
@@ -168,6 +168,10 @@ impl DeckSession {
             let Some(index) = *paired else {
                 let new_slide =
                     build_added_slide(current_slide, current_position, &package, &mut allocator)?;
+                plan.charge(
+                    &String::from_utf8_lossy(&new_slide.part_bytes),
+                    "an added slide",
+                )?;
                 slide_entries.push(SlideListEntry::New {
                     id: new_slide.sld_id,
                     relationship_id: new_slide.relationship_id.clone(),
@@ -206,10 +210,12 @@ impl DeckSession {
                             .entry(context.part_path.clone())
                             .or_default()
                             .push(shape_index);
-                        plan.removed_ids
-                            .entry(context.part_path.clone())
-                            .or_default()
-                            .insert(source_shape.id());
+                        collect_drawing_ids(
+                            source_shape,
+                            plan.removed_ids
+                                .entry(context.part_path.clone())
+                                .or_default(),
+                        );
                         plan.removed.push((index, shape_index));
                     }
                 }
@@ -405,9 +411,15 @@ impl DeckSession {
             let rels_bytes = package.part_bytes(&presentation_rels_path).ok_or_else(|| {
                 EditError::WriteFailed(format!("part {presentation_rels_path} is missing"))
             })?;
+            let presentation_directory = package
+                .presentation
+                .part_path
+                .rsplit_once('/')
+                .map(|(directory, _)| format!("{directory}/"))
+                .unwrap_or_default();
             let target = new_slide
                 .part_path
-                .strip_prefix("ppt/")
+                .strip_prefix(presentation_directory.as_str())
                 .unwrap_or(&new_slide.part_path)
                 .to_owned();
             let with_relationship = append_xml_child(
@@ -445,6 +457,31 @@ impl DeckSession {
             let bytes = package.part_bytes(&presentation_part).ok_or_else(|| {
                 EditError::WriteFailed(format!("part {presentation_part} is missing"))
             })?;
+            // A deleted slide may still be named by a custom show, which the
+            // slide-list rewrite does not touch and the model cannot see.
+            let kept: BTreeSet<usize> = slide_entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    SlideListEntry::Source(index) => Some(*index),
+                    SlideListEntry::New { .. } => None,
+                })
+                .collect();
+            let deleted_relationships: BTreeSet<String> = package
+                .presentation
+                .slides
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !kept.contains(index))
+                .map(|(_, slide)| slide.relationship_id.clone())
+                .collect();
+            if let Some(relationship) =
+                custom_show_slide_reference(&presentation_part, bytes, &deleted_relationships)
+                    .map_err(|error| EditError::WriteFailed(error.to_string()))?
+            {
+                return Err(unprojectable(format!(
+                    "a deleted slide ({relationship}) is still part of a custom show"
+                )));
+            }
             let rewritten =
                 rewrite_presentation_slide_list(&presentation_part, bytes, &slide_entries)
                     .map_err(|error| EditError::WriteFailed(error.to_string()))?;
@@ -853,6 +890,7 @@ struct NewSlide {
 /// Hands out part numbers, relationship ids and slide-list ids that collide
 /// with nothing the package already holds.
 struct SlidePartAllocator {
+    directory: String,
     next_part: usize,
     next_relationship: usize,
     next_sld_id: u32,
@@ -860,8 +898,15 @@ struct SlidePartAllocator {
 
 impl SlidePartAllocator {
     fn new(package: &PptxPackage) -> Self {
+        let directory = package
+            .presentation
+            .part_path
+            .rsplit_once('/')
+            .map(|(directory, _)| directory.to_owned())
+            .unwrap_or_default();
+        let slide_prefix = format!("{directory}/slides/slide");
         let part_number = |path: &str| -> Option<usize> {
-            path.strip_prefix("ppt/slides/slide")?
+            path.strip_prefix(slide_prefix.as_str())?
                 .strip_suffix(".xml")?
                 .parse()
                 .ok()
@@ -891,6 +936,7 @@ impl SlidePartAllocator {
             .max(255)
             + 1;
         Self {
+            directory,
             next_part,
             next_relationship,
             next_sld_id,
@@ -898,7 +944,7 @@ impl SlidePartAllocator {
     }
 
     fn take(&mut self) -> (String, String, u32) {
-        let part = format!("ppt/slides/slide{}.xml", self.next_part);
+        let part = format!("{}/slides/slide{}.xml", self.directory, self.next_part);
         let relationship = format!("rId{}", self.next_relationship);
         let sld_id = self.next_sld_id;
         self.next_part += 1;
@@ -984,9 +1030,16 @@ fn build_added_slide(
                     snapshot.name
                 )));
             }
+            let slide_parent = part_path
+                .rsplit_once('/')
+                .and_then(|(directory, _)| directory.rsplit_once('/'))
+                .map(|(parent, _)| format!("{parent}/"))
+                .unwrap_or_default();
             let target = format!(
                 "../{}",
-                layout.strip_prefix("ppt/").unwrap_or(layout.as_str())
+                layout
+                    .strip_prefix(slide_parent.as_str())
+                    .unwrap_or(layout.as_str())
             );
             let resolved = resolve_relationship_target(&part_path, &target)
                 .map_err(|error| EditError::WriteFailed(error.to_string()))?;
@@ -1038,6 +1091,17 @@ fn build_added_slide(
         relationship_id,
         sld_id,
     })
+}
+
+/// Every drawing id in a shape subtree: a removed group takes its children
+/// with it, and a reference to any of them would dangle.
+fn collect_drawing_ids(node: &ShapeNode, ids: &mut BTreeSet<u32>) {
+    ids.insert(node.id());
+    if let ShapeNode::Group(group) = node {
+        for child in &group.children {
+            collect_drawing_ids(child, ids);
+        }
+    }
 }
 
 /// The largest drawing id a shape subtree spells, so a synthesised shape can
