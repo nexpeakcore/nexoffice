@@ -1671,10 +1671,7 @@ fn run_properties_fragment(part: &str, properties: &RunProperties) -> Result<Str
         italic: properties.italic.map(Some),
         underline: properties.underline.clone().map(Some),
         font_size_pt: properties.font_size_pt.map(Some),
-        color_rgb: properties
-            .color
-            .as_ref()
-            .map(|color| color.rgb.clone()),
+        color_rgb: properties.color.as_ref().map(|color| color.rgb.clone()),
         font_family: properties.font_family.clone().map(Some),
     };
     if patch.is_empty() {

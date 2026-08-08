@@ -1,6 +1,6 @@
 use betteroffice_pptx::{
-    DeckSnapshot, EditCtx, Error, Presentation, SaveFault, ShapeSnapshot,
-    StorySnapshot, TextStyle, TextStylePatch,
+    DeckSnapshot, EditCtx, Error, Presentation, SaveFault, ShapeSnapshot, StorySnapshot, TextStyle,
+    TextStylePatch,
 };
 
 const FIXTURE: &[u8] = include_bytes!("../../../apps/demo/public/betteroffice-demo.pptx");
