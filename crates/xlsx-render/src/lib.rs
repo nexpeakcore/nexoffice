@@ -703,7 +703,7 @@ fn refreshed_chart(
                 .map(|cell| match cell.map(|cell| &cell.value) {
                     Some(CellValue::Number { value }) => *value,
                     Some(CellValue::Bool { value }) => f64::from(*value),
-                    _ => 0.0,
+                    _ => f64::NAN,
                 })
                 .collect();
         }

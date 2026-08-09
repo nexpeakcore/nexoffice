@@ -4985,3 +4985,84 @@ fn add_chart_rejects_types_the_renderer_cannot_draw() {
         "{error:?}"
     );
 }
+
+#[test]
+fn pie_charts_reject_extra_series_and_vary_slice_colors() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    let two_series = ChartSpec {
+        chart_type: "pie".to_owned(),
+        title: None,
+        anchor: CellRange::parse_a1("C3:J14").unwrap(),
+        categories: None,
+        series: vec![
+            ChartSeriesSpec {
+                name: None,
+                values: "A1:A2".to_owned(),
+            },
+            ChartSeriesSpec {
+                name: None,
+                values: "A1:A2".to_owned(),
+            },
+        ],
+    };
+    assert!(workbook.add_chart(SheetId(0), &two_series).is_err());
+
+    workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+                ..two_series
+            },
+        )
+        .unwrap();
+    let series = &workbook.model().sheet(SheetId(0)).unwrap().drawings[0]
+        .chart
+        .series[0];
+    assert!(
+        series.color.is_empty(),
+        "pie slices fall back to the per-point palette"
+    );
+}
+
+/// Blank cells in a value range become gaps, not zeros.
+#[test]
+fn blank_chart_values_become_gaps() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "line".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A3".to_owned(),
+                }],
+            },
+        )
+        .unwrap();
+    let series = &workbook.model().sheet(SheetId(0)).unwrap().drawings[0]
+        .chart
+        .series[0];
+    assert_eq!(series.values.len(), 3);
+    assert!(series.values[2].is_nan(), "A3 is blank -> gap");
+
+    let saved = workbook.save().unwrap();
+    let parts = package_map(&saved);
+    let chart = String::from_utf8(parts["xl/charts/chart1.xml"].clone()).unwrap();
+    assert!(!chart.contains("NaN"), "{chart}");
+    assert!(
+        !chart.contains(r#"<c:pt idx="2">"#),
+        "blank point is omitted from the cache: {chart}"
+    );
+}

@@ -3318,3 +3318,20 @@ fn created_charts_reject_malformed_series_colors() {
     let error = serialize_workbook(&wb).unwrap_err();
     assert!(error.to_string().contains("color"), "{error}");
 }
+
+#[test]
+fn bar_direction_swaps_the_axis_positions() {
+    let mut sheet = xlsx_model::workbook::Sheet::new("Sheet1");
+    let mut drawing = created_column_chart();
+    drawing.chart.chart_type = "bar".to_owned();
+    sheet.drawings.push(drawing);
+    let mut wb = Workbook::default();
+    wb.sheets.push(sheet);
+
+    let parts = serialize_workbook(&wb).unwrap();
+    let chart = String::from_utf8(part_bytes(&parts, "xl/charts/chart1.xml")).unwrap();
+    let category_axis = chart.split("<c:catAx>").nth(1).unwrap();
+    assert!(category_axis.contains(r#"<c:axPos val="l"/>"#), "{chart}");
+    let value_axis = chart.split("<c:valAx>").nth(1).unwrap();
+    assert!(value_axis.contains(r#"<c:axPos val="b"/>"#), "{chart}");
+}

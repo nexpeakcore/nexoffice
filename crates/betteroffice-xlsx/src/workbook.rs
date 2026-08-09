@@ -1399,6 +1399,14 @@ impl Workbook {
                 "a chart needs at least one series".to_owned(),
             ));
         }
+        let pie_family = matches!(spec.chart_type.as_str(), "pie" | "doughnut");
+        if pie_family && spec.series.len() > 1 {
+            return Err(Error::InvalidOperation(format!(
+                "a {} chart renders a single series; got {}",
+                spec.chart_type,
+                spec.series.len()
+            )));
+        }
         let has_source_drawings = self
             .model
             .sheet(sheet)
@@ -1444,10 +1452,14 @@ impl Workbook {
                         .map(|(_, values)| values.clone())
                         .unwrap_or_default(),
                     values,
-                    color: format!(
-                        "#{}",
-                        CHART_SERIES_PALETTE[index % CHART_SERIES_PALETTE.len()]
-                    ),
+                    color: if pie_family {
+                        String::new()
+                    } else {
+                        format!(
+                            "#{}",
+                            CHART_SERIES_PALETTE[index % CHART_SERIES_PALETTE.len()]
+                        )
+                    },
                     index: None,
                     order: None,
                     category_formula: categories.as_ref().map(|(formula, _)| formula.clone()),
@@ -1585,7 +1597,7 @@ impl Workbook {
             .map(|cell| match cell.map(|cell| &cell.value) {
                 Some(CellValue::Number { value }) => *value,
                 Some(CellValue::Bool { value }) => f64::from(*value),
-                _ => 0.0,
+                _ => f64::NAN,
             })
             .collect();
         Ok((formula, values))

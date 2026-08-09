@@ -222,18 +222,18 @@ fn plot_element(chart: &ChartSpace) -> Result<String, ParseError> {
             format!(
                 r#"<c:barChart><c:barDir val="{direction}"/><c:grouping val="clustered"/><c:varyColors val="0"/>{series}{}</c:barChart>{}"#,
                 axis_ids(),
-                axes()
+                axes(direction == "bar")
             )
         }
         "line" => format!(
             r#"<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>{series}<c:marker val="1"/>{}</c:lineChart>{}"#,
             axis_ids(),
-            axes()
+            axes(false)
         ),
         "area" => format!(
             r#"<c:areaChart><c:grouping val="standard"/><c:varyColors val="0"/>{series}{}</c:areaChart>{}"#,
             axis_ids(),
-            axes()
+            axes(false)
         ),
         "pie" => format!(r#"<c:pieChart><c:varyColors val="1"/>{series}</c:pieChart>"#),
         "doughnut" => format!(
@@ -251,9 +251,12 @@ fn axis_ids() -> String {
     format!(r#"<c:axId val="{CAT_AXIS_ID}"/><c:axId val="{VAL_AXIS_ID}"/>"#)
 }
 
-fn axes() -> String {
+/// Cartesian axes; a horizontal bar chart puts categories on the left and
+/// values along the bottom, every other family the reverse.
+fn axes(horizontal: bool) -> String {
+    let (category_position, value_position) = if horizontal { ("l", "b") } else { ("b", "l") };
     format!(
-        r#"<c:catAx><c:axId val="{CAT_AXIS_ID}"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="{VAL_AXIS_ID}"/></c:catAx><c:valAx><c:axId val="{VAL_AXIS_ID}"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:crossAx val="{CAT_AXIS_ID}"/></c:valAx>"#
+        r#"<c:catAx><c:axId val="{CAT_AXIS_ID}"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="{category_position}"/><c:crossAx val="{VAL_AXIS_ID}"/></c:catAx><c:valAx><c:axId val="{VAL_AXIS_ID}"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="{value_position}"/><c:crossAx val="{CAT_AXIS_ID}"/></c:valAx>"#
     )
 }
 
@@ -268,13 +271,17 @@ fn series_xml(series: &ChartSeries, index: usize, chart_type: &str) -> Result<St
         .strip_prefix('#')
         .unwrap_or(&series.color)
         .to_uppercase();
-    if color.len() != 6 || !color.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !color.is_empty()
+        && (color.len() != 6 || !color.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
         return Err(ParseError::Malformed(format!(
             "chart series color must be #RRGGBB, got {:?}",
             series.color
         )));
     }
-    let properties = if chart_type == "line" {
+    let properties = if color.is_empty() {
+        String::new()
+    } else if chart_type == "line" {
         format!(
             r#"<c:spPr><a:ln w="28575"><a:solidFill><a:srgbClr val="{color}"/></a:solidFill></a:ln></c:spPr>"#
         )
@@ -306,6 +313,7 @@ fn series_xml(series: &ChartSeries, index: usize, chart_type: &str) -> Result<St
                 .values
                 .iter()
                 .enumerate()
+                .filter(|(_, value)| value.is_finite())
                 .map(|(i, value)| format!("<c:pt idx=\"{i}\"><c:v>{value}</c:v></c:pt>"))
                 .collect();
             format!(
