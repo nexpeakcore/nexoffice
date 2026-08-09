@@ -4790,3 +4790,30 @@ fn structural_ops_are_refused_while_created_charts_exist() {
         )
         .expect("removing the chart unblocks structural edits");
 }
+
+#[test]
+fn add_chart_rejects_out_of_bounds_anchors() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    let spec = |anchor: CellRange| ChartSpec {
+        chart_type: "pie".to_owned(),
+        title: None,
+        anchor,
+        categories: None,
+        series: vec![ChartSeriesSpec {
+            name: None,
+            values: "A1:A2".to_owned(),
+        }],
+    };
+    let out_of_bounds = CellRange::new(CellRef::new(0, 0), CellRef::new(u32::MAX, u32::MAX));
+    assert!(matches!(
+        workbook.add_chart(SheetId(0), &spec(out_of_bounds)),
+        Err(Error::CellOutOfRange(_))
+    ));
+    let inverted = CellRange {
+        start: CellRef::new(10, 10),
+        end: CellRef::new(2, 2),
+    };
+    assert!(workbook.add_chart(SheetId(0), &spec(inverted)).is_err());
+}

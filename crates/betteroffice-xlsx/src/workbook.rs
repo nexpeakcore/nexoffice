@@ -1416,8 +1416,9 @@ impl Workbook {
                     .to_owned(),
             ));
         }
-        if spec.anchor.end.col <= spec.anchor.start.col + 1
-            || spec.anchor.end.row <= spec.anchor.start.row + 1
+        validate_range(spec.anchor)?;
+        if spec.anchor.end.col <= spec.anchor.start.col.saturating_add(1)
+            || spec.anchor.end.row <= spec.anchor.start.row.saturating_add(1)
         {
             return Err(Error::InvalidOperation(
                 "the chart anchor range is too small".to_owned(),
