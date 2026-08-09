@@ -147,6 +147,25 @@ pub(crate) fn parse_dom(xml: &[u8], part: &str) -> Result<XmlElement, ParseError
                     ));
                 }
             }
+            Event::GeneralRef(reference) => {
+                let decoded = reference
+                    .decode()
+                    .map_err(|error| ParseError::Malformed(format!("{part}: {error}")))?;
+                let resolved = if reference.is_char_ref() {
+                    reference
+                        .resolve_char_ref()
+                        .map_err(|error| ParseError::Malformed(format!("{part}: {error}")))?
+                        .map(|character| character.to_string())
+                } else {
+                    quick_xml::escape::resolve_predefined_entity(&decoded).map(str::to_owned)
+                };
+                let resolved = resolved.ok_or_else(|| {
+                    ParseError::Malformed(format!("{part}: unresolvable entity &{decoded};"))
+                })?;
+                if let Some(parent) = stack.last_mut() {
+                    parent.children.push(XmlNode::Text(resolved));
+                }
+            }
             Event::Eof => break,
             _ => {}
         }

@@ -3,6 +3,7 @@
 //! Read-only. The drawing and chart parts stay owned by the preserved
 //! package on save; this parse exists so the canvas can paint them.
 
+use xlsx_model::styles::Theme;
 use xlsx_model::{AnchorCell, DrawingAnchor, SheetDrawing};
 
 use crate::ParseError;
@@ -71,6 +72,7 @@ pub(crate) fn worksheet_drawing_rid(data: &[u8]) -> Option<String> {
 pub(crate) fn parse_sheet_drawings(
     parts: &[(String, Vec<u8>)],
     drawing_path: &str,
+    theme: &Theme,
 ) -> Result<Vec<SheetDrawing>, ParseError> {
     let Some(bytes) = find_part(parts, drawing_path) else {
         return Ok(Vec::new());
@@ -132,7 +134,8 @@ pub(crate) fn parse_sheet_drawings(
         let Some(chart_bytes) = find_part(parts, &chart_path) else {
             continue;
         };
-        let chart_root = parse_dom(chart_bytes, &chart_path)?;
+        let mut chart_root = parse_dom(chart_bytes, &chart_path)?;
+        resolve_scheme_colors(&mut chart_root, theme);
         let Some(chart) = parse_chart_space(&chart_root) else {
             continue;
         };
@@ -167,4 +170,164 @@ fn relationship_part_path(part: &str) -> String {
         Some((directory, filename)) => format!("{directory}/_rels/{filename}.rels"),
         None => format!("_rels/{part}.rels"),
     }
+}
+
+/// Rewrites every `srgbClr`/`schemeClr`/`sysClr` in place into a plain
+/// `srgbClr` resolved against the workbook theme with its lum/tint/shade
+/// modifiers applied, so the theme-blind chart parser reads final colors.
+fn resolve_scheme_colors(element: &mut crate::dom::XmlElement, theme: &Theme) {
+    use crate::dom::XmlNode;
+
+    for child in &mut element.children {
+        if let XmlNode::Element(child) = child {
+            resolve_scheme_colors(child, theme);
+        }
+    }
+    let base = match element.local_name() {
+        "srgbClr" => element.attribute("val").and_then(parse_hex_rgb),
+        "schemeClr" => element
+            .attribute("val")
+            .and_then(|name| scheme_color(theme, name))
+            .and_then(parse_hex_rgb),
+        "sysClr" => element
+            .attribute("lastClr")
+            .and_then(parse_hex_rgb)
+            .or_else(|| match element.attribute("val") {
+                Some("windowText") => parse_hex_rgb(&theme.colors[0]),
+                Some("window") => parse_hex_rgb(&theme.colors[1]),
+                _ => None,
+            }),
+        _ => return,
+    };
+    let Some(rgb) = base else {
+        return;
+    };
+    let resolved = apply_color_modifiers(rgb, element);
+    element.name = "a:srgbClr".to_owned();
+    element.attributes.clear();
+    element.attributes.insert(
+        "val".to_owned(),
+        format!(
+            "{:02X}{:02X}{:02X}",
+            (resolved[0] * 255.0).round() as u8,
+            (resolved[1] * 255.0).round() as u8,
+            (resolved[2] * 255.0).round() as u8
+        ),
+    );
+    element.children.clear();
+}
+
+/// Scheme name to declaration-order theme slot; unknown names resolve to none
+/// rather than a wrong palette entry.
+fn scheme_color<'a>(theme: &'a Theme, name: &str) -> Option<&'a str> {
+    let slot = match name {
+        "dk1" | "tx1" => 0,
+        "lt1" | "bg1" => 1,
+        "dk2" | "tx2" => 2,
+        "lt2" | "bg2" => 3,
+        "accent1" => 4,
+        "accent2" => 5,
+        "accent3" => 6,
+        "accent4" => 7,
+        "accent5" => 8,
+        "accent6" => 9,
+        "hlink" => 10,
+        "folHlink" => 11,
+        _ => return None,
+    };
+    Some(theme.colors[slot].as_str())
+}
+
+fn parse_hex_rgb(value: &str) -> Option<[f64; 3]> {
+    let value = value.strip_prefix('#').unwrap_or(value);
+    if value.len() != 6 {
+        return None;
+    }
+    let packed = u32::from_str_radix(value, 16).ok()?;
+    Some([
+        f64::from((packed >> 16) & 0xff) / 255.0,
+        f64::from((packed >> 8) & 0xff) / 255.0,
+        f64::from(packed & 0xff) / 255.0,
+    ])
+}
+
+/// DrawingML color modifier children, values in thousandths of a percent.
+/// `lumMod`/`lumOff` scale and offset HSL luminance (Office's
+/// "Lighter/Darker N%" variants); `shade` darkens toward black, `tint`
+/// lightens toward white.
+fn apply_color_modifiers(mut rgb: [f64; 3], element: &crate::dom::XmlElement) -> [f64; 3] {
+    for child in element.child_elements() {
+        let Some(value) = child
+            .attribute("val")
+            .and_then(|value| value.parse::<f64>().ok())
+            .map(|value| (value / 100_000.0).clamp(0.0, 1.0))
+        else {
+            continue;
+        };
+        match child.local_name() {
+            "shade" => rgb = rgb.map(|channel| channel * value),
+            "tint" => rgb = rgb.map(|channel| channel * value + (1.0 - value)),
+            "lumMod" => rgb = adjust_luminance(rgb, |luminance| luminance * value),
+            "lumOff" => rgb = adjust_luminance(rgb, |luminance| luminance + value),
+            _ => {}
+        }
+    }
+    rgb
+}
+
+fn adjust_luminance(rgb: [f64; 3], adjust: impl Fn(f64) -> f64) -> [f64; 3] {
+    let (hue, saturation, luminance) = rgb_to_hsl(rgb);
+    hsl_to_rgb(hue, saturation, adjust(luminance).clamp(0.0, 1.0))
+}
+
+fn rgb_to_hsl([r, g, b]: [f64; 3]) -> (f64, f64, f64) {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let luminance = (max + min) / 2.0;
+    if max == min {
+        return (0.0, 0.0, luminance);
+    }
+    let delta = max - min;
+    let saturation = if luminance > 0.5 {
+        delta / (2.0 - max - min)
+    } else {
+        delta / (max + min)
+    };
+    let hue = if max == r {
+        ((g - b) / delta).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / delta + 2.0
+    } else {
+        (r - g) / delta + 4.0
+    } / 6.0;
+    (hue, saturation, luminance)
+}
+
+fn hsl_to_rgb(hue: f64, saturation: f64, luminance: f64) -> [f64; 3] {
+    if saturation == 0.0 {
+        return [luminance; 3];
+    }
+    let q = if luminance < 0.5 {
+        luminance * (1.0 + saturation)
+    } else {
+        luminance + saturation - luminance * saturation
+    };
+    let p = 2.0 * luminance - q;
+    let channel = |mut t: f64| {
+        t = t.rem_euclid(1.0);
+        if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 0.5 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        }
+    };
+    [
+        channel(hue + 1.0 / 3.0),
+        channel(hue),
+        channel(hue - 1.0 / 3.0),
+    ]
 }

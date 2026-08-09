@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use xlsx_model::numfmt::{builtin_format_code, format_value};
 use xlsx_model::styles::{Border, BorderEdge, BorderStyle, FormatCode, Stylesheet, Theme};
 use xlsx_model::value::CellValue;
-use xlsx_model::workbook::Sheet;
+use xlsx_model::workbook::{Cell, Sheet};
 use xlsx_model::{CellRange, CellRef, Fill, HAlign, MAX_COLS, MAX_ROWS, SheetId, VAlign, Workbook};
 
 pub use display_list::{
@@ -513,6 +513,7 @@ pub fn build_display_list_with_ghosts(
 
     emit_charts(
         &mut commands,
+        wb,
         sheet_ref,
         &geom,
         viewport,
@@ -558,6 +559,7 @@ const EMU_PER_PX: f64 = 9525.0;
 /// floating charts never bleed across a frozen-pane divider.
 fn emit_charts(
     commands: &mut Vec<DrawCmd>,
+    wb: &Workbook,
     sheet: &Sheet,
     geom: &GridGeometry,
     viewport: &Viewport,
@@ -637,12 +639,107 @@ fn emit_charts(
             w: clip.w,
             h: clip.h,
         });
+        let chart = refreshed_chart(wb, sheet, &drawing.chart);
         plot_chart_into(
-            &PlotChart::from(&drawing.chart),
+            &PlotChart::from(&chart),
             PlotRect { x: vx, y: vy, w, h },
             &mut ChartSink { commands, clip },
         );
         commands.push(DrawCmd::PopClip {});
+    }
+}
+
+/// The most cells one chart series reads back, bounding the per-frame cost of
+/// a formula that spans a huge range.
+const MAX_CHART_SERIES_CELLS: usize = 4096;
+
+/// Re-reads each series' cached data from its source range so charts track
+/// live cell edits; ranges that no longer resolve keep their cached values.
+fn refreshed_chart(
+    wb: &Workbook,
+    host: &Sheet,
+    chart: &ooxml_drawingml::chart::ChartSpace,
+) -> ooxml_drawingml::chart::ChartSpace {
+    let mut chart = chart.clone();
+    let group_series = chart
+        .plot_groups
+        .iter_mut()
+        .flat_map(|group| group.series.iter_mut());
+    for series in chart.series.iter_mut().chain(group_series) {
+        if let Some(cells) = series
+            .value_formula
+            .as_deref()
+            .and_then(|formula| range_cells(wb, host, formula))
+        {
+            series.values = cells
+                .into_iter()
+                .map(|cell| match cell.map(|cell| &cell.value) {
+                    Some(CellValue::Number { value }) => *value,
+                    Some(CellValue::Bool { value }) => f64::from(*value),
+                    _ => 0.0,
+                })
+                .collect();
+        }
+        if let Some(cells) = series
+            .category_formula
+            .as_deref()
+            .and_then(|formula| range_cells(wb, host, formula))
+        {
+            series.categories = cells
+                .into_iter()
+                .map(|cell| match cell.map(|cell| &cell.value) {
+                    Some(CellValue::Text { value }) => value.clone(),
+                    Some(CellValue::Number { value }) => trimmed_number(*value),
+                    Some(CellValue::Bool { value }) => {
+                        if *value { "TRUE" } else { "FALSE" }.to_owned()
+                    }
+                    _ => String::new(),
+                })
+                .collect();
+        }
+    }
+    chart
+}
+
+/// Cells of a `Sheet1!$B$2:$B$4`-style reference in row-major order, or none
+/// when the reference does not parse, names an unknown sheet, or is too big.
+fn range_cells<'a>(
+    wb: &'a Workbook,
+    host: &'a Sheet,
+    formula: &str,
+) -> Option<Vec<Option<&'a Cell>>> {
+    let (sheet, range) = match formula.rsplit_once('!') {
+        Some((name, range)) => {
+            let name = name
+                .strip_prefix('\'')
+                .and_then(|name| name.strip_suffix('\''))
+                .map(|name| name.replace("''", "'"))
+                .unwrap_or_else(|| name.to_owned());
+            (wb.sheet_by_name(&name).map(|(_, sheet)| sheet)?, range)
+        }
+        None => (host, formula),
+    };
+    let range = CellRange::parse_a1(&range.replace('$', "")).ok()?;
+    let rows = range.end.row.checked_sub(range.start.row)? as usize + 1;
+    let cols = range.end.col.checked_sub(range.start.col)? as usize + 1;
+    if rows.checked_mul(cols)? > MAX_CHART_SERIES_CELLS {
+        return None;
+    }
+    let mut cells = Vec::with_capacity(rows * cols);
+    for row in range.start.row..=range.end.row {
+        for col in range.start.col..=range.end.col {
+            cells.push(sheet.cell(CellRef::new(row, col)));
+        }
+    }
+    Some(cells)
+}
+
+/// A short display form for numeric category labels.
+fn trimmed_number(value: f64) -> String {
+    if value.fract() == 0.0 && value.abs() < 1e15 {
+        format!("{}", value as i64)
+    } else {
+        format!("{value}")
     }
 }
 
@@ -1877,6 +1974,43 @@ mod tests {
             })
             .expect("chart background");
         assert!((background - (chart_x - vp.x)).abs() < 0.01);
+    }
+
+    #[test]
+    fn chart_series_track_live_cell_values() {
+        let mut sheet = Sheet::new("Sheet1");
+        sheet.set_cell(CellRef::new(1, 0), text_cell("B\u{1eafc}"));
+        sheet.set_cell(CellRef::new(2, 0), text_cell("Nam"));
+        sheet.set_cell(CellRef::new(1, 1), num_cell(10.0));
+        sheet.set_cell(CellRef::new(2, 1), num_cell(25.0));
+        let mut drawing = anchored_chart(2, 1, 8, 14);
+        drawing.chart.chart_type = "column".to_owned();
+        let series = &mut drawing.chart.series[0];
+        series.categories = vec!["Old1".to_owned(), "Old2".to_owned()];
+        series.values = vec![1.0, 1.0];
+        series.category_formula = Some("Sheet1!$A$2:$A$3".to_owned());
+        series.value_formula = Some("Sheet1!$B$2:$B$3".to_owned());
+        sheet.drawings.push(drawing);
+        let mut wb = Workbook::default();
+        wb.sheets.push(sheet);
+
+        let vp = Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 400.0,
+        };
+        let dl = build_display_list(&wb, SheetId(0), &vp);
+        let (push, pop) = clip_span(&dl).expect("chart must emit a clip pair");
+        let labels: Vec<&str> = dl.commands[push + 1..pop]
+            .iter()
+            .filter_map(|c| match c {
+                DrawCmd::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(labels.contains(&"B\u{1eafc}"), "{labels:?}");
+        assert!(!labels.contains(&"Old1"), "{labels:?}");
     }
 
     #[test]

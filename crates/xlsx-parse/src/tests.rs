@@ -3036,10 +3036,13 @@ fn parses_anchored_charts_and_preserves_their_parts() {
     let chart = br#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
 <c:chart><c:title><c:tx><c:rich><a:p><a:r><a:t>Sales</a:t></a:r></a:p></c:rich></c:tx></c:title>
 <c:plotArea><c:barChart><c:ser><c:idx val="0"/><c:order val="0"/>
-<c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>Revenue</c:v></c:pt></c:strCache></c:strRef></c:tx>
+<c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>R&amp;D &#8364;</c:v></c:pt></c:strCache></c:strRef></c:tx>
 <c:spPr><a:solidFill><a:srgbClr val="4472C4"/></a:solidFill></c:spPr>
 <c:cat><c:strRef><c:f>Sheet1!$A$2:$A$4</c:f><c:strCache><c:pt idx="0"><c:v>North</c:v></c:pt><c:pt idx="1"><c:v>South</c:v></c:pt><c:pt idx="2"><c:v>West</c:v></c:pt></c:strCache></c:strRef></c:cat>
 <c:val><c:numRef><c:f>Sheet1!$B$2:$B$4</c:f><c:numCache><c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>25</c:v></c:pt><c:pt idx="2"><c:v>15</c:v></c:pt></c:numCache></c:numRef></c:val>
+</c:ser><c:ser><c:idx val="1"/><c:order val="1"/>
+<c:spPr><a:solidFill><a:schemeClr val="accent2"><a:lumMod val="60000"/><a:lumOff val="40000"/></a:schemeClr></a:solidFill></c:spPr>
+<c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>5</c:v></c:pt></c:numCache></c:numRef></c:val>
 </c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>"#.to_vec();
     parts.push(("xl/charts/chart1.xml".to_owned(), chart.clone()));
 
@@ -3056,10 +3059,14 @@ fn parses_anchored_charts_and_preserves_their_parts() {
     assert_eq!(anchored.chart.chart_type, "column");
     assert_eq!(anchored.chart.title.as_deref(), Some("Sales"));
     let series = &anchored.chart.series[0];
-    assert_eq!(series.name.as_deref(), Some("Revenue"));
+    assert_eq!(series.name.as_deref(), Some("R&D \u{20ac}"));
     assert_eq!(series.categories, ["North", "South", "West"]);
     assert_eq!(series.values, [10.0, 25.0, 15.0]);
     assert_eq!(series.color, "#4472C4");
+    assert_eq!(
+        anchored.chart.series[1].color, "#F4B183",
+        "accent2 lighter-40% resolves through the theme"
+    );
 
     let saved = serialize_workbook_with_package(&parsed.workbook, &parsed.package).unwrap();
     assert_eq!(part_bytes(&saved, "xl/drawings/drawing1.xml"), drawing);
