@@ -4959,3 +4959,29 @@ fn add_chart_refuses_alternate_content_source_drawings() {
         "{error:?}"
     );
 }
+
+#[test]
+fn add_chart_rejects_types_the_renderer_cannot_draw() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    let error = workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "area".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidOperation(message) if message.contains("unsupported chart type")),
+        "{error:?}"
+    );
+}

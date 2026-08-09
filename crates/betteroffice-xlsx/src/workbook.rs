@@ -1387,7 +1387,7 @@ impl Workbook {
         self.ensure_worksheet_sheet(sheet)?;
         if !matches!(
             spec.chart_type.as_str(),
-            "column" | "bar" | "pie" | "line" | "area" | "doughnut"
+            "column" | "bar" | "pie" | "line" | "doughnut"
         ) {
             return Err(Error::InvalidOperation(format!(
                 "unsupported chart type: {}",
