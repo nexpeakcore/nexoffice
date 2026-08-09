@@ -197,11 +197,13 @@ impl PreservedPackage {
     }
 
     /// Whether the source worksheet references a drawing part — including
-    /// ones whose anchors are all unmodeled (pictures, shapes).
+    /// ones whose anchors are all unmodeled (pictures, shapes) or whose
+    /// `<drawing>` sits inside `mc:AlternateContent`.
     pub fn source_sheet_has_drawing(&self, index: usize) -> bool {
-        self.sheets
-            .get(index)
-            .is_some_and(|sheet| sheet.template.child("drawing").is_some())
+        self.sheets.get(index).is_some_and(|sheet| {
+            self.part_bytes(&sheet.path)
+                .is_some_and(|bytes| crate::drawing::worksheet_drawing_rid(bytes).is_some())
+        })
     }
 }
 

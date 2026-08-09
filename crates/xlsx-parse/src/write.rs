@@ -2982,7 +2982,11 @@ fn worksheet_xml_with_template(
         .filter(|drawing| drawing.created)
         .cloned()
         .collect::<Vec<_>>();
-    if !created_drawings.is_empty() && template.child("drawing").is_some() {
+    if !created_drawings.is_empty()
+        && package
+            .part_bytes(&source.path)
+            .is_some_and(|bytes| crate::drawing::worksheet_drawing_rid(bytes).is_some())
+    {
         return Err(ParseError::Malformed(
             "adding charts to a sheet that already has drawings is not supported yet".to_owned(),
         ));

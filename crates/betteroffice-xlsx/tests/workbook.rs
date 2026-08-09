@@ -4869,3 +4869,93 @@ fn inverted_chart_data_ranges_normalize() {
     assert_eq!(series.value_formula.as_deref(), Some("Data!$A$1:$A$2"));
     assert_eq!(series.values, [10.0, 5.0]);
 }
+
+/// Cell-like or numeric sheet names must be quoted in chart formulas.
+#[test]
+fn chart_formulas_quote_ambiguous_sheet_names() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut sheet = betteroffice_xlsx::Sheet::new("A1");
+    sheet.set_cell(
+        cell("B1"),
+        Cell {
+            value: CellValue::Number { value: 3.0 },
+            ..Cell::default()
+        },
+    );
+    let mut model = WorkbookModel::default();
+    model.sheets.push(sheet);
+    let mut workbook = Workbook::from_model(model).unwrap();
+    workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "pie".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "B1:B1".to_owned(),
+                }],
+            },
+        )
+        .unwrap();
+    let series = &workbook.model().sheet(SheetId(0)).unwrap().drawings[0]
+        .chart
+        .series[0];
+    assert_eq!(series.value_formula.as_deref(), Some("'A1'!$B$1"));
+}
+
+/// A source drawing hidden inside mc:AlternateContent still blocks chart
+/// authoring up front.
+#[test]
+fn add_chart_refuses_alternate_content_source_drawings() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let workbook_xml =
+        r#"<workbook><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+    let rels = r#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>"#;
+    let worksheet = r#"<worksheet xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><sheetData/><mc:AlternateContent><mc:Choice><drawing r:id="rId1"/></mc:Choice></mc:AlternateContent></worksheet>"#;
+    let sheet_rels = r#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>"#;
+    let bytes = ooxml_opc::rezip_parts(&[
+        (
+            "xl/workbook.xml".to_owned(),
+            workbook_xml.as_bytes().to_vec(),
+        ),
+        (
+            "xl/_rels/workbook.xml.rels".to_owned(),
+            rels.as_bytes().to_vec(),
+        ),
+        (
+            "xl/worksheets/sheet1.xml".to_owned(),
+            worksheet.as_bytes().to_vec(),
+        ),
+        (
+            "xl/worksheets/_rels/sheet1.xml.rels".to_owned(),
+            sheet_rels.as_bytes().to_vec(),
+        ),
+    ])
+    .unwrap();
+
+    let mut workbook = Workbook::open(&bytes).unwrap();
+    let error = workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "pie".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidOperation(message) if message.contains("already has drawings")),
+        "{error:?}"
+    );
+}

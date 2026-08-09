@@ -2145,14 +2145,7 @@ const CHART_SERIES_PALETTE: [&str; 6] =
 const MAX_CHART_SPEC_CELLS: u64 = 4096;
 
 fn quote_sheet_name(name: &str) -> String {
-    let plain = name
-        .chars()
-        .all(|character| character.is_alphanumeric() || character == '_');
-    if plain && !name.is_empty() {
-        name.to_owned()
-    } else {
-        format!("'{}'", name.replace('\'', "''"))
-    }
+    xlsx_calc::printer::printed_sheet_name(name)
 }
 
 fn absolute_range(range: CellRange) -> String {
