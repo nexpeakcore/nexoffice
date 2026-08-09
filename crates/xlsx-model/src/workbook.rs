@@ -125,6 +125,10 @@ pub struct Sheet {
 pub struct SheetDrawing {
     pub anchor: DrawingAnchor,
     pub chart: ooxml_drawingml::chart::ChartSpace,
+    /// `false` for drawings parsed from a preserved package (their source
+    /// parts ride through saves); `true` for drawings authored in-session,
+    /// which saves must serialize into new parts.
+    pub created: bool,
 }
 
 /// Where a drawing sits on the grid, in cells plus EMU offsets.

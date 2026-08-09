@@ -4561,7 +4561,7 @@ fn paints_chart(workbook: &Workbook) -> bool {
         .unwrap()
         .commands
         .iter()
-        .any(|command| matches!(command, DrawCmd::Path { .. }))
+        .any(|command| matches!(command, DrawCmd::PushClip { .. }))
 }
 
 /// Charts must keep painting after edits re-materialize the model from the
@@ -4593,4 +4593,83 @@ fn charts_survive_edits_and_saves() {
         .edit_cell(SheetId(0), cell("A1"), "42", CalculationOptions::default())
         .unwrap();
     assert!(paints_chart(&standalone), "chart paints in standalone mode");
+}
+
+/// An authored chart paints immediately, survives collaborative edits, and
+/// serializes into real chart parts that parse back on reopen.
+#[test]
+fn added_charts_paint_save_and_reopen() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open_collaborative(&sample_xlsx(), 9).unwrap();
+    workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "column".to_owned(),
+                title: Some("Điểm số".to_owned()),
+                anchor: CellRange::parse_a1("D2:K16").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: Some("Data".to_owned()),
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap();
+    assert!(paints_chart(&workbook), "chart paints right after add");
+
+    workbook
+        .edit_cell(SheetId(0), cell("A1"), "77", CalculationOptions::default())
+        .unwrap();
+    assert!(paints_chart(&workbook), "chart survives an edit");
+
+    let saved = workbook.save().unwrap();
+    let mut reopened = Workbook::open(&saved).unwrap();
+    assert!(paints_chart(&reopened), "chart parses back after save");
+    let sheet = reopened.model().sheet(SheetId(0)).unwrap();
+    assert_eq!(sheet.drawings.len(), 1);
+    let series = &sheet.drawings[0].chart.plot_groups[0].series[0];
+    assert_eq!(series.value_formula.as_deref(), Some("Data!$A$1:$A$2"));
+
+    reopened
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "pie".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("D20:K30").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .expect_err("preserved drawings block new charts for now");
+}
+
+#[test]
+fn created_charts_can_be_removed_again() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "pie".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap();
+    assert!(paints_chart(&workbook));
+    workbook.remove_chart(SheetId(0), 0).unwrap();
+    assert!(!paints_chart(&workbook));
 }

@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use xlsx_calc::graph::DepGraph;
 use xlsx_calc::{RecalcResult, rebuild_and_recalc_all, recalc_after};
+use xlsx_model::workbook::Cell;
 use xlsx_model::{
     Border, BorderEdge, BorderStyle, CellFormat, CellRange, CellRef, CellValue, ColId, Comment,
     Fill, HAlign, Hyperlink, MAX_COLS, MAX_ROWS, NumberFormat, RowId, Sheet, SheetId, VAlign,
@@ -1378,6 +1379,219 @@ impl Workbook {
         }
     }
 
+    /// Adds a created chart to `sheet`. Series and category ranges are
+    /// resolved against the workbook now to seed the cached data; rendering
+    /// keeps tracking the ranges live afterwards.
+    pub fn add_chart(&mut self, sheet: SheetId, spec: &ChartSpec) -> Result<()> {
+        self.ensure_worksheet_sheet(sheet)?;
+        if !matches!(
+            spec.chart_type.as_str(),
+            "column" | "bar" | "pie" | "line" | "area" | "doughnut"
+        ) {
+            return Err(Error::InvalidOperation(format!(
+                "unsupported chart type: {}",
+                spec.chart_type
+            )));
+        }
+        if spec.series.is_empty() {
+            return Err(Error::InvalidOperation(
+                "a chart needs at least one series".to_owned(),
+            ));
+        }
+        if self
+            .model
+            .sheet(sheet)
+            .is_some_and(|target| target.drawings.iter().any(|drawing| !drawing.created))
+        {
+            return Err(Error::InvalidOperation(
+                "this sheet already has drawings from the source file; adding charts alongside them is not supported yet"
+                    .to_owned(),
+            ));
+        }
+        if spec.anchor.end.col <= spec.anchor.start.col + 1
+            || spec.anchor.end.row <= spec.anchor.start.row + 1
+        {
+            return Err(Error::InvalidOperation(
+                "the chart anchor range is too small".to_owned(),
+            ));
+        }
+
+        let categories = spec
+            .categories
+            .as_deref()
+            .map(|reference| self.chart_range_strings(sheet, reference))
+            .transpose()?;
+        let series = spec
+            .series
+            .iter()
+            .enumerate()
+            .map(|(index, series)| {
+                let (formula, values) = self.chart_range_numbers(sheet, &series.values)?;
+                Ok(ooxml_drawingml::chart::ChartSeries {
+                    name: series.name.clone(),
+                    categories: categories
+                        .as_ref()
+                        .map(|(_, values)| values.clone())
+                        .unwrap_or_default(),
+                    values,
+                    color: format!(
+                        "#{}",
+                        CHART_SERIES_PALETTE[index % CHART_SERIES_PALETTE.len()]
+                    ),
+                    index: None,
+                    order: None,
+                    category_formula: categories.as_ref().map(|(formula, _)| formula.clone()),
+                    value_formula: Some(formula),
+                    axis_ids: None,
+                    points: None,
+                    grouping: None,
+                    marker: None,
+                    smooth: None,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let chart = ooxml_drawingml::chart::ChartSpace {
+            chart_type: spec.chart_type.clone(),
+            title: spec.title.clone(),
+            legend: Some(ooxml_drawingml::chart::ChartLegend {
+                position: Some("b".to_owned()),
+                visible: true,
+            }),
+            series,
+            axes: None,
+            plot_groups: Vec::new(),
+            axis_list: None,
+        };
+        let anchor = xlsx_model::DrawingAnchor::Cell {
+            from: xlsx_model::AnchorCell {
+                col: spec.anchor.start.col,
+                col_offset_emu: 0,
+                row: spec.anchor.start.row,
+                row_offset_emu: 0,
+            },
+            to: Some(xlsx_model::AnchorCell {
+                col: spec.anchor.end.col,
+                col_offset_emu: 0,
+                row: spec.anchor.end.row,
+                row_offset_emu: 0,
+            }),
+            extent_emu: None,
+        };
+        let target = self
+            .model
+            .sheet_mut(sheet)
+            .ok_or(Error::SheetOutOfRange(sheet))?;
+        target.drawings.push(xlsx_model::SheetDrawing {
+            anchor,
+            chart,
+            created: true,
+        });
+        self.edited_since_open = true;
+        Ok(())
+    }
+
+    /// Removes a created chart by its position in `Sheet::drawings`.
+    pub fn remove_chart(&mut self, sheet: SheetId, index: usize) -> Result<()> {
+        self.ensure_worksheet_sheet(sheet)?;
+        let target = self
+            .model
+            .sheet_mut(sheet)
+            .ok_or(Error::SheetOutOfRange(sheet))?;
+        let Some(drawing) = target.drawings.get(index) else {
+            return Err(Error::InvalidOperation(format!(
+                "no chart at index {index}"
+            )));
+        };
+        if !drawing.created {
+            return Err(Error::InvalidOperation(
+                "only charts created in this session can be removed".to_owned(),
+            ));
+        }
+        target.drawings.remove(index);
+        self.edited_since_open = true;
+        Ok(())
+    }
+
+    fn chart_range_cells(
+        &self,
+        sheet: SheetId,
+        reference: &str,
+    ) -> Result<(String, Vec<Option<&Cell>>)> {
+        let (name, range) = xlsx_model::parse_sheet_range(reference).ok_or_else(|| {
+            Error::InvalidOperation(format!("invalid range reference: {reference}"))
+        })?;
+        let source = match name.as_deref() {
+            Some(name) => {
+                self.model
+                    .sheet_by_name(name)
+                    .ok_or_else(|| {
+                        Error::InvalidOperation(format!("unknown sheet in reference: {name}"))
+                    })?
+                    .1
+            }
+            None => self
+                .model
+                .sheet(sheet)
+                .ok_or(Error::SheetOutOfRange(sheet))?,
+        };
+        u64::from(range.end.row - range.start.row + 1)
+            .checked_mul(u64::from(range.end.col - range.start.col + 1))
+            .filter(|cells| *cells <= MAX_CHART_SPEC_CELLS)
+            .ok_or_else(|| {
+                Error::InvalidOperation(format!("chart range too large: {reference}"))
+            })?;
+        let formula = format!(
+            "{}!{}",
+            quote_sheet_name(&source.name),
+            absolute_range(range)
+        );
+        let mut resolved = Vec::new();
+        for row in range.start.row..=range.end.row {
+            for col in range.start.col..=range.end.col {
+                resolved.push(source.cell(CellRef::new(row, col)));
+            }
+        }
+        Ok((formula, resolved))
+    }
+
+    fn chart_range_numbers(&self, sheet: SheetId, reference: &str) -> Result<(String, Vec<f64>)> {
+        let (formula, cells) = self.chart_range_cells(sheet, reference)?;
+        let values = cells
+            .into_iter()
+            .map(|cell| match cell.map(|cell| &cell.value) {
+                Some(CellValue::Number { value }) => *value,
+                Some(CellValue::Bool { value }) => f64::from(*value),
+                _ => 0.0,
+            })
+            .collect();
+        Ok((formula, values))
+    }
+
+    fn chart_range_strings(
+        &self,
+        sheet: SheetId,
+        reference: &str,
+    ) -> Result<(String, Vec<String>)> {
+        let (formula, cells) = self.chart_range_cells(sheet, reference)?;
+        let values = cells
+            .into_iter()
+            .map(|cell| match cell.map(|cell| &cell.value) {
+                Some(CellValue::Text { value }) => value.clone(),
+                Some(CellValue::Number { value }) => {
+                    if value.fract() == 0.0 && value.abs() < 1e15 {
+                        format!("{}", *value as i64)
+                    } else {
+                        format!("{value}")
+                    }
+                }
+                Some(CellValue::Bool { value }) => if *value { "TRUE" } else { "FALSE" }.to_owned(),
+                _ => String::new(),
+            })
+            .collect();
+        Ok((formula, values))
+    }
+
     fn validate_target(&self, sheet: SheetId, cell: CellRef) -> Result<()> {
         self.ensure_worksheet_sheet(sheet)?;
         self.validate_cell(cell)
@@ -1870,6 +2084,55 @@ fn calculation_result(result: &RecalcResult) -> CalculationResult {
             .iter()
             .map(|&(sheet, cell)| CellAddress { sheet, cell })
             .collect(),
+    }
+}
+
+/// What the host supplies to author a chart: type, grid area, and A1 ranges.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChartSpec {
+    pub chart_type: String,
+    pub title: Option<String>,
+    /// Grid area the chart floats over (from top-left to bottom-right cell).
+    pub anchor: CellRange,
+    /// Category labels range, shared by every series.
+    pub categories: Option<String>,
+    pub series: Vec<ChartSeriesSpec>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChartSeriesSpec {
+    pub name: Option<String>,
+    /// A1 range the series values come from, optionally sheet-qualified.
+    pub values: String,
+}
+
+const CHART_SERIES_PALETTE: [&str; 6] =
+    ["4472C4", "ED7D31", "A5A5A5", "FFC000", "5B9BD5", "70AD47"];
+const MAX_CHART_SPEC_CELLS: u64 = 4096;
+
+fn quote_sheet_name(name: &str) -> String {
+    let plain = name
+        .chars()
+        .all(|character| character.is_alphanumeric() || character == '_');
+    if plain && !name.is_empty() {
+        name.to_owned()
+    } else {
+        format!("'{}'", name.replace('\'', "''"))
+    }
+}
+
+fn absolute_range(range: CellRange) -> String {
+    let cell = |at: CellRef| {
+        let a1 = at.to_a1();
+        let split = a1
+            .find(|character: char| character.is_ascii_digit())
+            .unwrap_or(a1.len());
+        format!("${}${}", &a1[..split], &a1[split..])
+    };
+    if range.start == range.end {
+        cell(range.start)
+    } else {
+        format!("{}:{}", cell(range.start), cell(range.end))
     }
 }
 

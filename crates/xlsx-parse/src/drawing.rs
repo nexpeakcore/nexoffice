@@ -159,7 +159,11 @@ pub(crate) fn parse_sheet_drawings(
         let Some(chart) = parse_chart_space(&chart_root) else {
             continue;
         };
-        drawings.push(SheetDrawing { anchor, chart });
+        drawings.push(SheetDrawing {
+            anchor,
+            chart,
+            created: false,
+        });
     }
     drawings
 }

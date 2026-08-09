@@ -3,6 +3,7 @@
 
 mod dom;
 mod drawing;
+mod drawing_write;
 mod package;
 mod read;
 mod styles;

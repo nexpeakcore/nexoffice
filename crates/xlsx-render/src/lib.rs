@@ -735,18 +735,11 @@ fn range_cells<'a>(
     host: &'a Sheet,
     formula: &str,
 ) -> Option<Vec<Option<&'a Cell>>> {
-    let (sheet, range) = match formula.rsplit_once('!') {
-        Some((name, range)) => {
-            let name = name
-                .strip_prefix('\'')
-                .and_then(|name| name.strip_suffix('\''))
-                .map(|name| name.replace("''", "'"))
-                .unwrap_or_else(|| name.to_owned());
-            (wb.sheet_by_name(&name).map(|(_, sheet)| sheet)?, range)
-        }
-        None => (host, formula),
+    let (name, range) = xlsx_model::parse_sheet_range(formula)?;
+    let sheet = match name {
+        Some(name) => wb.sheet_by_name(&name).map(|(_, sheet)| sheet)?,
+        None => host,
     };
-    let range = CellRange::parse_a1(&range.replace('$', "")).ok()?;
     let rows = range.end.row.checked_sub(range.start.row)? as usize + 1;
     let cols = range.end.col.checked_sub(range.start.col)? as usize + 1;
     if rows.checked_mul(cols)? > MAX_CHART_SERIES_CELLS {
@@ -1909,6 +1902,7 @@ mod tests {
                 extent_emu: None,
             },
             chart: pie_chart(),
+            created: false,
         }
     }
 
