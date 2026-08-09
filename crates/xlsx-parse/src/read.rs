@@ -79,6 +79,13 @@ pub(crate) fn parse_workbook_indexed(
         if let Some(bytes) = comments_part(parts, &path, &sheet_rels) {
             sheet.comments = parse_comments(bytes)?;
         }
+        if let Some(drawing_rid) = crate::drawing::worksheet_drawing_rid(bytes)
+            && let Some(relationship) = sheet_rels.get(&drawing_rid)
+        {
+            let base = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+            let drawing_path = resolve_part_path(base, &relationship.target);
+            sheet.drawings = crate::drawing::parse_sheet_drawings(parts, &drawing_path)?;
+        }
         sheets.push(sheet);
         shared_string_cells.push(indices);
     }

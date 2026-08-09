@@ -7,7 +7,7 @@ pub use font::measure_text;
 
 use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Rect, Stroke, StrokeDash, Transform};
 
-use xlsx_render::{DisplayList, DrawCmd};
+use xlsx_render::{DisplayList, DrawCmd, PathCmd};
 
 /// paint a display list and encode it as png bytes.
 pub fn render_png(dl: &DisplayList) -> Result<Vec<u8>, String> {
@@ -38,6 +38,23 @@ pub fn render_png(dl: &DisplayList) -> Result<Vec<u8>, String> {
             } => {
                 paint_line(&mut pixmap, *x1, *y1, *x2, *y2, *width, color, style)?;
             }
+            DrawCmd::Path {
+                commands,
+                fill,
+                stroke,
+                stroke_width,
+            } => {
+                paint_path(
+                    &mut pixmap,
+                    commands,
+                    fill.as_deref(),
+                    stroke.as_deref(),
+                    *stroke_width,
+                )?;
+            }
+            // The raster backend paints whole frames without pane scrolling,
+            // so chart clips are a no-op here.
+            DrawCmd::PushClip { .. } | DrawCmd::PopClip {} => {}
             DrawCmd::Text {
                 x,
                 y,
@@ -173,6 +190,58 @@ fn parse_color(s: &str) -> Result<Color, String> {
         byte(4)?,
         if hex.len() == 8 { byte(6)? } else { 255 },
     ))
+}
+
+fn paint_path(
+    pixmap: &mut Pixmap,
+    commands: &[PathCmd],
+    fill: Option<&str>,
+    stroke: Option<&str>,
+    stroke_width: f32,
+) -> Result<(), String> {
+    let mut builder = PathBuilder::new();
+    for command in commands {
+        match command {
+            PathCmd::MoveTo { x, y } => builder.move_to(*x, *y),
+            PathCmd::LineTo { x, y } => builder.line_to(*x, *y),
+            PathCmd::QuadTo { cx, cy, x, y } => builder.quad_to(*cx, *cy, *x, *y),
+            PathCmd::CubicTo {
+                x1,
+                y1,
+                x2,
+                y2,
+                x,
+                y,
+            } => builder.cubic_to(*x1, *y1, *x2, *y2, *x, *y),
+            PathCmd::Close {} => builder.close(),
+        }
+    }
+    let Some(path) = builder.finish() else {
+        return Ok(());
+    };
+    if let Some(fill) = fill {
+        let mut paint = Paint::default();
+        paint.set_color(parse_color(fill)?);
+        paint.anti_alias = true;
+        pixmap.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
+    if let Some(stroke) = stroke {
+        let mut paint = Paint::default();
+        paint.set_color(parse_color(stroke)?);
+        paint.anti_alias = true;
+        let stroke = Stroke {
+            width: stroke_width.max(0.5),
+            ..Stroke::default()
+        };
+        pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

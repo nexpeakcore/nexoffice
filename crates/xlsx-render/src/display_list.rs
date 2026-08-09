@@ -74,6 +74,57 @@ pub enum DrawCmd {
         #[serde(default, skip_serializing_if = "is_false")]
         ghost: bool,
     },
+    /// a filled and/or stroked geometry path, used by chart plots.
+    Path {
+        commands: Vec<PathCmd>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fill: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stroke: Option<String>,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        stroke_width: f32,
+    },
+    /// clip every following command to this rect until the matching PopClip.
+    PushClip {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    },
+    PopClip {},
+}
+
+/// one segment of a [`DrawCmd::Path`], in viewport pixels.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "op", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum PathCmd {
+    MoveTo {
+        x: f32,
+        y: f32,
+    },
+    LineTo {
+        x: f32,
+        y: f32,
+    },
+    QuadTo {
+        cx: f32,
+        cy: f32,
+        x: f32,
+        y: f32,
+    },
+    CubicTo {
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        x: f32,
+        y: f32,
+    },
+    Close {},
+}
+
+fn is_zero(value: &f32) -> bool {
+    *value == 0.0
 }
 
 fn is_false(b: &bool) -> bool {
@@ -129,6 +180,58 @@ pub fn scaled(dl: DisplayList, factor: f32) -> DisplayList {
         .commands
         .into_iter()
         .map(|c| match c {
+            DrawCmd::Path {
+                commands,
+                fill,
+                stroke,
+                stroke_width,
+            } => DrawCmd::Path {
+                commands: commands
+                    .into_iter()
+                    .map(|segment| match segment {
+                        PathCmd::MoveTo { x, y } => PathCmd::MoveTo {
+                            x: x * factor,
+                            y: y * factor,
+                        },
+                        PathCmd::LineTo { x, y } => PathCmd::LineTo {
+                            x: x * factor,
+                            y: y * factor,
+                        },
+                        PathCmd::QuadTo { cx, cy, x, y } => PathCmd::QuadTo {
+                            cx: cx * factor,
+                            cy: cy * factor,
+                            x: x * factor,
+                            y: y * factor,
+                        },
+                        PathCmd::CubicTo {
+                            x1,
+                            y1,
+                            x2,
+                            y2,
+                            x,
+                            y,
+                        } => PathCmd::CubicTo {
+                            x1: x1 * factor,
+                            y1: y1 * factor,
+                            x2: x2 * factor,
+                            y2: y2 * factor,
+                            x: x * factor,
+                            y: y * factor,
+                        },
+                        PathCmd::Close {} => PathCmd::Close {},
+                    })
+                    .collect(),
+                fill,
+                stroke,
+                stroke_width: stroke_width * factor,
+            },
+            DrawCmd::PushClip { x, y, w, h } => DrawCmd::PushClip {
+                x: x * factor,
+                y: y * factor,
+                w: w * factor,
+                h: h * factor,
+            },
+            DrawCmd::PopClip {} => DrawCmd::PopClip {},
             DrawCmd::FillRect { x, y, w, h, color } => DrawCmd::FillRect {
                 x: x * factor,
                 y: y * factor,
