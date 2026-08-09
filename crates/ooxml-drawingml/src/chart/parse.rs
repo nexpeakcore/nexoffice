@@ -261,6 +261,8 @@ fn parse_string_cache<E: ChartXml>(parent: Option<&E>, budget: &mut Budget) -> V
     let Some(cache) = first_deep(parent, "strCache", 0)
         .or_else(|| first_deep(parent, "multiLvlStrCache", 0))
         .or_else(|| first_deep(parent, "numCache", 0))
+        .or_else(|| first_deep(parent, "strLit", 0))
+        .or_else(|| first_deep(parent, "numLit", 0))
     else {
         return Vec::new();
     };
@@ -279,7 +281,8 @@ fn parse_num_cache<E: ChartXml>(parent: Option<&E>, budget: &mut Budget) -> Vec<
     let Some(parent) = parent else {
         return Vec::new();
     };
-    let Some(cache) = first_deep(parent, "numCache", 0) else {
+    let Some(cache) = first_deep(parent, "numCache", 0).or_else(|| first_deep(parent, "numLit", 0))
+    else {
         return Vec::new();
     };
     take_points(children(cache, "pt"), budget, |point| {

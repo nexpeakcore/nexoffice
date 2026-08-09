@@ -235,6 +235,7 @@ dependencies = [
 name = "betteroffice-xlsx"
 version = "0.0.4"
 dependencies = [
+ "betteroffice-drawingml",
  "betteroffice-opc",
  "betteroffice-xlsx-calc",
  "betteroffice-xlsx-model",

@@ -3125,3 +3125,236 @@ fn absolute_anchors_parse_and_bad_chart_parts_are_skipped() {
         }
     );
 }
+
+fn created_column_chart() -> xlsx_model::SheetDrawing {
+    use ooxml_drawingml::chart::{ChartLegend, ChartSeries, ChartSpace};
+    xlsx_model::SheetDrawing {
+        anchor: xlsx_model::DrawingAnchor::Cell {
+            from: xlsx_model::AnchorCell {
+                col: 3,
+                col_offset_emu: 0,
+                row: 1,
+                row_offset_emu: 0,
+            },
+            to: Some(xlsx_model::AnchorCell {
+                col: 10,
+                col_offset_emu: 0,
+                row: 16,
+                row_offset_emu: 0,
+            }),
+            extent_emu: None,
+        },
+        chart: ChartSpace {
+            chart_type: "column".to_owned(),
+            title: Some("Doanh thu <Q3>".to_owned()),
+            legend: Some(ChartLegend {
+                position: Some("b".to_owned()),
+                visible: true,
+            }),
+            series: vec![ChartSeries {
+                name: Some("Revenue".to_owned()),
+                categories: vec!["North".to_owned(), "South".to_owned()],
+                values: vec![10.0, 25.0],
+                color: "#4472C4".to_owned(),
+                index: None,
+                order: None,
+                category_formula: Some("Sheet1!$A$2:$A$3".to_owned()),
+                value_formula: Some("Sheet1!$B$2:$B$3".to_owned()),
+                axis_ids: None,
+                points: None,
+                grouping: None,
+                marker: None,
+                smooth: None,
+            }],
+            axes: None,
+            plot_groups: Vec::new(),
+            axis_list: None,
+        },
+        created: true,
+    }
+}
+
+/// A chart authored in-session serializes into new drawing/chart parts that
+/// parse back with the same anchor, series data, and range formulas.
+#[test]
+fn created_charts_round_trip_through_a_fresh_save() {
+    let mut sheet = xlsx_model::workbook::Sheet::new("Sheet1");
+    sheet.set_cell(
+        CellRef::parse_a1("B2").unwrap(),
+        Cell {
+            value: CellValue::Number { value: 10.0 },
+            ..Cell::default()
+        },
+    );
+    sheet.drawings.push(created_column_chart());
+    let mut wb = Workbook::default();
+    wb.sheets.push(sheet);
+
+    let parts = serialize_workbook(&wb).unwrap();
+    let content_types = String::from_utf8(part_bytes(&parts, "[Content_Types].xml")).unwrap();
+    assert!(
+        content_types.contains("/xl/drawings/drawing1.xml"),
+        "{content_types}"
+    );
+    assert!(
+        content_types.contains("/xl/charts/chart1.xml"),
+        "{content_types}"
+    );
+    let worksheet = String::from_utf8(part_bytes(&parts, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(worksheet.contains("<drawing r:id="), "{worksheet}");
+
+    let reparsed = parse_workbook(&parts).unwrap();
+    let drawings = &reparsed.sheets[0].drawings;
+    assert_eq!(drawings.len(), 1);
+    assert_eq!(drawings[0].chart.chart_type, "column");
+    assert_eq!(drawings[0].chart.title.as_deref(), Some("Doanh thu <Q3>"));
+    let series = &drawings[0].chart.series[0];
+    assert_eq!(series.name.as_deref(), Some("Revenue"));
+    assert_eq!(series.values, [10.0, 25.0]);
+    assert_eq!(series.categories, ["North", "South"]);
+    assert_eq!(series.color, "#4472C4");
+    let detailed = &drawings[0].chart.plot_groups[0].series[0];
+    assert_eq!(detailed.value_formula.as_deref(), Some("Sheet1!$B$2:$B$3"));
+    assert_eq!(
+        detailed.category_formula.as_deref(),
+        Some("Sheet1!$A$2:$A$3")
+    );
+    let xlsx_model::DrawingAnchor::Cell { from, to, .. } = &drawings[0].anchor else {
+        panic!("expected cell anchor");
+    };
+    assert_eq!((from.col, from.row), (3, 1));
+    assert_eq!(to.unwrap().col, 10);
+}
+
+/// Created charts also emit through a preserved-package save when the source
+/// sheet had no drawings, and are refused when it already has some.
+#[test]
+fn created_charts_emit_through_preserved_saves() {
+    let parts = package(r#"<sheetData/>"#, &[], false);
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+    let mut workbook = parsed.workbook.clone();
+    workbook.sheets[0].drawings.push(created_column_chart());
+
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+    let worksheet = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(worksheet.contains("<drawing"), "{worksheet}");
+    let rels =
+        String::from_utf8(part_bytes(&saved, "xl/worksheets/_rels/sheet1.xml.rels")).unwrap();
+    assert!(rels.contains("drawings/drawing1.xml"), "{rels}");
+    let content_types = String::from_utf8(part_bytes(&saved, "[Content_Types].xml")).unwrap();
+    assert!(
+        content_types.contains("/xl/drawings/drawing1.xml"),
+        "{content_types}"
+    );
+
+    let reparsed = parse_workbook(&saved).unwrap();
+    assert_eq!(reparsed.sheets[0].drawings.len(), 1);
+    assert_eq!(reparsed.sheets[0].drawings[0].chart.chart_type, "column");
+}
+
+#[test]
+fn created_charts_are_refused_on_sheets_with_existing_drawings() {
+    let body = r#"<sheetData/><drawing r:id="rId1"/>"#;
+    let mut parts = package(body, &[], false);
+    parts.push((
+        "xl/worksheets/_rels/sheet1.xml.rels".to_owned(),
+        br#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>"#.to_vec(),
+    ));
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+    let mut workbook = parsed.workbook.clone();
+    workbook.sheets[0].drawings.push(created_column_chart());
+
+    let error = serialize_workbook_with_package(&workbook, &parsed.package).unwrap_err();
+    assert!(error.to_string().contains("not supported yet"), "{error}");
+}
+
+/// Charts added to an ISO Strict package must join its namespace family, not
+/// mix Transitional URIs into a strict-conformance file.
+#[test]
+fn created_charts_use_strict_namespaces_in_strict_packages() {
+    let workbook_xml = r#"<workbook xmlns="http://purl.oclc.org/ooxml/spreadsheetml/main" xmlns:r="http://purl.oclc.org/ooxml/officeDocument/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+    let mut parts = package(r#"<sheetData/>"#, &[], false);
+    parts[0] = (
+        "xl/workbook.xml".to_owned(),
+        workbook_xml.as_bytes().to_vec(),
+    );
+
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+    let mut workbook = parsed.workbook.clone();
+    workbook.sheets[0].drawings.push(created_column_chart());
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+
+    let drawing = String::from_utf8(part_bytes(&saved, "xl/drawings/drawing1.xml")).unwrap();
+    assert!(
+        drawing.contains("http://purl.oclc.org/ooxml/drawingml/spreadsheetDrawing"),
+        "{drawing}"
+    );
+    assert!(
+        !drawing.contains("schemas.openxmlformats.org/drawingml"),
+        "{drawing}"
+    );
+    let chart = String::from_utf8(part_bytes(&saved, "xl/charts/chart1.xml")).unwrap();
+    assert!(
+        chart.contains("http://purl.oclc.org/ooxml/drawingml/chart"),
+        "{chart}"
+    );
+    let rels =
+        String::from_utf8(part_bytes(&saved, "xl/drawings/_rels/drawing1.xml.rels")).unwrap();
+    assert!(
+        rels.contains("http://purl.oclc.org/ooxml/officeDocument/relationships/chart"),
+        "{rels}"
+    );
+}
+
+#[test]
+fn created_charts_reject_malformed_series_colors() {
+    let mut sheet = xlsx_model::workbook::Sheet::new("Sheet1");
+    let mut drawing = created_column_chart();
+    drawing.chart.series[0].color = "\"><script>".to_owned();
+    sheet.drawings.push(drawing);
+    let mut wb = Workbook::default();
+    wb.sheets.push(sheet);
+
+    let error = serialize_workbook(&wb).unwrap_err();
+    assert!(error.to_string().contains("color"), "{error}");
+}
+
+#[test]
+fn bar_direction_swaps_the_axis_positions() {
+    let mut sheet = xlsx_model::workbook::Sheet::new("Sheet1");
+    let mut drawing = created_column_chart();
+    drawing.chart.chart_type = "bar".to_owned();
+    sheet.drawings.push(drawing);
+    let mut wb = Workbook::default();
+    wb.sheets.push(sheet);
+
+    let parts = serialize_workbook(&wb).unwrap();
+    let chart = String::from_utf8(part_bytes(&parts, "xl/charts/chart1.xml")).unwrap();
+    let category_axis = chart.split("<c:catAx>").nth(1).unwrap();
+    assert!(category_axis.contains(r#"<c:axPos val="l"/>"#), "{chart}");
+    let value_axis = chart.split("<c:valAx>").nth(1).unwrap();
+    assert!(value_axis.contains(r#"<c:axPos val="b"/>"#), "{chart}");
+}
+
+/// Series with cached data but no formulas serialize as literal caches and
+/// parse back with the same data.
+#[test]
+fn cache_only_chart_series_round_trip_as_literals() {
+    let mut sheet = xlsx_model::workbook::Sheet::new("Sheet1");
+    let mut drawing = created_column_chart();
+    drawing.chart.series[0].category_formula = None;
+    drawing.chart.series[0].value_formula = None;
+    sheet.drawings.push(drawing);
+    let mut wb = Workbook::default();
+    wb.sheets.push(sheet);
+
+    let parts = serialize_workbook(&wb).unwrap();
+    let chart = String::from_utf8(part_bytes(&parts, "xl/charts/chart1.xml")).unwrap();
+    assert!(chart.contains("<c:numLit>"), "{chart}");
+    assert!(chart.contains("<c:strLit>"), "{chart}");
+
+    let reparsed = parse_workbook(&parts).unwrap();
+    let series = &reparsed.sheets[0].drawings[0].chart.series[0];
+    assert_eq!(series.values, [10.0, 25.0]);
+    assert_eq!(series.categories, ["North", "South"]);
+}

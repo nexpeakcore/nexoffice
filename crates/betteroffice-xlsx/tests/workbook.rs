@@ -4561,7 +4561,7 @@ fn paints_chart(workbook: &Workbook) -> bool {
         .unwrap()
         .commands
         .iter()
-        .any(|command| matches!(command, DrawCmd::Path { .. }))
+        .any(|command| matches!(command, DrawCmd::PushClip { .. }))
 }
 
 /// Charts must keep painting after edits re-materialize the model from the
@@ -4593,4 +4593,502 @@ fn charts_survive_edits_and_saves() {
         .edit_cell(SheetId(0), cell("A1"), "42", CalculationOptions::default())
         .unwrap();
     assert!(paints_chart(&standalone), "chart paints in standalone mode");
+}
+
+/// An authored chart paints immediately, survives edits, and serializes into
+/// real chart parts that parse back on reopen.
+#[test]
+fn added_charts_paint_save_and_reopen() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "column".to_owned(),
+                title: Some("Điểm số".to_owned()),
+                anchor: CellRange::parse_a1("D2:K16").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: Some("Data".to_owned()),
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap();
+    assert!(paints_chart(&workbook), "chart paints right after add");
+
+    workbook
+        .edit_cell(SheetId(0), cell("A1"), "77", CalculationOptions::default())
+        .unwrap();
+    assert!(paints_chart(&workbook), "chart survives an edit");
+
+    let saved = workbook.save().unwrap();
+    let mut reopened = Workbook::open(&saved).unwrap();
+    assert!(paints_chart(&reopened), "chart parses back after save");
+    let sheet = reopened.model().sheet(SheetId(0)).unwrap();
+    assert_eq!(sheet.drawings.len(), 1);
+    let series = &sheet.drawings[0].chart.plot_groups[0].series[0];
+    assert_eq!(series.value_formula.as_deref(), Some("Data!$A$1:$A$2"));
+
+    reopened
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "pie".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("D20:K30").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .expect_err("preserved drawings block new charts for now");
+}
+
+#[test]
+fn created_charts_can_be_removed_again() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "pie".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap();
+    assert!(paints_chart(&workbook));
+    workbook.remove_chart(SheetId(0), 0).unwrap();
+    assert!(!paints_chart(&workbook));
+}
+
+/// A source drawing whose anchors are all unmodeled (a picture) still blocks
+/// chart authoring up front, instead of failing later at save.
+#[test]
+fn add_chart_refuses_sheets_with_unmodeled_source_drawings() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let workbook_xml =
+        r#"<workbook><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+    let rels = r#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>"#;
+    let worksheet = r#"<worksheet><sheetData/><drawing r:id="rId1"/></worksheet>"#;
+    let sheet_rels = r#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>"#;
+    let drawing = r#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"><xdr:oneCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="1000" cy="1000"/><xdr:pic/><xdr:clientData/></xdr:oneCellAnchor></xdr:wsDr>"#;
+    let bytes = ooxml_opc::rezip_parts(&[
+        (
+            "xl/workbook.xml".to_owned(),
+            workbook_xml.as_bytes().to_vec(),
+        ),
+        (
+            "xl/_rels/workbook.xml.rels".to_owned(),
+            rels.as_bytes().to_vec(),
+        ),
+        (
+            "xl/worksheets/sheet1.xml".to_owned(),
+            worksheet.as_bytes().to_vec(),
+        ),
+        (
+            "xl/worksheets/_rels/sheet1.xml.rels".to_owned(),
+            sheet_rels.as_bytes().to_vec(),
+        ),
+        (
+            "xl/drawings/drawing1.xml".to_owned(),
+            drawing.as_bytes().to_vec(),
+        ),
+    ])
+    .unwrap();
+
+    let mut workbook = Workbook::open(&bytes).unwrap();
+    assert!(
+        workbook
+            .model()
+            .sheet(SheetId(0))
+            .unwrap()
+            .drawings
+            .is_empty(),
+        "picture-only anchors stay unmodeled"
+    );
+    let error = workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "pie".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidOperation(message) if message.contains("already has drawings")),
+        "{error:?}"
+    );
+}
+
+/// Structural edits that would move an authored chart's references are
+/// refused, mirroring the preserved-chart behaviour.
+#[test]
+fn structural_ops_are_refused_while_created_charts_exist() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "column".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap();
+    let error = workbook
+        .apply_ops(
+            vec![Op::InsertRows {
+                sheet: SheetId(0),
+                at: 0,
+                count: 1,
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidOperation(message) if message.contains("chart")),
+        "{error:?}"
+    );
+
+    workbook.remove_chart(SheetId(0), 0).unwrap();
+    workbook
+        .apply_ops(
+            vec![Op::InsertRows {
+                sheet: SheetId(0),
+                at: 0,
+                count: 1,
+            }],
+            CalculationOptions::default(),
+        )
+        .expect("removing the chart unblocks structural edits");
+}
+
+#[test]
+fn add_chart_rejects_out_of_bounds_anchors() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    let spec = |anchor: CellRange| ChartSpec {
+        chart_type: "pie".to_owned(),
+        title: None,
+        anchor,
+        categories: None,
+        series: vec![ChartSeriesSpec {
+            name: None,
+            values: "A1:A2".to_owned(),
+        }],
+    };
+    let out_of_bounds = CellRange::new(CellRef::new(0, 0), CellRef::new(u32::MAX, u32::MAX));
+    assert!(matches!(
+        workbook.add_chart(SheetId(0), &spec(out_of_bounds)),
+        Err(Error::CellOutOfRange(_))
+    ));
+    let inverted = CellRange {
+        start: CellRef::new(10, 10),
+        end: CellRef::new(2, 2),
+    };
+    assert!(workbook.add_chart(SheetId(0), &spec(inverted)).is_err());
+}
+
+#[test]
+fn chart_authoring_is_refused_on_collaborative_replicas() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open_collaborative(&sample_xlsx(), 11).unwrap();
+    let error = workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "pie".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidOperation(message) if message.contains("collaborative")),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn inverted_chart_data_ranges_normalize() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "pie".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A2:A1".to_owned(),
+                }],
+            },
+        )
+        .unwrap();
+    let sheet = workbook.model().sheet(SheetId(0)).unwrap();
+    let series = &sheet.drawings[0].chart.series[0];
+    assert_eq!(series.value_formula.as_deref(), Some("Data!$A$1:$A$2"));
+    assert_eq!(series.values, [10.0, 5.0]);
+}
+
+/// Cell-like or numeric sheet names must be quoted in chart formulas.
+#[test]
+fn chart_formulas_quote_ambiguous_sheet_names() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut sheet = betteroffice_xlsx::Sheet::new("A1");
+    sheet.set_cell(
+        cell("B1"),
+        Cell {
+            value: CellValue::Number { value: 3.0 },
+            ..Cell::default()
+        },
+    );
+    let mut model = WorkbookModel::default();
+    model.sheets.push(sheet);
+    let mut workbook = Workbook::from_model(model).unwrap();
+    workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "pie".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "B1:B1".to_owned(),
+                }],
+            },
+        )
+        .unwrap();
+    let series = &workbook.model().sheet(SheetId(0)).unwrap().drawings[0]
+        .chart
+        .series[0];
+    assert_eq!(series.value_formula.as_deref(), Some("'A1'!$B$1"));
+}
+
+/// A source drawing hidden inside mc:AlternateContent still blocks chart
+/// authoring up front.
+#[test]
+fn add_chart_refuses_alternate_content_source_drawings() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let workbook_xml =
+        r#"<workbook><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+    let rels = r#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>"#;
+    let worksheet = r#"<worksheet xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><sheetData/><mc:AlternateContent><mc:Choice><drawing r:id="rId1"/></mc:Choice></mc:AlternateContent></worksheet>"#;
+    let sheet_rels = r#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>"#;
+    let bytes = ooxml_opc::rezip_parts(&[
+        (
+            "xl/workbook.xml".to_owned(),
+            workbook_xml.as_bytes().to_vec(),
+        ),
+        (
+            "xl/_rels/workbook.xml.rels".to_owned(),
+            rels.as_bytes().to_vec(),
+        ),
+        (
+            "xl/worksheets/sheet1.xml".to_owned(),
+            worksheet.as_bytes().to_vec(),
+        ),
+        (
+            "xl/worksheets/_rels/sheet1.xml.rels".to_owned(),
+            sheet_rels.as_bytes().to_vec(),
+        ),
+    ])
+    .unwrap();
+
+    let mut workbook = Workbook::open(&bytes).unwrap();
+    let error = workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "pie".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidOperation(message) if message.contains("already has drawings")),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn add_chart_rejects_types_the_renderer_cannot_draw() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    let error = workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "area".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidOperation(message) if message.contains("unsupported chart type")),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn pie_charts_reject_extra_series_and_vary_slice_colors() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    let two_series = ChartSpec {
+        chart_type: "pie".to_owned(),
+        title: None,
+        anchor: CellRange::parse_a1("C3:J14").unwrap(),
+        categories: None,
+        series: vec![
+            ChartSeriesSpec {
+                name: None,
+                values: "A1:A2".to_owned(),
+            },
+            ChartSeriesSpec {
+                name: None,
+                values: "A1:A2".to_owned(),
+            },
+        ],
+    };
+    assert!(workbook.add_chart(SheetId(0), &two_series).is_err());
+
+    workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+                ..two_series
+            },
+        )
+        .unwrap();
+    let series = &workbook.model().sheet(SheetId(0)).unwrap().drawings[0]
+        .chart
+        .series[0];
+    assert!(
+        series.color.is_empty(),
+        "pie slices fall back to the per-point palette"
+    );
+}
+
+/// Blank cells in a value range become gaps, not zeros.
+#[test]
+fn blank_chart_values_become_gaps() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "line".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A3".to_owned(),
+                }],
+            },
+        )
+        .unwrap();
+    let series = &workbook.model().sheet(SheetId(0)).unwrap().drawings[0]
+        .chart
+        .series[0];
+    assert_eq!(series.values.len(), 3);
+    assert!(series.values[2].is_nan(), "A3 is blank -> gap");
+
+    let saved = workbook.save().unwrap();
+    let parts = package_map(&saved);
+    let chart = String::from_utf8(parts["xl/charts/chart1.xml"].clone()).unwrap();
+    assert!(!chart.contains("NaN"), "{chart}");
+    assert!(
+        !chart.contains(r#"<c:pt idx="2">"#),
+        "blank point is omitted from the cache: {chart}"
+    );
+}
+
+#[test]
+fn add_chart_rejects_mismatched_category_and_value_lengths() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    let error = workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "column".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: Some("A1:A3".to_owned()),
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidOperation(message) if message.contains("categories")),
+        "{error:?}"
+    );
 }

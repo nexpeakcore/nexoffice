@@ -39,18 +39,22 @@ fn binary_token(op: &BinaryOp) -> &'static str {
 fn sheet_prefix(sheet: &Option<String>) -> String {
     match sheet {
         None => String::new(),
-        Some(name) => {
-            let simple = !name.is_empty()
-                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                && !name.chars().next().is_some_and(|c| c.is_ascii_digit())
-                && CellRef::parse_a1(name).is_err()
-                && !is_r1c1_reference(name);
-            if simple {
-                format!("{name}!")
-            } else {
-                format!("'{}'!", name.replace('\'', "''"))
-            }
-        }
+        Some(name) => format!("{}!", printed_sheet_name(name)),
+    }
+}
+
+/// The printed form of a sheet name before `!`: unquoted only when it cannot
+/// be mistaken for a cell reference, R1C1 token, or number.
+pub fn printed_sheet_name(name: &str) -> String {
+    let simple = !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !name.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && CellRef::parse_a1(name).is_err()
+        && !is_r1c1_reference(name);
+    if simple {
+        name.to_owned()
+    } else {
+        format!("'{}'", name.replace('\'', "''"))
     }
 }
 

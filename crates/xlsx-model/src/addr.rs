@@ -177,6 +177,25 @@ impl core::fmt::Display for AddrError {
     }
 }
 
+/// Splits a `Sheet1!$B$2:$B$4`-style reference into its optional sheet name
+/// (unquoting `'It''s'` forms) and cell range. `None` when the range part
+/// does not parse.
+pub fn parse_sheet_range(reference: &str) -> Option<(Option<String>, CellRange)> {
+    let (sheet, range) = match reference.rsplit_once('!') {
+        Some((name, range)) => {
+            let name = name
+                .strip_prefix('\'')
+                .and_then(|name| name.strip_suffix('\''))
+                .map(|name| name.replace("''", "'"))
+                .unwrap_or_else(|| name.to_owned());
+            (Some(name), range)
+        }
+        None => (None, reference),
+    };
+    let range = CellRange::parse_a1(&range.replace('$', "")).ok()?;
+    Some((sheet, CellRange::new(range.start, range.end)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

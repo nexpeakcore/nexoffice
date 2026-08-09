@@ -8,7 +8,7 @@ pub mod styles;
 pub mod value;
 pub mod workbook;
 
-pub use addr::{CellRange, CellRef, ColId, MAX_COLS, MAX_ROWS, RowId, SheetId};
+pub use addr::{CellRange, CellRef, ColId, MAX_COLS, MAX_ROWS, RowId, SheetId, parse_sheet_range};
 pub use date::DateSystem;
 pub use styles::{
     Alignment, Border, BorderEdge, BorderStyle, CellFormat, Color, Fill, Font, FormatCode, HAlign,
