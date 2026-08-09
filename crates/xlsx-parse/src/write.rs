@@ -91,7 +91,13 @@ pub fn serialize_workbook(wb: &Workbook) -> Result<Vec<(String, Vec<u8>)>, Parse
     let drawing_plans = wb
         .sheets
         .iter()
-        .map(|sheet| drawing_write::emit_sheet_drawings(&sheet.drawings, &mut used_drawing_paths))
+        .map(|sheet| {
+            drawing_write::emit_sheet_drawings(
+                &sheet.drawings,
+                &mut used_drawing_paths,
+                drawing_write::TRANSITIONAL,
+            )
+        })
         .collect::<Result<Vec<Option<EmittedDrawing>>, ParseError>>()?;
     let drawing_overrides = drawing_plans
         .iter()
@@ -408,20 +414,24 @@ pub fn serialize_workbook_with_package_and_origins_after_edits(
                         vml_rel_id: next_relationship_id(&mut used_ids),
                     }
                 });
-                let drawing = drawing_write::emit_sheet_drawings(&sheet.drawings, &mut used_paths)?
-                    .map(|plan| {
-                        let mut used_ids = links
-                            .relationships
-                            .iter()
-                            .filter_map(Relationship::id)
-                            .chain(comments.iter().flat_map(|plan| {
-                                [plan.comments_rel_id.as_str(), plan.vml_rel_id.as_str()]
-                            }))
-                            .map(str::to_owned)
-                            .collect::<HashSet<_>>();
-                        let rel_id = next_relationship_id(&mut used_ids);
-                        (plan, rel_id)
-                    });
+                let drawing = drawing_write::emit_sheet_drawings(
+                    &sheet.drawings,
+                    &mut used_paths,
+                    drawing_namespaces_for(package),
+                )?
+                .map(|plan| {
+                    let mut used_ids = links
+                        .relationships
+                        .iter()
+                        .filter_map(Relationship::id)
+                        .chain(comments.iter().flat_map(|plan| {
+                            [plan.comments_rel_id.as_str(), plan.vml_rel_id.as_str()]
+                        }))
+                        .map(str::to_owned)
+                        .collect::<HashSet<_>>();
+                    let rel_id = next_relationship_id(&mut used_ids);
+                    (plan, rel_id)
+                });
                 let mut output = WorksheetOutput::new(
                     worksheet_xml_with_namespace(
                         sheet,
@@ -3063,7 +3073,11 @@ fn worksheet_xml_with_template(
                 CommentPartsPlan::Drop => replacements.push(("legacyDrawing", None)),
             }
         }
-        if let Some(plan) = drawing_write::emit_sheet_drawings(&created_drawings, used_paths)? {
+        if let Some(plan) = drawing_write::emit_sheet_drawings(
+            &created_drawings,
+            used_paths,
+            drawing_namespaces_for(package),
+        )? {
             let mut used_ids = merged
                 .iter()
                 .filter_map(Relationship::id)
@@ -3239,6 +3253,14 @@ fn vml_part_has_non_note_shapes(bytes: &[u8]) -> bool {
             child.local_name == "shape" && vml_shape_is_retained(&child.bytes).unwrap_or(false)
         })
     })
+}
+
+fn drawing_namespaces_for(package: &PreservedPackage) -> drawing_write::DrawingNamespaces {
+    if package.workbook_template.root_namespace() == Some(NS_STRICT_MAIN) {
+        drawing_write::STRICT
+    } else {
+        drawing_write::TRANSITIONAL
+    }
 }
 
 fn legacy_drawing_fragment(

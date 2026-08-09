@@ -3267,3 +3267,41 @@ fn created_charts_are_refused_on_sheets_with_existing_drawings() {
     let error = serialize_workbook_with_package(&workbook, &parsed.package).unwrap_err();
     assert!(error.to_string().contains("not supported yet"), "{error}");
 }
+
+/// Charts added to an ISO Strict package must join its namespace family, not
+/// mix Transitional URIs into a strict-conformance file.
+#[test]
+fn created_charts_use_strict_namespaces_in_strict_packages() {
+    let workbook_xml = r#"<workbook xmlns="http://purl.oclc.org/ooxml/spreadsheetml/main" xmlns:r="http://purl.oclc.org/ooxml/officeDocument/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+    let mut parts = package(r#"<sheetData/>"#, &[], false);
+    parts[0] = (
+        "xl/workbook.xml".to_owned(),
+        workbook_xml.as_bytes().to_vec(),
+    );
+
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+    let mut workbook = parsed.workbook.clone();
+    workbook.sheets[0].drawings.push(created_column_chart());
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+
+    let drawing = String::from_utf8(part_bytes(&saved, "xl/drawings/drawing1.xml")).unwrap();
+    assert!(
+        drawing.contains("http://purl.oclc.org/ooxml/drawingml/spreadsheetDrawing"),
+        "{drawing}"
+    );
+    assert!(
+        !drawing.contains("schemas.openxmlformats.org/drawingml"),
+        "{drawing}"
+    );
+    let chart = String::from_utf8(part_bytes(&saved, "xl/charts/chart1.xml")).unwrap();
+    assert!(
+        chart.contains("http://purl.oclc.org/ooxml/drawingml/chart"),
+        "{chart}"
+    );
+    let rels =
+        String::from_utf8(part_bytes(&saved, "xl/drawings/_rels/drawing1.xml.rels")).unwrap();
+    assert!(
+        rels.contains("http://purl.oclc.org/ooxml/officeDocument/relationships/chart"),
+        "{rels}"
+    );
+}

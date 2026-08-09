@@ -195,6 +195,14 @@ impl PreservedPackage {
             .get(index)
             .is_none_or(PreservedSheet::is_worksheet)
     }
+
+    /// Whether the source worksheet references a drawing part — including
+    /// ones whose anchors are all unmodeled (pictures, shapes).
+    pub fn source_sheet_has_drawing(&self, index: usize) -> bool {
+        self.sheets
+            .get(index)
+            .is_some_and(|sheet| sheet.template.child("drawing").is_some())
+    }
 }
 
 #[derive(Clone, Debug)]

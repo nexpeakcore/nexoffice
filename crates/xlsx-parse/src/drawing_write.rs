@@ -11,17 +11,39 @@ use crate::ParseError;
 
 pub(crate) const REL_DRAWING: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing";
-const REL_CHART: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
 pub(crate) const CT_DRAWING: &str = "application/vnd.openxmlformats-officedocument.drawing+xml";
 pub(crate) const CT_CHART: &str =
     "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
 
-const NS_XDR: &str = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
-const NS_A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
-const NS_C: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
-const NS_R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const NS_PKG_REL: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
 const XML_DECL: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#;
+
+/// The namespace and relationship-type family the emitted parts join:
+/// Transitional for ordinary packages, ISO Strict when the source is strict.
+#[derive(Clone, Copy)]
+pub(crate) struct DrawingNamespaces {
+    xdr: &'static str,
+    a: &'static str,
+    c: &'static str,
+    r: &'static str,
+    chart_relationship: &'static str,
+}
+
+pub(crate) const TRANSITIONAL: DrawingNamespaces = DrawingNamespaces {
+    xdr: "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing",
+    a: "http://schemas.openxmlformats.org/drawingml/2006/main",
+    c: "http://schemas.openxmlformats.org/drawingml/2006/chart",
+    r: "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    chart_relationship: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart",
+};
+
+pub(crate) const STRICT: DrawingNamespaces = DrawingNamespaces {
+    xdr: "http://purl.oclc.org/ooxml/drawingml/spreadsheetDrawing",
+    a: "http://purl.oclc.org/ooxml/drawingml/main",
+    c: "http://purl.oclc.org/ooxml/drawingml/chart",
+    r: "http://purl.oclc.org/ooxml/officeDocument/relationships",
+    chart_relationship: "http://purl.oclc.org/ooxml/officeDocument/relationships/chart",
+};
 
 const CAT_AXIS_ID: &str = "100000001";
 const VAL_AXIS_ID: &str = "100000002";
@@ -39,6 +61,7 @@ pub(crate) struct EmittedDrawing {
 pub(crate) fn emit_sheet_drawings(
     drawings: &[SheetDrawing],
     used_paths: &mut HashSet<String>,
+    namespaces: DrawingNamespaces,
 ) -> Result<Option<EmittedDrawing>, ParseError> {
     if drawings.is_empty() {
         return Ok(None);
@@ -57,16 +80,17 @@ pub(crate) fn emit_sheet_drawings(
     let mut overrides = vec![(drawing_path.clone(), CT_DRAWING)];
     for (index, (drawing, chart_path)) in drawings.iter().zip(&chart_paths).enumerate() {
         let rel_id = format!("rId{}", index + 1);
-        anchors.push_str(&anchor_xml(drawing, index, &rel_id)?);
+        anchors.push_str(&anchor_xml(drawing, index, &rel_id, namespaces)?);
         let target = chart_path
             .strip_prefix("xl/")
             .map(|path| format!("../{path}"))
             .unwrap_or_else(|| chart_path.clone());
         chart_relationships.push_str(&format!(
-            r#"<Relationship Id="{rel_id}" Type="{REL_CHART}" Target="{}"/>"#,
+            r#"<Relationship Id="{rel_id}" Type="{}" Target="{}"/>"#,
+            namespaces.chart_relationship,
             escape(&target)
         ));
-        parts.push((chart_path.clone(), chart_xml(&drawing.chart)?));
+        parts.push((chart_path.clone(), chart_xml(&drawing.chart, namespaces)?));
         overrides.push((chart_path.clone(), CT_CHART));
     }
 
@@ -75,7 +99,8 @@ pub(crate) fn emit_sheet_drawings(
         (
             drawing_path.clone(),
             format!(
-                r#"{XML_DECL}<xdr:wsDr xmlns:xdr="{NS_XDR}" xmlns:a="{NS_A}">{anchors}</xdr:wsDr>"#
+                r#"{XML_DECL}<xdr:wsDr xmlns:xdr="{}" xmlns:a="{}">{anchors}</xdr:wsDr>"#,
+                namespaces.xdr, namespaces.a
             )
             .into_bytes(),
         ),
@@ -97,11 +122,17 @@ pub(crate) fn emit_sheet_drawings(
     }))
 }
 
-fn anchor_xml(drawing: &SheetDrawing, index: usize, rel_id: &str) -> Result<String, ParseError> {
+fn anchor_xml(
+    drawing: &SheetDrawing,
+    index: usize,
+    rel_id: &str,
+    namespaces: DrawingNamespaces,
+) -> Result<String, ParseError> {
     let shape_id = index + 2;
     let name = escape(drawing.chart.title.as_deref().unwrap_or("Chart")).into_owned();
     let frame = format!(
-        r#"<xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="{shape_id}" name="{name}"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic><a:graphicData uri="{NS_C}"><c:chart xmlns:c="{NS_C}" xmlns:r="{NS_R}" r:id="{rel_id}"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/>"#
+        r#"<xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="{shape_id}" name="{name}"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic><a:graphicData uri="{}"><c:chart xmlns:c="{}" xmlns:r="{}" r:id="{rel_id}"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/>"#,
+        namespaces.c, namespaces.c, namespaces.r
     );
     let cell = |tag: &str, at: &AnchorCell| {
         format!(
@@ -144,7 +175,7 @@ fn anchor_xml(drawing: &SheetDrawing, index: usize, rel_id: &str) -> Result<Stri
     })
 }
 
-fn chart_xml(chart: &ChartSpace) -> Result<Vec<u8>, ParseError> {
+fn chart_xml(chart: &ChartSpace, namespaces: DrawingNamespaces) -> Result<Vec<u8>, ParseError> {
     let plot = plot_element(chart)?;
     let title = chart
         .title
@@ -168,7 +199,8 @@ fn chart_xml(chart: &ChartSpace) -> Result<Vec<u8>, ParseError> {
         })
         .unwrap_or_default();
     Ok(format!(
-        r#"{XML_DECL}<c:chartSpace xmlns:c="{NS_C}" xmlns:a="{NS_A}" xmlns:r="{NS_R}"><c:chart>{title}<c:plotArea><c:layout/>{plot}</c:plotArea>{legend}<c:plotVisOnly val="1"/></c:chart></c:chartSpace>"#
+        r#"{XML_DECL}<c:chartSpace xmlns:c="{}" xmlns:a="{}" xmlns:r="{}"><c:chart>{title}<c:plotArea><c:layout/>{plot}</c:plotArea>{legend}<c:plotVisOnly val="1"/></c:chart></c:chartSpace>"#,
+        namespaces.c, namespaces.a, namespaces.r
     )
     .into_bytes())
 }

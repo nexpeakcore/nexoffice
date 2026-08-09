@@ -1398,11 +1398,19 @@ impl Workbook {
                 "a chart needs at least one series".to_owned(),
             ));
         }
-        if self
+        let has_source_drawings = self
             .model
             .sheet(sheet)
             .is_some_and(|target| target.drawings.iter().any(|drawing| !drawing.created))
-        {
+            || self
+                .preserved
+                .origins
+                .get(sheet.0 as usize)
+                .copied()
+                .flatten()
+                .zip(self.source_package.as_ref())
+                .is_some_and(|(origin, package)| package.source_sheet_has_drawing(origin));
+        if has_source_drawings {
             return Err(Error::InvalidOperation(
                 "this sheet already has drawings from the source file; adding charts alongside them is not supported yet"
                     .to_owned(),
@@ -1649,16 +1657,27 @@ impl Workbook {
         ) {
             return Ok(());
         }
-        let Some(part) = self
+        if let Some(part) = self
             .source_package
             .as_ref()
             .and_then(xlsx_parse::PreservedPackage::unpatchable_reference_part)
-        else {
-            return Ok(());
-        };
-        Err(Error::InvalidOperation(format!(
-            "{part} references sheets this edit would move, and it cannot be rewritten"
-        )))
+        {
+            return Err(Error::InvalidOperation(format!(
+                "{part} references sheets this edit would move, and it cannot be rewritten"
+            )));
+        }
+        if self
+            .model
+            .sheets
+            .iter()
+            .any(|sheet| sheet.drawings.iter().any(|drawing| drawing.created))
+        {
+            return Err(Error::InvalidOperation(
+                "a chart created in this session references cells this edit would move, and chart references cannot be rewritten yet"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     /// Rejects edits aimed at a preserved chartsheet or dialogsheet.

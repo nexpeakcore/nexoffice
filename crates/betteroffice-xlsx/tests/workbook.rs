@@ -4673,3 +4673,120 @@ fn created_charts_can_be_removed_again() {
     workbook.remove_chart(SheetId(0), 0).unwrap();
     assert!(!paints_chart(&workbook));
 }
+
+/// A source drawing whose anchors are all unmodeled (a picture) still blocks
+/// chart authoring up front, instead of failing later at save.
+#[test]
+fn add_chart_refuses_sheets_with_unmodeled_source_drawings() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let workbook_xml =
+        r#"<workbook><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+    let rels = r#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>"#;
+    let worksheet = r#"<worksheet><sheetData/><drawing r:id="rId1"/></worksheet>"#;
+    let sheet_rels = r#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>"#;
+    let drawing = r#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"><xdr:oneCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="1000" cy="1000"/><xdr:pic/><xdr:clientData/></xdr:oneCellAnchor></xdr:wsDr>"#;
+    let bytes = ooxml_opc::rezip_parts(&[
+        (
+            "xl/workbook.xml".to_owned(),
+            workbook_xml.as_bytes().to_vec(),
+        ),
+        (
+            "xl/_rels/workbook.xml.rels".to_owned(),
+            rels.as_bytes().to_vec(),
+        ),
+        (
+            "xl/worksheets/sheet1.xml".to_owned(),
+            worksheet.as_bytes().to_vec(),
+        ),
+        (
+            "xl/worksheets/_rels/sheet1.xml.rels".to_owned(),
+            sheet_rels.as_bytes().to_vec(),
+        ),
+        (
+            "xl/drawings/drawing1.xml".to_owned(),
+            drawing.as_bytes().to_vec(),
+        ),
+    ])
+    .unwrap();
+
+    let mut workbook = Workbook::open(&bytes).unwrap();
+    assert!(
+        workbook
+            .model()
+            .sheet(SheetId(0))
+            .unwrap()
+            .drawings
+            .is_empty(),
+        "picture-only anchors stay unmodeled"
+    );
+    let error = workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "pie".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidOperation(message) if message.contains("already has drawings")),
+        "{error:?}"
+    );
+}
+
+/// Structural edits that would move an authored chart's references are
+/// refused, mirroring the preserved-chart behaviour.
+#[test]
+fn structural_ops_are_refused_while_created_charts_exist() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "column".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap();
+    let error = workbook
+        .apply_ops(
+            vec![Op::InsertRows {
+                sheet: SheetId(0),
+                at: 0,
+                count: 1,
+            }],
+            CalculationOptions::default(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidOperation(message) if message.contains("chart")),
+        "{error:?}"
+    );
+
+    workbook.remove_chart(SheetId(0), 0).unwrap();
+    workbook
+        .apply_ops(
+            vec![Op::InsertRows {
+                sheet: SheetId(0),
+                at: 0,
+                count: 1,
+            }],
+            CalculationOptions::default(),
+        )
+        .expect("removing the chart unblocks structural edits");
+}
