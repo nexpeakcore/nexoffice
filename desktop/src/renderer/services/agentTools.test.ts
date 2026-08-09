@@ -8,16 +8,25 @@ import {
   validateWriteCells,
   WRITE_CELLS_CAP,
   type AgentWorkbookAccess,
+  applyCreateChart,
+  validateCreateChart,
 } from './agentTools'
 
 function fakeAccess(): AgentWorkbookAccess & {
   edited: Array<{ sheet: number; edits: unknown[] }>
+  charts: unknown[]
 } {
   const edited: Array<{ sheet: number; edits: unknown[] }> = []
+  const charts: unknown[] = []
   return {
     edited,
+    charts,
     editCells: (sheet, edits) => {
       edited.push({ sheet, edits })
+      return {}
+    },
+    addChart: (args) => {
+      charts.push(args)
       return {}
     },
     sheetInfo: () => ({ sheetNames: ['Budget', 'Summary'], activeSheet: 1 }),
@@ -145,5 +154,58 @@ describe('executeXlsxAgentTool', () => {
       executeXlsxAgentTool(fakeAccess(), 'read_range', { sheet: 9, range: 'A1' })
     ).toHaveProperty('error')
     expect(executeXlsxAgentTool(fakeAccess(), 'write_cell', {})).toHaveProperty('error')
+  })
+
+  it('validates create_chart specs into proposals and rejects bad ones', () => {
+    const access = fakeAccess()
+    const validated = validateCreateChart(access, {
+      chart_type: 'column',
+      title: 'Doanh thu',
+      anchor: 'e2:l18',
+      categories: 'A2:A10',
+      series: [{ name: 'Revenue', values: 'C2:C10' }],
+    })
+    if (!('proposal' in validated)) throw new Error(`expected a proposal: ${JSON.stringify(validated)}`)
+    expect(validated.proposal).toEqual({
+      sheet: 1,
+      sheetName: 'Summary',
+      chartType: 'column',
+      title: 'Doanh thu',
+      anchor: 'E2:L18',
+      categories: 'A2:A10',
+      series: [{ name: 'Revenue', values: 'C2:C10' }],
+    })
+
+    expect(validateCreateChart(access, { chart_type: 'radar', anchor: 'A1:C3', series: [{ values: 'A1:A2' }] })).toHaveProperty('error')
+    expect(validateCreateChart(access, { chart_type: 'pie', anchor: 'A1', series: [{ values: 'A1:A2' }] })).toHaveProperty('error')
+    expect(validateCreateChart(access, { chart_type: 'pie', anchor: 'A1:C3', series: [] })).toHaveProperty('error')
+    expect(
+      validateCreateChart(access, {
+        chart_type: 'pie',
+        anchor: 'A1:C3',
+        series: [{ values: 'A1:A2' }, { values: 'B1:B2' }],
+      })
+    ).toHaveProperty('error')
+    expect(
+      validateCreateChart(access, { chart_type: 'line', anchor: 'A1:C3', series: [{ values: 'nope' }] })
+    ).toHaveProperty('error')
+    expect(
+      validateCreateChart(access, { sheet: 9, chart_type: 'line', anchor: 'A1:C3', series: [{ values: 'A1:A2' }] })
+    ).toHaveProperty('error')
+  })
+
+  it('applies an approved chart proposal through the workbook access', () => {
+    const access = fakeAccess()
+    const validated = validateCreateChart(access, {
+      chart_type: 'pie',
+      anchor: 'D2:J14',
+      series: [{ values: 'B2:B5' }],
+    })
+    if (!('proposal' in validated)) throw new Error('expected a proposal')
+    const result = applyCreateChart(access, validated.proposal)
+    expect(access.charts).toEqual([
+      { sheet: 1, chartType: 'pie', anchor: 'D2:J14', series: [{ values: 'B2:B5' }] },
+    ])
+    expect(result).toEqual({ applied: true, sheet: 1, chartType: 'pie', anchor: 'D2:J14' })
   })
 })

@@ -178,7 +178,11 @@
     "saveKey": "Zapisz klucz",
     "proposalTitle": "Proponowana zmiana: {count} komórek w „{sheet}”",
     "apply": "Zastosuj",
-    "reject": "Odrzuć"
+    "reject": "Odrzuć",
+    "chartProposalTitle": "Proponowany wykres: {type} na „{sheet}”",
+    "chartAnchor": "Pozycja:",
+    "chartCategories": "Etykiety:",
+    "chartSeries": "Seria {index}:"
   },
   "update": {
     "ready": "Aktualizacja {version} gotowa",

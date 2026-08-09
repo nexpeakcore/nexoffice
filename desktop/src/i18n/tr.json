@@ -178,7 +178,11 @@
     "saveKey": "Anahtarı kaydet",
     "proposalTitle": "Önerilen değişiklik: “{sheet}” sayfasında {count} hücre",
     "apply": "Uygula",
-    "reject": "Reddet"
+    "reject": "Reddet",
+    "chartProposalTitle": "Önerilen grafik: “{sheet}” sayfasında {type}",
+    "chartAnchor": "Konum:",
+    "chartCategories": "Etiketler:",
+    "chartSeries": "Seri {index}:"
   },
   "update": {
     "ready": "Güncelleme {version} hazır",

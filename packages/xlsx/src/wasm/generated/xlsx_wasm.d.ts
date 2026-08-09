@@ -13,6 +13,10 @@ export class XlsxDocument {
      * plus `proposalId`, or a `stale: ...` error when the base moved.
      */
     acceptProposalJson(args: string): string;
+    /**
+     * author a chart; returns updated `SheetInfo` json.
+     */
+    addChartJson(args: string): string;
     applyFormatJson(args: string): string;
     /**
      * apply a raw op list as one user transaction; returns `SheetInfo` json.
@@ -81,6 +85,10 @@ export class XlsxDocument {
      */
     rejectProposalJson(args: string): string;
     /**
+     * remove a created chart; returns updated `SheetInfo` json.
+     */
+    removeChartJson(args: string): string;
+    /**
      * render the current sheet viewport to png bytes (raster feature only).
      */
     renderPng(viewport_json: string): Uint8Array;
@@ -144,6 +152,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_xlsxdocument_free: (a: number, b: number) => void;
     readonly xlsxdocument_acceptProposalJson: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly xlsxdocument_addChartJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly xlsxdocument_applyFormatJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly xlsxdocument_applyOpsJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly xlsxdocument_applyUpdateJson: (a: number, b: number, c: number) => [number, number, number, number];
@@ -170,6 +179,7 @@ export interface InitOutput {
     readonly xlsxdocument_rangeCellsJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly xlsxdocument_redoJson: (a: number) => [number, number, number, number];
     readonly xlsxdocument_rejectProposalJson: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly xlsxdocument_removeChartJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly xlsxdocument_renderPng: (a: number, b: number, c: number) => [number, number, number, number];
     readonly xlsxdocument_renderRangePng: (a: number, b: number, c: number) => [number, number, number, number];
     readonly xlsxdocument_saveBytes: (a: number) => [number, number, number, number];

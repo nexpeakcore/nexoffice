@@ -779,6 +779,10 @@ export function App() {
                 xlsxRef.current?.agentValidateWrite(args) ?? { error: 'no workbook is open' },
               applyWrite: (proposal) =>
                 xlsxRef.current?.agentApplyWrite(proposal) ?? { error: 'no workbook is open' },
+              validateChart: (args) =>
+                xlsxRef.current?.agentValidateChart(args) ?? { error: 'no workbook is open' },
+              applyChart: (proposal) =>
+                xlsxRef.current?.agentApplyChart(proposal) ?? { error: 'no workbook is open' },
             }}
             onRequestOpen={() => setAgentPanelOpen(true)}
             onClose={() => setAgentPanelOpen(false)}

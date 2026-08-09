@@ -2,9 +2,12 @@ import { forwardRef, useImperativeHandle, useRef, useState } from 'react'
 import { XlsxEditor, type XlsxEditorApi } from '@betteroffice/xlsx-react'
 import { en as xlsxEn, locales as xlsxLocales, type PartialLocaleStrings } from '@betteroffice/xlsx-i18n'
 import {
+  applyCreateChart,
   applyWriteCells,
   executeXlsxAgentTool,
+  validateCreateChart,
   validateWriteCells,
+  type CreateChartProposal,
   type WriteCellsProposal,
 } from '../services/agentTools.js'
 import { useI18n } from '../i18n.js'
@@ -33,6 +36,12 @@ export interface XlsxEditorViewRef {
   ) => { proposal: WriteCellsProposal } | { error: string }
   /** Apply a user-approved proposal as one undo step. */
   agentApplyWrite: (proposal: WriteCellsProposal) => unknown
+  /** Validate a create_chart request into a reviewable proposal (no mutation). */
+  agentValidateChart: (
+    args: Record<string, unknown>
+  ) => { proposal: CreateChartProposal } | { error: string }
+  /** Author a user-approved chart. */
+  agentApplyChart: (proposal: CreateChartProposal) => unknown
 }
 
 interface EditorDocument {
@@ -101,6 +110,22 @@ export const XlsxEditorView = forwardRef<XlsxEditorViewRef, XlsxEditorViewProps>
         const result = applyWriteCells(handle, proposal)
         onChangeRef.current?.()
         return result
+      },
+      agentValidateChart: (args: Record<string, unknown>) => {
+        const handle = apiRef.current?.handle
+        if (!handle) return { error: 'no workbook is open' }
+        return validateCreateChart(handle, args)
+      },
+      agentApplyChart: (proposal: CreateChartProposal) => {
+        const handle = apiRef.current?.handle
+        if (!handle) return { error: 'no workbook is open' }
+        try {
+          const result = applyCreateChart(handle, proposal)
+          onChangeRef.current?.()
+          return result
+        } catch (error) {
+          return { error: error instanceof Error ? error.message : String(error) }
+        }
       },
     }))
 

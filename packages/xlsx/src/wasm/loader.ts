@@ -29,6 +29,18 @@ export interface Viewport {
  * Chrome-facing sheet metadata: stable IDs, tab names, active index, and the
  * scrollable content extent of the active sheet. Mirrors the Rust `SheetInfo`.
  */
+/** what `addChart` needs: chart family, grid anchor, and A1 data ranges. */
+export interface AddChartArgs {
+  sheet: number;
+  chartType: 'column' | 'bar' | 'pie' | 'line' | 'doughnut';
+  title?: string;
+  /** A1 rectangle the chart floats over, e.g. "D2:K16". */
+  anchor: string;
+  /** category-labels range shared by every series. */
+  categories?: string;
+  series: Array<{ name?: string; values: string }>;
+}
+
 export interface SheetInfo {
   sheetIds: string[];
   sheetNames: string[];
@@ -333,6 +345,14 @@ export interface WorkbookHandle extends CollaborationReplica {
   editCell(sheet: number, row: number, col: number, input: string): EditResult;
   /** apply a batch of inputs (paste path) as one undo step; dependents recalc. */
   editCells(sheet: number, edits: CellInputEdit[]): EditResult;
+  /**
+   * author a chart floating over `anchor`. Series and category ranges are A1
+   * references (optionally sheet-qualified); data tracks the cells live.
+   * Refused on sheets that already have drawings from the source file.
+   */
+  addChart(args: AddChartArgs): SheetInfo;
+  /** remove a chart created this session by its index on the sheet. */
+  removeChart(sheet: number, index: number): SheetInfo;
   /** raw op-list escape hatch for structural ops (insert/delete rows, merges…). */
   applyOps(ops: unknown[]): EditResult;
   /**
@@ -654,6 +674,12 @@ export function openWorkbook(
     },
     editCell(sheet: number, row: number, col: number, input: string): EditResult {
       return parseJson(() => doc.editCellJson(JSON.stringify({ sheet, row, col, input })), true);
+    },
+    addChart(args: AddChartArgs): SheetInfo {
+      return parseJson(() => doc.addChartJson(JSON.stringify(args)), true);
+    },
+    removeChart(sheet: number, index: number): SheetInfo {
+      return parseJson(() => doc.removeChartJson(JSON.stringify({ sheet, index })), true);
     },
     editCells(sheet: number, edits: CellInputEdit[]): EditResult {
       return parseJson(() => doc.editCellsJson(JSON.stringify({ sheet, edits })), true);

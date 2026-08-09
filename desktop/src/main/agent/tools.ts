@@ -7,7 +7,7 @@ export const READ_RANGE_CELL_CAP = 500
 export const WRITE_CELLS_CAP = 50
 
 /** Tools that wait on user approval get a human-scale timeout. */
-export const APPROVAL_TOOLS = new Set(['write_cells'])
+export const APPROVAL_TOOLS = new Set(['write_cells', 'create_chart'])
 
 const XLSX_TOOLS: ChatToolFunction[] = [
   {
@@ -68,6 +68,53 @@ const XLSX_TOOLS: ChatToolFunction[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'create_chart',
+    description:
+      'Create a chart floating over the grid from cell ranges. The user sees the proposal and must approve it. The chart tracks its source ranges live — when the cells change, the chart re-renders. Use read_range first to find the data. Prefer a categories range (labels) plus one or more numeric series ranges of the same length.',
+    parameters: {
+      type: 'object',
+      properties: {
+        sheet: {
+          type: 'integer',
+          description: 'Sheet index from list_sheets; defaults to the active sheet.',
+        },
+        chart_type: {
+          type: 'string',
+          enum: ['column', 'bar', 'pie', 'line', 'doughnut'],
+          description: 'Chart family. pie/doughnut take exactly one series.',
+        },
+        title: { type: 'string', description: 'Optional chart title.' },
+        anchor: {
+          type: 'string',
+          description:
+            'A1 rectangle of cells the chart floats over (position and size), e.g. "E2:L18". Pick an empty area beside the data.',
+        },
+        categories: {
+          type: 'string',
+          description: 'A1 range of the category labels, e.g. "A2:A10".',
+        },
+        series: {
+          type: 'array',
+          description: 'Data series to plot.',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'Legend label for the series.' },
+              values: {
+                type: 'string',
+                description: 'A1 range of numeric values, e.g. "C2:C10".',
+              },
+            },
+            required: ['values'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['chart_type', 'anchor', 'series'],
+      additionalProperties: false,
+    },
+  },
 ]
 
 export function toolsForDocument(kind: DocumentKind): ChatToolFunction[] {
@@ -80,7 +127,8 @@ export function agentSystemPrompt(kind: DocumentKind, name: string, locale: stri
       ? `an Excel workbook named "${name}". Use the tools to inspect it before answering questions about its contents; never guess cell values. ` +
         'You may change cells with write_cells: every proposal is shown to the user for approval, so group related edits into one call and explain what you are about to change before calling it. A rejected proposal is not an error — ask what to do differently. ' +
         'When the user wants a result that should stay current as the data changes (totals, rankings, top-N blocks, lookups), write FORMULAS rather than computed constants — e.g. a live top-10 of column C is =LARGE(C$2:C$100,1)…=LARGE(C$2:C$100,10) with =INDEX(A:A,MATCH(LARGE(…),C:C,0)) for the labels. ' +
-        'The formula engine supports the common function set (SUM, AVERAGE, COUNT/COUNTIF(S), SUMIF(S), IF/IFS/IFERROR, MIN/MAX, MEDIAN, ROUND, LARGE, SMALL, RANK, INDEX, MATCH, VLOOKUP/HLOOKUP/XLOOKUP, CHOOSE, text and date functions) but NOT dynamic arrays — SORT, FILTER, UNIQUE and SEQUENCE will evaluate to errors, so build per-cell formulas instead. Charts cannot be created yet.'
+        'The formula engine supports the common function set (SUM, AVERAGE, COUNT/COUNTIF(S), SUMIF(S), IF/IFS/IFERROR, MIN/MAX, MEDIAN, ROUND, LARGE, SMALL, RANK, INDEX, MATCH, VLOOKUP/HLOOKUP/XLOOKUP, CHOOSE, text and date functions) but NOT dynamic arrays — SORT, FILTER, UNIQUE and SEQUENCE will evaluate to errors, so build per-cell formulas instead. ' +
+        'You may create charts with create_chart (column, bar, pie, line, doughnut): the chart reads its ranges live, so it stays current as the data changes. Place the anchor over empty cells so it does not cover the data.'
       : `a document named "${name}".`
   return (
     'You are the NexOffice assistant, embedded in a desktop office suite. ' +

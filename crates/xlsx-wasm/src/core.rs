@@ -2,8 +2,8 @@
 use betteroffice_xlsx::RenderOptions;
 use betteroffice_xlsx::{
     CalculationOptions, CapturedFormat, CellAddress, CellInput as WorkbookCellInput, CellRange,
-    CellRef, CellValue, MutationResult, NumberFormatMutation, Op, Proposal,
-    ProposalEditInput as WorkbookProposalEditInput, ProposalRequest, SheetId, StylePatch,
+    CellRef, CellValue, ChartSeriesSpec, ChartSpec, MutationResult, NumberFormatMutation, Op,
+    Proposal, ProposalEditInput as WorkbookProposalEditInput, ProposalRequest, SheetId, StylePatch,
     UpdateEvent, UpdateSubscription, Viewport, Workbook,
 };
 use serde::{Deserialize, Serialize};
@@ -45,6 +45,32 @@ struct CellEditInput {
     row: u32,
     col: u32,
     input: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddChartArgs {
+    sheet: u32,
+    chart_type: String,
+    #[serde(default)]
+    title: Option<String>,
+    anchor: String,
+    #[serde(default)]
+    categories: Option<String>,
+    series: Vec<AddChartSeriesArgs>,
+}
+
+#[derive(Deserialize)]
+struct AddChartSeriesArgs {
+    #[serde(default)]
+    name: Option<String>,
+    values: String,
+}
+
+#[derive(Deserialize)]
+struct RemoveChartArgs {
+    sheet: u32,
+    index: usize,
 }
 
 #[derive(Deserialize)]
@@ -411,6 +437,42 @@ impl Session {
             .apply_ops(args.ops, calculation_options(now_serial))
             .map_err(|error| error.to_string())?;
         self.edit_result(result)
+    }
+
+    /// Author a chart on a sheet; returns updated `SheetInfo` json.
+    pub fn add_chart_json(&mut self, args: &str) -> Result<String, String> {
+        let args: AddChartArgs =
+            serde_json::from_str(args).map_err(|error| format!("bad chart args: {error}"))?;
+        let anchor = CellRange::parse_a1(&args.anchor)
+            .map_err(|error| format!("bad chart anchor {:?}: {error:?}", args.anchor))?;
+        let spec = ChartSpec {
+            chart_type: args.chart_type,
+            title: args.title,
+            anchor,
+            categories: args.categories,
+            series: args
+                .series
+                .into_iter()
+                .map(|series| ChartSeriesSpec {
+                    name: series.name,
+                    values: series.values,
+                })
+                .collect(),
+        };
+        self.workbook
+            .add_chart(SheetId(args.sheet), &spec)
+            .map_err(|error| error.to_string())?;
+        self.sheet_info_json()
+    }
+
+    /// Remove a created chart by index; returns updated `SheetInfo` json.
+    pub fn remove_chart_json(&mut self, args: &str) -> Result<String, String> {
+        let args: RemoveChartArgs =
+            serde_json::from_str(args).map_err(|error| format!("bad chart args: {error}"))?;
+        self.workbook
+            .remove_chart(SheetId(args.sheet), args.index)
+            .map_err(|error| error.to_string())?;
+        self.sheet_info_json()
     }
 
     pub fn undo_json(&mut self, now_serial: Option<f64>) -> Result<String, String> {

@@ -178,7 +178,11 @@
     "saveKey": "Simpan kunci",
     "proposalTitle": "Perubahan yang diusulkan: {count} sel di “{sheet}”",
     "apply": "Terapkan",
-    "reject": "Tolak"
+    "reject": "Tolak",
+    "chartProposalTitle": "Bagan yang diusulkan: {type} di “{sheet}”",
+    "chartAnchor": "Posisi:",
+    "chartCategories": "Label:",
+    "chartSeries": "Seri {index}:"
   },
   "update": {
     "ready": "Pembaruan {version} siap",

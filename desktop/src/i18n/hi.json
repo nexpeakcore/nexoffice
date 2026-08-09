@@ -178,7 +178,11 @@
     "saveKey": "कुंजी सहेजें",
     "proposalTitle": "प्रस्तावित बदलाव: “{sheet}” पर {count} सेल",
     "apply": "लागू करें",
-    "reject": "अस्वीकारें"
+    "reject": "अस्वीकारें",
+    "chartProposalTitle": "प्रस्तावित चार्ट: {type}, शीट “{sheet}” पर",
+    "chartAnchor": "स्थान:",
+    "chartCategories": "लेबल:",
+    "chartSeries": "श्रृंखला {index}:"
   },
   "update": {
     "ready": "अपडेट {version} तैयार है",

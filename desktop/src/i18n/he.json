@@ -178,7 +178,11 @@
     "saveKey": "שמירת מפתח",
     "proposalTitle": "שינוי מוצע: {count} תאים בגיליון \"{sheet}\"",
     "apply": "החל",
-    "reject": "דחה"
+    "reject": "דחה",
+    "chartProposalTitle": "תרשים מוצע: {type} בגיליון “{sheet}”",
+    "chartAnchor": "מיקום:",
+    "chartCategories": "תוויות:",
+    "chartSeries": "סדרה {index}:"
   },
   "update": {
     "ready": "עדכון {version} מוכן",
