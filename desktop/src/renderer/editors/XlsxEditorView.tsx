@@ -117,10 +117,11 @@ export const XlsxEditorView = forwardRef<XlsxEditorViewRef, XlsxEditorViewProps>
         return validateCreateChart(handle, args)
       },
       agentApplyChart: (proposal: CreateChartProposal) => {
-        const handle = apiRef.current?.handle
-        if (!handle) return { error: 'no workbook is open' }
+        const api = apiRef.current
+        if (!api) return { error: 'no workbook is open' }
         try {
-          const result = applyCreateChart(handle, proposal)
+          const result = applyCreateChart(api.handle, proposal)
+          api.refreshProposals()
           onChangeRef.current?.()
           return result
         } catch (error) {
