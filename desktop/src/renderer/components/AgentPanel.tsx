@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentSettings, DocumentKind } from '../../shared/ipc.js'
-import type { WriteCellsProposal } from '../services/agentTools.js'
+import type { CreateChartProposal, WriteCellsProposal } from '../services/agentTools.js'
 import { useI18n } from '../i18n.js'
 
 interface ChatMessage {
@@ -8,10 +8,9 @@ interface ChatMessage {
   content: string
 }
 
-interface PendingProposal {
-  toolCallId: string
-  proposal: WriteCellsProposal
-}
+type PendingProposal =
+  | { toolCallId: string; kind: 'write'; proposal: WriteCellsProposal }
+  | { toolCallId: string; kind: 'chart'; proposal: CreateChartProposal }
 
 export interface AgentDocumentBridge {
   runReadTool: (name: string, args: Record<string, unknown>) => unknown
@@ -19,6 +18,10 @@ export interface AgentDocumentBridge {
     args: Record<string, unknown>
   ) => { proposal: WriteCellsProposal } | { error: string }
   applyWrite: (proposal: WriteCellsProposal) => unknown
+  validateChart: (
+    args: Record<string, unknown>
+  ) => { proposal: CreateChartProposal } | { error: string }
+  applyChart: (proposal: CreateChartProposal) => unknown
 }
 
 interface AgentPanelProps {
@@ -102,7 +105,17 @@ export function AgentPanel({
           window.nexoffice.agentToolResult(request.id, validated)
           return
         }
-        setPending({ toolCallId: request.id, proposal: validated.proposal })
+        setPending({ toolCallId: request.id, kind: 'write', proposal: validated.proposal })
+        onRequestOpenRef.current()
+        return
+      }
+      if (request.name === 'create_chart') {
+        const validated = bridgeRef.current.validateChart(request.args)
+        if ('error' in validated) {
+          window.nexoffice.agentToolResult(request.id, validated)
+          return
+        }
+        setPending({ toolCallId: request.id, kind: 'chart', proposal: validated.proposal })
         onRequestOpenRef.current()
         return
       }
@@ -146,7 +159,10 @@ export function AgentPanel({
     let result: unknown
     if (approve) {
       try {
-        result = bridgeRef.current.applyWrite(current.proposal)
+        result =
+          current.kind === 'chart'
+            ? bridgeRef.current.applyChart(current.proposal)
+            : bridgeRef.current.applyWrite(current.proposal)
       } catch (error) {
         result = { error: error instanceof Error ? error.message : String(error) }
       }
@@ -237,24 +253,55 @@ export function AgentPanel({
             {pending && (
               <div className="rounded-lg border border-amber-300 bg-amber-50 p-2">
                 <p className="text-xs font-medium text-amber-900">
-                  {t('agentPanel.proposalTitle', {
-                    count: pending.proposal.edits.length,
-                    sheet: pending.proposal.sheetName,
-                  })}
+                  {pending.kind === 'write'
+                    ? t('agentPanel.proposalTitle', {
+                        count: pending.proposal.edits.length,
+                        sheet: pending.proposal.sheetName,
+                      })
+                    : t('agentPanel.chartProposalTitle', {
+                        type: pending.proposal.chartType,
+                        sheet: pending.proposal.sheetName,
+                      })}
                 </p>
                 <div className="mt-1.5 max-h-40 overflow-auto">
-                  <table className="w-full text-xs text-neutral-800">
-                    <tbody>
-                      {pending.proposal.edits.map((edit) => (
-                        <tr key={edit.a1} className="border-t border-amber-200/60">
-                          <td className="py-0.5 pe-2 font-mono text-neutral-500">{edit.a1}</td>
-                          <td className="break-all py-0.5 font-mono">
-                            {edit.input === '' ? '∅' : edit.input}
-                          </td>
-                        </tr>
+                  {pending.kind === 'write' ? (
+                    <table className="w-full text-xs text-neutral-800">
+                      <tbody>
+                        {pending.proposal.edits.map((edit) => (
+                          <tr key={edit.a1} className="border-t border-amber-200/60">
+                            <td className="py-0.5 pe-2 font-mono text-neutral-500">{edit.a1}</td>
+                            <td className="break-all py-0.5 font-mono">
+                              {edit.input === '' ? '∅' : edit.input}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="space-y-0.5 text-xs text-neutral-800">
+                      {pending.proposal.title && (
+                        <p className="font-medium">{pending.proposal.title}</p>
+                      )}
+                      <p>
+                        <span className="text-neutral-500">{t('agentPanel.chartAnchor')} </span>
+                        <span className="font-mono">{pending.proposal.anchor}</span>
+                      </p>
+                      {pending.proposal.categories && (
+                        <p>
+                          <span className="text-neutral-500">{t('agentPanel.chartCategories')} </span>
+                          <span className="font-mono">{pending.proposal.categories}</span>
+                        </p>
+                      )}
+                      {pending.proposal.series.map((series, index) => (
+                        <p key={index}>
+                          <span className="text-neutral-500">
+                            {series.name ?? t('agentPanel.chartSeries', { index: index + 1 })}{' '}
+                          </span>
+                          <span className="font-mono">{series.values}</span>
+                        </p>
                       ))}
-                    </tbody>
-                  </table>
+                    </div>
+                  )}
                 </div>
                 <div className="mt-2 flex justify-end gap-2">
                   <button

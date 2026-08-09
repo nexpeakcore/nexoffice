@@ -178,7 +178,11 @@
     "saveKey": "Salvar chave",
     "proposalTitle": "Alteração proposta: {count} célula(s) em “{sheet}”",
     "apply": "Aplicar",
-    "reject": "Rejeitar"
+    "reject": "Rejeitar",
+    "chartProposalTitle": "Gráfico proposto: {type} em “{sheet}”",
+    "chartAnchor": "Posição:",
+    "chartCategories": "Rótulos:",
+    "chartSeries": "Série {index}:"
   },
   "update": {
     "ready": "Atualização {version} pronta",

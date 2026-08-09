@@ -178,7 +178,11 @@
     "saveKey": "Enregistrer la clé",
     "proposalTitle": "Modification proposée : {count} cellule(s) sur « {sheet} »",
     "apply": "Appliquer",
-    "reject": "Refuser"
+    "reject": "Refuser",
+    "chartProposalTitle": "Graphique proposé : {type} sur « {sheet} »",
+    "chartAnchor": "Position :",
+    "chartCategories": "Étiquettes :",
+    "chartSeries": "Série {index} :"
   },
   "update": {
     "ready": "Mise à jour {version} prête",

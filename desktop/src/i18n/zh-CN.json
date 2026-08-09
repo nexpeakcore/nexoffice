@@ -178,7 +178,11 @@
     "saveKey": "保存密钥",
     "proposalTitle": "拟更改：“{sheet}”上的 {count} 个单元格",
     "apply": "应用",
-    "reject": "拒绝"
+    "reject": "拒绝",
+    "chartProposalTitle": "建议的图表：{type}（工作表“{sheet}”）",
+    "chartAnchor": "位置：",
+    "chartCategories": "标签：",
+    "chartSeries": "系列 {index}："
   },
   "update": {
     "ready": "更新 {version} 已就绪",

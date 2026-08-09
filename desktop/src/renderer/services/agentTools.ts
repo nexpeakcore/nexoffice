@@ -5,6 +5,10 @@
 
 export const READ_RANGE_CELL_CAP = 500
 export const WRITE_CELLS_CAP = 50
+export const CHART_SERIES_CAP = 8
+
+export const CHART_TYPES = ['column', 'bar', 'pie', 'line', 'doughnut'] as const
+export type ChartType = (typeof CHART_TYPES)[number]
 
 export interface AgentWorkbookAccess {
   sheetInfo(): { sheetNames: string[]; activeSheet: number }
@@ -14,12 +18,30 @@ export interface AgentWorkbookAccess {
     range: string
   ): Array<Array<{ input: string; isFormula: boolean; filterText?: string }>>
   editCells(sheet: number, edits: Array<{ row: number; col: number; input: string }>): unknown
+  addChart(args: {
+    sheet: number
+    chartType: ChartType
+    title?: string
+    anchor: string
+    categories?: string
+    series: Array<{ name?: string; values: string }>
+  }): unknown
 }
 
 export interface WriteCellsProposal {
   sheet: number
   sheetName: string
   edits: Array<{ a1: string; row: number; col: number; input: string }>
+}
+
+export interface CreateChartProposal {
+  sheet: number
+  sheetName: string
+  chartType: ChartType
+  title?: string
+  anchor: string
+  categories?: string
+  series: Array<{ name?: string; values: string }>
 }
 
 const A1_RANGE = /^\$?([A-Za-z]{1,3})\$?(\d+)(?::\$?([A-Za-z]{1,3})\$?(\d+))?$/
@@ -91,6 +113,89 @@ export function applyWriteCells(access: AgentWorkbookAccess, proposal: WriteCell
     return { a1: edit.a1, value: readBack ? (readBack.filterText ?? readBack.input) : '' }
   })
   return { applied: true, sheet: proposal.sheet, cells }
+}
+
+/**
+ * Validate a create_chart request into a reviewable proposal, or an error the
+ * model can act on. Never mutates — application happens after user approval.
+ */
+export function validateCreateChart(
+  access: Pick<AgentWorkbookAccess, 'sheetInfo'>,
+  args: Record<string, unknown>
+): { proposal: CreateChartProposal } | { error: string } {
+  const info = access.sheetInfo()
+  const sheet =
+    typeof args['sheet'] === 'number' && Number.isInteger(args['sheet'])
+      ? args['sheet']
+      : info.activeSheet
+  if (sheet < 0 || sheet >= info.sheetNames.length) {
+    return { error: `sheet ${sheet} out of range (0..${info.sheetNames.length - 1})` }
+  }
+  const chartType = typeof args['chart_type'] === 'string' ? args['chart_type'] : ''
+  if (!(CHART_TYPES as readonly string[]).includes(chartType)) {
+    return { error: `chart_type must be one of ${CHART_TYPES.join(', ')}; got "${chartType}"` }
+  }
+  const anchor = typeof args['anchor'] === 'string' ? args['anchor'].trim().toUpperCase() : ''
+  const anchorCells = rangeCellCount(anchor)
+  if (anchorCells === null || !anchor.includes(':')) {
+    return { error: `anchor must be an A1 rectangle like "D2:K16"; got "${anchor}"` }
+  }
+  const rawSeries = Array.isArray(args['series']) ? args['series'] : null
+  if (!rawSeries || rawSeries.length === 0) {
+    return { error: 'series must be a non-empty array of { name?, values }' }
+  }
+  if (rawSeries.length > CHART_SERIES_CAP) {
+    return { error: `${rawSeries.length} series exceed the cap of ${CHART_SERIES_CAP}` }
+  }
+  if ((chartType === 'pie' || chartType === 'doughnut') && rawSeries.length > 1) {
+    return { error: `a ${chartType} chart takes exactly one series` }
+  }
+  const series: CreateChartProposal['series'] = []
+  for (const entry of rawSeries) {
+    const record = typeof entry === 'object' && entry !== null ? (entry as Record<string, unknown>) : null
+    const values = typeof record?.['values'] === 'string' ? record['values'].trim() : ''
+    if (rangeCellCount(values) === null) {
+      return { error: `each series needs an A1 values range; got ${JSON.stringify(entry)}` }
+    }
+    const name = typeof record?.['name'] === 'string' ? record['name'] : undefined
+    series.push(name === undefined ? { values } : { name, values })
+  }
+  const categories = typeof args['categories'] === 'string' ? args['categories'].trim() : undefined
+  if (categories !== undefined && rangeCellCount(categories) === null) {
+    return { error: `categories must be an A1 range; got "${categories}"` }
+  }
+  const title = typeof args['title'] === 'string' && args['title'].trim() !== '' ? args['title'].trim() : undefined
+  const proposal: CreateChartProposal = {
+    sheet,
+    sheetName: info.sheetNames[sheet]!,
+    chartType: chartType as ChartType,
+    anchor,
+    series,
+  }
+  if (title !== undefined) proposal.title = title
+  if (categories !== undefined) proposal.categories = categories
+  return { proposal }
+}
+
+/** Apply a user-approved chart proposal; the engine re-validates ranges. */
+export function applyCreateChart(
+  access: AgentWorkbookAccess,
+  proposal: CreateChartProposal
+): unknown {
+  access.addChart({
+    sheet: proposal.sheet,
+    chartType: proposal.chartType,
+    ...(proposal.title !== undefined ? { title: proposal.title } : {}),
+    anchor: proposal.anchor,
+    ...(proposal.categories !== undefined ? { categories: proposal.categories } : {}),
+    series: proposal.series,
+  })
+  return {
+    applied: true,
+    sheet: proposal.sheet,
+    chartType: proposal.chartType,
+    anchor: proposal.anchor,
+  }
 }
 
 /** Cell count of an A1 rectangle, or null when it does not parse. */

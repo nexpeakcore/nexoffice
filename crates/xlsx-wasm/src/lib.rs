@@ -253,6 +253,22 @@ impl XlsxDocument {
             .map_err(|e| JsValue::from_str(&e))
     }
 
+    /// author a chart; returns updated `SheetInfo` json.
+    #[wasm_bindgen(js_name = addChartJson)]
+    pub fn add_chart_json(&mut self, args: &str) -> Result<String, JsValue> {
+        self.session
+            .add_chart_json(args)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// remove a created chart; returns updated `SheetInfo` json.
+    #[wasm_bindgen(js_name = removeChartJson)]
+    pub fn remove_chart_json(&mut self, args: &str) -> Result<String, JsValue> {
+        self.session
+            .remove_chart_json(args)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
     /// undo the last transaction; returns `{"applied":bool,"sheetInfo":{...}}`.
     #[wasm_bindgen(js_name = undoJson)]
     pub fn undo_json(&mut self) -> Result<String, JsValue> {

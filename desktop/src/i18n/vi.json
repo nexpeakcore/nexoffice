@@ -178,7 +178,11 @@
     "saveKey": "Lưu khóa",
     "proposalTitle": "Đề xuất thay đổi: {count} ô trên “{sheet}”",
     "apply": "Áp dụng",
-    "reject": "Từ chối"
+    "reject": "Từ chối",
+    "chartProposalTitle": "Đề xuất biểu đồ: {type} trên “{sheet}”",
+    "chartAnchor": "Vị trí:",
+    "chartCategories": "Nhãn:",
+    "chartSeries": "Chuỗi {index}:"
   },
   "update": {
     "ready": "Bản cập nhật {version} đã sẵn sàng",

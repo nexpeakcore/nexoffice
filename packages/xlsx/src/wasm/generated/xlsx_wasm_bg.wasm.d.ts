@@ -3,6 +3,7 @@
 export const memory: WebAssembly.Memory;
 export const __wbg_xlsxdocument_free: (a: number, b: number) => void;
 export const xlsxdocument_acceptProposalJson: (a: number, b: number, c: number) => [number, number, number, number];
+export const xlsxdocument_addChartJson: (a: number, b: number, c: number) => [number, number, number, number];
 export const xlsxdocument_applyFormatJson: (a: number, b: number, c: number) => [number, number, number, number];
 export const xlsxdocument_applyOpsJson: (a: number, b: number, c: number) => [number, number, number, number];
 export const xlsxdocument_applyUpdateJson: (a: number, b: number, c: number) => [number, number, number, number];
@@ -29,6 +30,7 @@ export const xlsxdocument_proposeJson: (a: number, b: number, c: number) => [num
 export const xlsxdocument_rangeCellsJson: (a: number, b: number, c: number) => [number, number, number, number];
 export const xlsxdocument_redoJson: (a: number) => [number, number, number, number];
 export const xlsxdocument_rejectProposalJson: (a: number, b: number, c: number) => [number, number, number, number];
+export const xlsxdocument_removeChartJson: (a: number, b: number, c: number) => [number, number, number, number];
 export const xlsxdocument_renderPng: (a: number, b: number, c: number) => [number, number, number, number];
 export const xlsxdocument_renderRangePng: (a: number, b: number, c: number) => [number, number, number, number];
 export const xlsxdocument_saveBytes: (a: number) => [number, number, number, number];
