@@ -67,8 +67,6 @@ pub fn render_png(dl: &DisplayList) -> Result<Vec<u8>, String> {
                     clip_mask.as_ref(),
                 )?;
             }
-            // Text clips itself through its own clip rect, so only the shape
-            // commands consult the mask stack.
             DrawCmd::PushClip { x, y, w: cw, h: ch } => {
                 clip_rects.push((*x, *y, *cw, *ch));
                 clip_mask = build_clip_mask(w, h, &clip_rects);

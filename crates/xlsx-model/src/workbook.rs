@@ -129,12 +129,19 @@ pub struct SheetDrawing {
 
 /// Where a drawing sits on the grid, in cells plus EMU offsets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DrawingAnchor {
-    pub from: AnchorCell,
-    /// `None` for one-cell/absolute anchors, which size by `extent_emu`.
-    pub to: Option<AnchorCell>,
-    /// `<xdr:ext cx cy>` when the anchor carries one.
-    pub extent_emu: Option<(i64, i64)>,
+pub enum DrawingAnchor {
+    /// `twoCellAnchor`/`oneCellAnchor`: pinned to a grid cell, sized by a
+    /// second cell or an explicit `<xdr:ext cx cy>`.
+    Cell {
+        from: AnchorCell,
+        to: Option<AnchorCell>,
+        extent_emu: Option<(i64, i64)>,
+    },
+    /// `absoluteAnchor`: a fixed sheet position and size in EMU.
+    Absolute {
+        pos_emu: (i64, i64),
+        extent_emu: (i64, i64),
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
