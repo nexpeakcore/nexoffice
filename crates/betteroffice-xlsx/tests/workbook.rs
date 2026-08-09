@@ -5066,3 +5066,29 @@ fn blank_chart_values_become_gaps() {
         "blank point is omitted from the cache: {chart}"
     );
 }
+
+#[test]
+fn add_chart_rejects_mismatched_category_and_value_lengths() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    let error = workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "column".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: Some("A1:A3".to_owned()),
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidOperation(message) if message.contains("categories")),
+        "{error:?}"
+    );
+}

@@ -1445,6 +1445,16 @@ impl Workbook {
             .enumerate()
             .map(|(index, series)| {
                 let (formula, values) = self.chart_range_numbers(sheet, &series.values)?;
+                if let Some((_, categories)) = &categories
+                    && categories.len() != values.len()
+                {
+                    return Err(Error::InvalidOperation(format!(
+                        "series {:?} has {} values but there are {} categories",
+                        series.name.as_deref().unwrap_or_default(),
+                        values.len(),
+                        categories.len()
+                    )));
+                }
                 Ok(ooxml_drawingml::chart::ChartSeries {
                     name: series.name.clone(),
                     categories: categories

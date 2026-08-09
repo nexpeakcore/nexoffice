@@ -288,41 +288,46 @@ fn series_xml(series: &ChartSeries, index: usize, chart_type: &str) -> Result<St
     } else {
         format!(r#"<c:spPr><a:solidFill><a:srgbClr val="{color}"/></a:solidFill></c:spPr>"#)
     };
-    let categories = series
-        .category_formula
-        .as_deref()
-        .map(|formula| {
-            let points: String = series
-                .categories
-                .iter()
-                .enumerate()
-                .map(|(i, value)| format!("<c:pt idx=\"{i}\"><c:v>{}</c:v></c:pt>", escape(value)))
-                .collect();
-            format!(
-                r#"<c:cat><c:strRef><c:f>{}</c:f><c:strCache><c:ptCount val="{}"/>{points}</c:strCache></c:strRef></c:cat>"#,
-                escape(formula),
-                series.categories.len()
-            )
-        })
-        .unwrap_or_default();
-    let values = series
-        .value_formula
-        .as_deref()
-        .map(|formula| {
-            let points: String = series
-                .values
-                .iter()
-                .enumerate()
-                .filter(|(_, value)| value.is_finite())
-                .map(|(i, value)| format!("<c:pt idx=\"{i}\"><c:v>{value}</c:v></c:pt>"))
-                .collect();
-            format!(
-                r#"<c:val><c:numRef><c:f>{}</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="{}"/>{points}</c:numCache></c:numRef></c:val>"#,
-                escape(formula),
-                series.values.len()
-            )
-        })
-        .unwrap_or_default();
+    let category_points: String = series
+        .categories
+        .iter()
+        .enumerate()
+        .map(|(i, value)| format!("<c:pt idx=\"{i}\"><c:v>{}</c:v></c:pt>", escape(value)))
+        .collect();
+    let categories = match (
+        series.category_formula.as_deref(),
+        series.categories.is_empty(),
+    ) {
+        (Some(formula), _) => format!(
+            r#"<c:cat><c:strRef><c:f>{}</c:f><c:strCache><c:ptCount val="{}"/>{category_points}</c:strCache></c:strRef></c:cat>"#,
+            escape(formula),
+            series.categories.len()
+        ),
+        (None, false) => format!(
+            r#"<c:cat><c:strLit><c:ptCount val="{}"/>{category_points}</c:strLit></c:cat>"#,
+            series.categories.len()
+        ),
+        (None, true) => String::new(),
+    };
+    let value_points: String = series
+        .values
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| value.is_finite())
+        .map(|(i, value)| format!("<c:pt idx=\"{i}\"><c:v>{value}</c:v></c:pt>"))
+        .collect();
+    let values = match (series.value_formula.as_deref(), series.values.is_empty()) {
+        (Some(formula), _) => format!(
+            r#"<c:val><c:numRef><c:f>{}</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="{}"/>{value_points}</c:numCache></c:numRef></c:val>"#,
+            escape(formula),
+            series.values.len()
+        ),
+        (None, false) => format!(
+            r#"<c:val><c:numLit><c:ptCount val="{}"/>{value_points}</c:numLit></c:val>"#,
+            series.values.len()
+        ),
+        (None, true) => String::new(),
+    };
     Ok(format!(
         r#"<c:ser><c:idx val="{index}"/><c:order val="{index}"/>{name}{properties}{categories}{values}</c:ser>"#
     ))

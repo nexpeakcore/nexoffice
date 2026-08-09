@@ -3335,3 +3335,26 @@ fn bar_direction_swaps_the_axis_positions() {
     let value_axis = chart.split("<c:valAx>").nth(1).unwrap();
     assert!(value_axis.contains(r#"<c:axPos val="b"/>"#), "{chart}");
 }
+
+/// Series with cached data but no formulas serialize as literal caches and
+/// parse back with the same data.
+#[test]
+fn cache_only_chart_series_round_trip_as_literals() {
+    let mut sheet = xlsx_model::workbook::Sheet::new("Sheet1");
+    let mut drawing = created_column_chart();
+    drawing.chart.series[0].category_formula = None;
+    drawing.chart.series[0].value_formula = None;
+    sheet.drawings.push(drawing);
+    let mut wb = Workbook::default();
+    wb.sheets.push(sheet);
+
+    let parts = serialize_workbook(&wb).unwrap();
+    let chart = String::from_utf8(part_bytes(&parts, "xl/charts/chart1.xml")).unwrap();
+    assert!(chart.contains("<c:numLit>"), "{chart}");
+    assert!(chart.contains("<c:strLit>"), "{chart}");
+
+    let reparsed = parse_workbook(&parts).unwrap();
+    let series = &reparsed.sheets[0].drawings[0].chart.series[0];
+    assert_eq!(series.values, [10.0, 25.0]);
+    assert_eq!(series.categories, ["North", "South"]);
+}
