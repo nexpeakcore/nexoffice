@@ -15,4 +15,5 @@ categories = ["data-structures", "parser-implementations"]
 name = "xlsx_model"
 
 [dependencies]
+ooxml-drawingml = { workspace = true, features = ["chart"] }
 serde = { version = "1", features = ["derive"] }

@@ -239,7 +239,9 @@ impl Workbook {
             validate_collaboration_size(&authority.encode_state_as_update_v1())?;
             validate_collaboration_state_entries(authority.state_vector_entries())?;
         }
-        let model = authority.materialize().map_err(authority_error)?;
+        let mut materialized = authority.materialize().map_err(authority_error)?;
+        retain_drawings(&model, &mut materialized);
+        let model = materialized;
         validate_model(&model)?;
         let graph = build_graph.then(|| DepGraph::build(&model));
         let mode = match client_id {
@@ -425,6 +427,7 @@ impl Workbook {
 
         let commit_update = staged.commit_update;
         let mut model = staged.model;
+        retain_drawings(&self.model, &mut model);
         let update = staged.update;
         let (graph, recalc) = rebuild_and_recalc_all(&mut model, options.now_serial);
         let mut calculation = calculation_result(&recalc);
@@ -1074,6 +1077,7 @@ impl Workbook {
         let active_name = self.active_sheet_name();
         let before = self.model.clone();
         self.model = history.model;
+        retain_drawings(&before, &mut self.model);
         self.edited_since_open = true;
         self.restore_active_sheet(active_name.as_deref());
         self.preserved.forget_shared_strings();
@@ -1478,6 +1482,7 @@ impl Workbook {
                 .map_err(authority_error)?;
             let mut model = self.authority.materialize().map_err(authority_error)?;
             retain_formula_caches(&self.model, &mut model);
+            retain_drawings(&self.model, &mut model);
             self.model = model;
             self.emit_update(UpdateEvent {
                 update: staged.update,
@@ -1518,6 +1523,7 @@ impl Workbook {
                 .map_err(authority_error)?;
             let mut model = self.authority.materialize().map_err(authority_error)?;
             retain_formula_caches(&self.model, &mut model);
+            retain_drawings(&self.model, &mut model);
             self.model = model;
             self.emit_update(UpdateEvent {
                 update: staged.update,
@@ -1864,6 +1870,17 @@ fn calculation_result(result: &RecalcResult) -> CalculationResult {
             .iter()
             .map(|&(sheet, cell)| CellAddress { sheet, cell })
             .collect(),
+    }
+}
+
+/// Drawings are display-only sidecar state the authority never carries; copy
+/// them across a re-materialization. Sheet order is stable here because
+/// collaborative structural ops are refused.
+fn retain_drawings(current: &WorkbookModel, projected: &mut WorkbookModel) {
+    for (sheet_index, sheet) in projected.sheets.iter_mut().enumerate() {
+        if let Some(current_sheet) = current.sheets.get(sheet_index) {
+            sheet.drawings = current_sheet.drawings.clone();
+        }
     }
 }
 

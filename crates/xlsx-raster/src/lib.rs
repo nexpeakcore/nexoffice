@@ -5,9 +5,11 @@ mod font;
 
 pub use font::measure_text;
 
-use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Rect, Stroke, StrokeDash, Transform};
+use tiny_skia::{
+    Color, FillRule, Mask, Paint, PathBuilder, Pixmap, Rect, Stroke, StrokeDash, Transform,
+};
 
-use xlsx_render::{DisplayList, DrawCmd};
+use xlsx_render::{DisplayList, DrawCmd, PathCmd};
 
 /// paint a display list and encode it as png bytes.
 pub fn render_png(dl: &DisplayList) -> Result<Vec<u8>, String> {
@@ -16,6 +18,8 @@ pub fn render_png(dl: &DisplayList) -> Result<Vec<u8>, String> {
     let mut pixmap = Pixmap::new(w, h).ok_or_else(|| "invalid pixmap size".to_string())?;
     pixmap.fill(Color::WHITE);
 
+    let mut clip_rects: Vec<(f32, f32, f32, f32)> = Vec::new();
+    let mut clip_mask: Option<Mask> = None;
     for cmd in &dl.commands {
         match cmd {
             DrawCmd::FillRect { x, y, w, h, color } => {
@@ -25,7 +29,7 @@ pub fn render_png(dl: &DisplayList) -> Result<Vec<u8>, String> {
                 let mut paint = Paint::default();
                 paint.set_color(parse_color(color)?);
                 paint.anti_alias = true;
-                pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+                pixmap.fill_rect(rect, &paint, Transform::identity(), clip_mask.as_ref());
             }
             DrawCmd::Line {
                 x1,
@@ -36,7 +40,42 @@ pub fn render_png(dl: &DisplayList) -> Result<Vec<u8>, String> {
                 color,
                 style,
             } => {
-                paint_line(&mut pixmap, *x1, *y1, *x2, *y2, *width, color, style)?;
+                paint_line(
+                    &mut pixmap,
+                    *x1,
+                    *y1,
+                    *x2,
+                    *y2,
+                    *width,
+                    color,
+                    style,
+                    clip_mask.as_ref(),
+                )?;
+            }
+            DrawCmd::Path {
+                commands,
+                fill,
+                stroke,
+                stroke_width,
+            } => {
+                paint_path(
+                    &mut pixmap,
+                    commands,
+                    fill.as_deref(),
+                    stroke.as_deref(),
+                    *stroke_width,
+                    clip_mask.as_ref(),
+                )?;
+            }
+            // Text clips itself through its own clip rect, so only the shape
+            // commands consult the mask stack.
+            DrawCmd::PushClip { x, y, w: cw, h: ch } => {
+                clip_rects.push((*x, *y, *cw, *ch));
+                clip_mask = build_clip_mask(w, h, &clip_rects);
+            }
+            DrawCmd::PopClip {} => {
+                clip_rects.pop();
+                clip_mask = build_clip_mask(w, h, &clip_rects);
             }
             DrawCmd::Text {
                 x,
@@ -104,6 +143,7 @@ fn paint_line(
     width: f32,
     color: &str,
     style: &Option<String>,
+    clip: Option<&Mask>,
 ) -> Result<(), String> {
     let color = parse_color(color)?;
     match style.as_deref() {
@@ -112,20 +152,65 @@ fn paint_line(
             let horizontal = (y1 - y2).abs() <= (x1 - x2).abs();
             let (dx, dy) = if horizontal { (0.0, off) } else { (off, 0.0) };
             let w = (width * 0.6).max(0.5);
-            stroke_seg(pixmap, x1 - dx, y1 - dy, x2 - dx, y2 - dy, w, color, None);
-            stroke_seg(pixmap, x1 + dx, y1 + dy, x2 + dx, y2 + dy, w, color, None);
+            stroke_seg(
+                pixmap,
+                x1 - dx,
+                y1 - dy,
+                x2 - dx,
+                y2 - dy,
+                w,
+                color,
+                None,
+                clip,
+            );
+            stroke_seg(
+                pixmap,
+                x1 + dx,
+                y1 + dy,
+                x2 + dx,
+                y2 + dy,
+                w,
+                color,
+                None,
+                clip,
+            );
         }
         Some("dashed") => {
             let dash = StrokeDash::new(vec![4.0, 2.0], 0.0);
-            stroke_seg(pixmap, x1, y1, x2, y2, width, color, dash);
+            stroke_seg(pixmap, x1, y1, x2, y2, width, color, dash, clip);
         }
         Some("dotted") => {
             let dash = StrokeDash::new(vec![1.0, 2.0], 0.0);
-            stroke_seg(pixmap, x1, y1, x2, y2, width, color, dash);
+            stroke_seg(pixmap, x1, y1, x2, y2, width, color, dash, clip);
         }
-        _ => stroke_seg(pixmap, x1, y1, x2, y2, width, color, None),
+        _ => stroke_seg(pixmap, x1, y1, x2, y2, width, color, None, clip),
     }
     Ok(())
+}
+
+/// A full-frame alpha mask covering the intersection of the pushed clip
+/// rects, or `None` when the stack is empty.
+fn build_clip_mask(width: u32, height: u32, rects: &[(f32, f32, f32, f32)]) -> Option<Mask> {
+    if rects.is_empty() {
+        return None;
+    }
+    let mut left = 0.0f32;
+    let mut top = 0.0f32;
+    let mut right = width as f32;
+    let mut bottom = height as f32;
+    for &(x, y, w, h) in rects {
+        left = left.max(x);
+        top = top.max(y);
+        right = right.min(x + w);
+        bottom = bottom.min(y + h);
+    }
+    let mut mask = Mask::new(width, height)?;
+    if right > left && bottom > top {
+        let rect = Rect::from_ltrb(left, top, right, bottom)?;
+        let path = PathBuilder::from_rect(rect);
+        mask.fill_path(&path, FillRule::Winding, false, Transform::identity());
+    }
+    Some(mask)
 }
 
 /// stroke a single segment with an optional dash pattern.
@@ -139,6 +224,7 @@ fn stroke_seg(
     width: f32,
     color: Color,
     dash: Option<StrokeDash>,
+    clip: Option<&Mask>,
 ) {
     let mut pb = PathBuilder::new();
     pb.move_to(x1, y1);
@@ -154,7 +240,7 @@ fn stroke_seg(
         dash,
         ..Stroke::default()
     };
-    pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+    pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), clip);
 }
 
 /// parse a `#rrggbb` string into a tiny-skia color.
@@ -173,6 +259,60 @@ fn parse_color(s: &str) -> Result<Color, String> {
         byte(4)?,
         if hex.len() == 8 { byte(6)? } else { 255 },
     ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_path(
+    pixmap: &mut Pixmap,
+    commands: &[PathCmd],
+    fill: Option<&str>,
+    stroke: Option<&str>,
+    stroke_width: f32,
+    clip: Option<&Mask>,
+) -> Result<(), String> {
+    let mut builder = PathBuilder::new();
+    for command in commands {
+        match command {
+            PathCmd::MoveTo { x, y } => builder.move_to(*x, *y),
+            PathCmd::LineTo { x, y } => builder.line_to(*x, *y),
+            PathCmd::QuadTo { cx, cy, x, y } => builder.quad_to(*cx, *cy, *x, *y),
+            PathCmd::CubicTo {
+                x1,
+                y1,
+                x2,
+                y2,
+                x,
+                y,
+            } => builder.cubic_to(*x1, *y1, *x2, *y2, *x, *y),
+            PathCmd::Close {} => builder.close(),
+        }
+    }
+    let Some(path) = builder.finish() else {
+        return Ok(());
+    };
+    if let Some(fill) = fill {
+        let mut paint = Paint::default();
+        paint.set_color(parse_color(fill)?);
+        paint.anti_alias = true;
+        pixmap.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            Transform::identity(),
+            clip,
+        );
+    }
+    if let Some(stroke) = stroke {
+        let mut paint = Paint::default();
+        paint.set_color(parse_color(stroke)?);
+        paint.anti_alias = true;
+        let stroke = Stroke {
+            width: stroke_width.max(0.5),
+            ..Stroke::default()
+        };
+        pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), clip);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

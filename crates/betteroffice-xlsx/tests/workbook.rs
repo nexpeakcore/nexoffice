@@ -4512,3 +4512,85 @@ fn set_comment_validates_sheet_cell_and_field_lengths() {
     assert!(matches!(oversized, Error::InvalidOperation(_)));
     assert!(workbook.model().sheets[0].comments.is_empty());
 }
+
+fn chart_fixture_xlsx() -> Vec<u8> {
+    let workbook =
+        r#"<workbook><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+    let rels = r#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>"#;
+    let worksheet = r#"<worksheet><sheetData><row r="1"><c r="A1"><v>10</v></c></row></sheetData><drawing r:id="rId1"/></worksheet>"#;
+    let sheet_rels = r#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>"#;
+    let drawing = r#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><xdr:twoCellAnchor><xdr:from><xdr:col>1</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>7</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>14</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:graphicFrame><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData><c:chart r:id="rId1"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>"#;
+    let drawing_rels = r#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/></Relationships>"#;
+    let chart = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea><c:pieChart><c:ser><c:idx val="0"/><c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>A</c:v></c:pt><c:pt idx="1"><c:v>B</c:v></c:pt></c:strCache></c:strRef></c:cat><c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>20</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser></c:pieChart></c:plotArea></c:chart></c:chartSpace>"#;
+    ooxml_opc::rezip_parts(&[
+        ("xl/workbook.xml".to_owned(), workbook.as_bytes().to_vec()),
+        (
+            "xl/_rels/workbook.xml.rels".to_owned(),
+            rels.as_bytes().to_vec(),
+        ),
+        (
+            "xl/worksheets/sheet1.xml".to_owned(),
+            worksheet.as_bytes().to_vec(),
+        ),
+        (
+            "xl/worksheets/_rels/sheet1.xml.rels".to_owned(),
+            sheet_rels.as_bytes().to_vec(),
+        ),
+        (
+            "xl/drawings/drawing1.xml".to_owned(),
+            drawing.as_bytes().to_vec(),
+        ),
+        (
+            "xl/drawings/_rels/drawing1.xml.rels".to_owned(),
+            drawing_rels.as_bytes().to_vec(),
+        ),
+        ("xl/charts/chart1.xml".to_owned(), chart.as_bytes().to_vec()),
+    ])
+    .unwrap()
+}
+
+fn paints_chart(workbook: &Workbook) -> bool {
+    let viewport = Viewport {
+        x: 0.0,
+        y: 0.0,
+        width: 800.0,
+        height: 400.0,
+    };
+    workbook
+        .display_list(&viewport)
+        .unwrap()
+        .commands
+        .iter()
+        .any(|command| matches!(command, DrawCmd::Path { .. }))
+}
+
+/// Charts must keep painting after edits re-materialize the model from the
+/// authority, and their source parts must ride through a save untouched.
+#[test]
+fn charts_survive_edits_and_saves() {
+    let bytes = chart_fixture_xlsx();
+
+    let mut workbook = Workbook::open_collaborative(&bytes, 7).unwrap();
+    assert!(paints_chart(&workbook), "chart paints on open");
+    workbook
+        .edit_cell(SheetId(0), cell("A1"), "42", CalculationOptions::default())
+        .unwrap();
+    assert!(paints_chart(&workbook), "chart paints after a local edit");
+
+    let saved = workbook.save().unwrap();
+    let parts = package_map(&saved);
+    assert_eq!(
+        parts["xl/drawings/drawing1.xml"],
+        package_map(&bytes)["xl/drawings/drawing1.xml"]
+    );
+    assert_eq!(
+        parts["xl/charts/chart1.xml"],
+        package_map(&bytes)["xl/charts/chart1.xml"]
+    );
+
+    let mut standalone = Workbook::open(&bytes).unwrap();
+    standalone
+        .edit_cell(SheetId(0), cell("A1"), "42", CalculationOptions::default())
+        .unwrap();
+    assert!(paints_chart(&standalone), "chart paints in standalone mode");
+}

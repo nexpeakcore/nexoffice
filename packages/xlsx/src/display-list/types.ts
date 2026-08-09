@@ -92,9 +92,47 @@ export interface TextCmd {
 }
 
 /**
+ * One segment of a path command, in device-independent pixels.
+ */
+export type PathSegment =
+  | { op: 'moveTo'; x: number; y: number }
+  | { op: 'lineTo'; x: number; y: number }
+  | { op: 'quadTo'; cx: number; cy: number; x: number; y: number }
+  | { op: 'cubicTo'; x1: number; y1: number; x2: number; y2: number; x: number; y: number }
+  | { op: 'close' };
+
+/**
+ * Fill and/or stroke a geometry path — chart plot shapes (pie wedges, line
+ * series). Absent `strokeWidth` (skip-serialized at 0 in Rust) means hairline.
+ */
+export interface PathCmd {
+  op: 'path';
+  commands: PathSegment[];
+  fill?: string;
+  stroke?: string;
+  strokeWidth?: number;
+}
+
+/**
+ * Clip every following command to this rect until the matching `popClip` —
+ * keeps floating charts inside their pane across a frozen divider.
+ */
+export interface PushClipCmd {
+  op: 'pushClip';
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface PopClipCmd {
+  op: 'popClip';
+}
+
+/**
  * One draw command; discriminated on `op`.
  */
-export type DrawCmd = FillRectCmd | LineCmd | TextCmd;
+export type DrawCmd = FillRectCmd | LineCmd | TextCmd | PathCmd | PushClipCmd | PopClipCmd;
 
 /**
  * Grid metadata for the frame: which sheet cells the visible tracks map to and

@@ -3010,3 +3010,67 @@ fn a_first_comment_allocates_a_vml_part_beside_the_header_footer_one() {
         workbook.sheets[0].comments
     );
 }
+
+/// A worksheet drawing with an anchored chart parses into `Sheet::drawings`,
+/// and both the drawing and chart parts ride through a save byte-identical.
+#[test]
+fn parses_anchored_charts_and_preserves_their_parts() {
+    let body = r#"<sheetData/><drawing r:id="rId1"/>"#;
+    let mut parts = package(body, &[], false);
+    parts.push((
+        "xl/worksheets/_rels/sheet1.xml.rels".to_owned(),
+        br#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>"#.to_vec(),
+    ));
+    let drawing = br#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<xdr:twoCellAnchor><xdr:from><xdr:col>2</xdr:col><xdr:colOff>19050</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>9525</xdr:rowOff></xdr:from><xdr:to><xdr:col>8</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>16</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>
+<xdr:graphicFrame><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData><c:chart r:id="rId1"/></a:graphicData></a:graphic></xdr:graphicFrame>
+<xdr:clientData/></xdr:twoCellAnchor>
+<xdr:oneCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>20</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="1905000" cy="952500"/>
+<xdr:pic/><xdr:clientData/></xdr:oneCellAnchor>
+</xdr:wsDr>"#.to_vec();
+    parts.push(("xl/drawings/drawing1.xml".to_owned(), drawing.clone()));
+    parts.push((
+        "xl/drawings/_rels/drawing1.xml.rels".to_owned(),
+        br#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/></Relationships>"#.to_vec(),
+    ));
+    let chart = br#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+<c:chart><c:title><c:tx><c:rich><a:p><a:r><a:t>Sales</a:t></a:r></a:p></c:rich></c:tx></c:title>
+<c:plotArea><c:barChart><c:ser><c:idx val="0"/><c:order val="0"/>
+<c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>R&amp;D &#8364;</c:v></c:pt></c:strCache></c:strRef></c:tx>
+<c:spPr><a:solidFill><a:srgbClr val="4472C4"/></a:solidFill></c:spPr>
+<c:cat><c:strRef><c:f>Sheet1!$A$2:$A$4</c:f><c:strCache><c:pt idx="0"><c:v>North</c:v></c:pt><c:pt idx="1"><c:v>South</c:v></c:pt><c:pt idx="2"><c:v>West</c:v></c:pt></c:strCache></c:strRef></c:cat>
+<c:val><c:numRef><c:f>Sheet1!$B$2:$B$4</c:f><c:numCache><c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>25</c:v></c:pt><c:pt idx="2"><c:v>15</c:v></c:pt></c:numCache></c:numRef></c:val>
+</c:ser><c:ser><c:idx val="1"/><c:order val="1"/>
+<c:spPr><a:solidFill><a:schemeClr val="accent2"><a:lumMod val="60000"/><a:lumOff val="40000"/></a:schemeClr></a:solidFill></c:spPr>
+<c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>5</c:v></c:pt></c:numCache></c:numRef></c:val>
+</c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>"#.to_vec();
+    parts.push(("xl/charts/chart1.xml".to_owned(), chart.clone()));
+
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+    let drawings = &parsed.workbook.sheets[0].drawings;
+    assert_eq!(drawings.len(), 1, "picture-only anchors are skipped");
+    let anchored = &drawings[0];
+    assert_eq!(anchored.anchor.from.col, 2);
+    assert_eq!(anchored.anchor.from.col_offset_emu, 19050);
+    assert_eq!(anchored.anchor.from.row, 1);
+    assert_eq!(anchored.anchor.from.row_offset_emu, 9525);
+    let to = anchored.anchor.to.as_ref().unwrap();
+    assert_eq!((to.col, to.row), (8, 16));
+    assert_eq!(anchored.chart.chart_type, "column");
+    assert_eq!(anchored.chart.title.as_deref(), Some("Sales"));
+    let series = &anchored.chart.series[0];
+    assert_eq!(series.name.as_deref(), Some("R&D \u{20ac}"));
+    assert_eq!(series.categories, ["North", "South", "West"]);
+    assert_eq!(series.values, [10.0, 25.0, 15.0]);
+    assert_eq!(series.color, "#4472C4");
+    assert_eq!(
+        anchored.chart.series[1].color, "#F4B183",
+        "accent2 lighter-40% resolves through the theme"
+    );
+
+    let saved = serialize_workbook_with_package(&parsed.workbook, &parsed.package).unwrap();
+    assert_eq!(part_bytes(&saved, "xl/drawings/drawing1.xml"), drawing);
+    assert_eq!(part_bytes(&saved, "xl/charts/chart1.xml"), chart);
+    let sheet = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(sheet.contains(r#"<drawing r:id="rId1"/>"#), "{sheet}");
+}

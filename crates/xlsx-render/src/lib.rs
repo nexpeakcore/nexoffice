@@ -12,10 +12,12 @@ use serde::{Deserialize, Serialize};
 use xlsx_model::numfmt::{builtin_format_code, format_value};
 use xlsx_model::styles::{Border, BorderEdge, BorderStyle, FormatCode, Stylesheet, Theme};
 use xlsx_model::value::CellValue;
-use xlsx_model::workbook::Sheet;
+use xlsx_model::workbook::{Cell, Sheet};
 use xlsx_model::{CellRange, CellRef, Fill, HAlign, MAX_COLS, MAX_ROWS, SheetId, VAlign, Workbook};
 
-pub use display_list::{Align, DisplayList, DrawCmd, GridMeta, HyperlinkRegion, Rect, scaled};
+pub use display_list::{
+    Align, DisplayList, DrawCmd, GridMeta, HyperlinkRegion, PathCmd, Rect, scaled,
+};
 pub use geometry::GridGeometry;
 pub use region::{viewport_for_range, viewport_for_used_range};
 
@@ -509,6 +511,16 @@ pub fn build_display_list_with_ghosts(
         emit_ghost(&mut commands, ghost, bx, font, align);
     }
 
+    emit_charts(
+        &mut commands,
+        wb,
+        sheet_ref,
+        &geom,
+        viewport,
+        frozen_rows,
+        frozen_cols,
+    );
+
     if let Some(x) = cols.divider {
         commands.push(DrawCmd::Line {
             x1: x,
@@ -538,6 +550,304 @@ pub fn build_display_list_with_ghosts(
         commands,
         grid,
         hyperlinks,
+    }
+}
+
+const EMU_PER_PX: f64 = 9525.0;
+
+/// paint each anchored chart, clipped to the pane its anchor cell lives in so
+/// floating charts never bleed across a frozen-pane divider.
+fn emit_charts(
+    commands: &mut Vec<DrawCmd>,
+    wb: &Workbook,
+    sheet: &Sheet,
+    geom: &GridGeometry,
+    viewport: &Viewport,
+    frozen_rows: u32,
+    frozen_cols: u32,
+) {
+    use ooxml_drawingml::chart::{PlotChart, PlotRect, plot_chart_into};
+
+    if sheet.drawings.is_empty() {
+        return;
+    }
+    let frozen_x = geom.col_x(frozen_cols);
+    let frozen_y = geom.row_y(frozen_rows);
+    for drawing in &sheet.drawings {
+        let from = &drawing.anchor.from;
+        let x0 = f64::from(geom.col_x(from.col)) + from.col_offset_emu as f64 / EMU_PER_PX;
+        let y0 = f64::from(geom.row_y(from.row)) + from.row_offset_emu as f64 / EMU_PER_PX;
+        let (x1, y1) = match (&drawing.anchor.to, drawing.anchor.extent_emu) {
+            (Some(to), _) => (
+                f64::from(geom.col_x(to.col)) + to.col_offset_emu as f64 / EMU_PER_PX,
+                f64::from(geom.row_y(to.row)) + to.row_offset_emu as f64 / EMU_PER_PX,
+            ),
+            (None, Some((cx, cy))) => (x0 + cx as f64 / EMU_PER_PX, y0 + cy as f64 / EMU_PER_PX),
+            (None, None) => continue,
+        };
+        if x1 <= x0 || y1 <= y0 {
+            continue;
+        }
+
+        let axis = |pinned: bool, pos: f64, scroll: f32, frozen: u32, extent: f32, edge: f32| {
+            if pinned {
+                (pos, 0.0f32, edge.min(extent))
+            } else {
+                (
+                    pos - f64::from(scroll),
+                    if frozen > 0 { edge } else { 0.0 },
+                    extent,
+                )
+            }
+        };
+        let (vx, clip_left, clip_right) = axis(
+            frozen_cols > 0 && from.col < frozen_cols,
+            x0,
+            viewport.x,
+            frozen_cols,
+            viewport.width,
+            frozen_x,
+        );
+        let (vy, clip_top, clip_bottom) = axis(
+            frozen_rows > 0 && from.row < frozen_rows,
+            y0,
+            viewport.y,
+            frozen_rows,
+            viewport.height,
+            frozen_y,
+        );
+        let (w, h) = (x1 - x0, y1 - y0);
+        if clip_right <= clip_left
+            || clip_bottom <= clip_top
+            || vx + w <= f64::from(clip_left)
+            || vy + h <= f64::from(clip_top)
+            || vx >= f64::from(clip_right)
+            || vy >= f64::from(clip_bottom)
+        {
+            continue;
+        }
+
+        let clip = Rect {
+            x: clip_left,
+            y: clip_top,
+            w: clip_right - clip_left,
+            h: clip_bottom - clip_top,
+        };
+        commands.push(DrawCmd::PushClip {
+            x: clip.x,
+            y: clip.y,
+            w: clip.w,
+            h: clip.h,
+        });
+        let chart = refreshed_chart(wb, sheet, &drawing.chart);
+        plot_chart_into(
+            &PlotChart::from(&chart),
+            PlotRect { x: vx, y: vy, w, h },
+            &mut ChartSink { commands, clip },
+        );
+        commands.push(DrawCmd::PopClip {});
+    }
+}
+
+/// The most cells one chart series reads back, bounding the per-frame cost of
+/// a formula that spans a huge range.
+const MAX_CHART_SERIES_CELLS: usize = 4096;
+
+/// Re-reads each series' cached data from its source range so charts track
+/// live cell edits; ranges that no longer resolve keep their cached values.
+fn refreshed_chart(
+    wb: &Workbook,
+    host: &Sheet,
+    chart: &ooxml_drawingml::chart::ChartSpace,
+) -> ooxml_drawingml::chart::ChartSpace {
+    let mut chart = chart.clone();
+    let group_series = chart
+        .plot_groups
+        .iter_mut()
+        .flat_map(|group| group.series.iter_mut());
+    for series in chart.series.iter_mut().chain(group_series) {
+        if let Some(cells) = series
+            .value_formula
+            .as_deref()
+            .and_then(|formula| range_cells(wb, host, formula))
+        {
+            series.values = cells
+                .into_iter()
+                .map(|cell| match cell.map(|cell| &cell.value) {
+                    Some(CellValue::Number { value }) => *value,
+                    Some(CellValue::Bool { value }) => f64::from(*value),
+                    _ => 0.0,
+                })
+                .collect();
+        }
+        if let Some(cells) = series
+            .category_formula
+            .as_deref()
+            .and_then(|formula| range_cells(wb, host, formula))
+        {
+            series.categories = cells
+                .into_iter()
+                .map(|cell| match cell.map(|cell| &cell.value) {
+                    Some(CellValue::Text { value }) => value.clone(),
+                    Some(CellValue::Number { value }) => trimmed_number(*value),
+                    Some(CellValue::Bool { value }) => {
+                        if *value { "TRUE" } else { "FALSE" }.to_owned()
+                    }
+                    _ => String::new(),
+                })
+                .collect();
+        }
+    }
+    chart
+}
+
+/// Cells of a `Sheet1!$B$2:$B$4`-style reference in row-major order, or none
+/// when the reference does not parse, names an unknown sheet, or is too big.
+fn range_cells<'a>(
+    wb: &'a Workbook,
+    host: &'a Sheet,
+    formula: &str,
+) -> Option<Vec<Option<&'a Cell>>> {
+    let (sheet, range) = match formula.rsplit_once('!') {
+        Some((name, range)) => {
+            let name = name
+                .strip_prefix('\'')
+                .and_then(|name| name.strip_suffix('\''))
+                .map(|name| name.replace("''", "'"))
+                .unwrap_or_else(|| name.to_owned());
+            (wb.sheet_by_name(&name).map(|(_, sheet)| sheet)?, range)
+        }
+        None => (host, formula),
+    };
+    let range = CellRange::parse_a1(&range.replace('$', "")).ok()?;
+    let rows = range.end.row.checked_sub(range.start.row)? as usize + 1;
+    let cols = range.end.col.checked_sub(range.start.col)? as usize + 1;
+    if rows.checked_mul(cols)? > MAX_CHART_SERIES_CELLS {
+        return None;
+    }
+    let mut cells = Vec::with_capacity(rows * cols);
+    for row in range.start.row..=range.end.row {
+        for col in range.start.col..=range.end.col {
+            cells.push(sheet.cell(CellRef::new(row, col)));
+        }
+    }
+    Some(cells)
+}
+
+/// A short display form for numeric category labels.
+fn trimmed_number(value: f64) -> String {
+    if value.fract() == 0.0 && value.abs() < 1e15 {
+        format!("{}", value as i64)
+    } else {
+        format!("{value}")
+    }
+}
+
+/// translates chart plot ops into display-list commands as they are emitted.
+struct ChartSink<'a> {
+    commands: &'a mut Vec<DrawCmd>,
+    clip: Rect,
+}
+
+impl ooxml_drawingml::chart::PlotSink for ChartSink<'_> {
+    fn push_op(&mut self, op: ooxml_drawingml::chart::PlotOp) {
+        use ooxml_drawingml::GeometryPathCommand;
+        use ooxml_drawingml::chart::PlotOp;
+
+        match op {
+            PlotOp::Rect { x, y, w, h, fill } => self.commands.push(DrawCmd::FillRect {
+                x: x as f32,
+                y: y as f32,
+                w: w as f32,
+                h: h as f32,
+                color: fill,
+            }),
+            PlotOp::Text {
+                text,
+                x,
+                baseline_y,
+                width: _,
+                font,
+                color,
+            } => self.commands.push(DrawCmd::Text {
+                x: x as f32,
+                y: baseline_y as f32,
+                text,
+                font_size: font.size_px as f32,
+                color,
+                clip: self.clip,
+                align: Align::Left,
+                bold: font.weight >= 600,
+                italic: false,
+                underline: false,
+                strike: false,
+                highlight: None,
+                dashed_underline: false,
+                font_family: None,
+                ghost: false,
+            }),
+            PlotOp::Line {
+                x1,
+                y1,
+                x2,
+                y2,
+                color,
+                width,
+            } => self.commands.push(DrawCmd::Line {
+                x1: x1 as f32,
+                y1: y1 as f32,
+                x2: x2 as f32,
+                y2: y2 as f32,
+                width: width as f32,
+                color,
+                style: None,
+            }),
+            PlotOp::Path {
+                commands,
+                fill,
+                stroke,
+                ..
+            } => self.commands.push(DrawCmd::Path {
+                commands: commands
+                    .into_iter()
+                    .map(|command| match command {
+                        GeometryPathCommand::Move { x, y } => PathCmd::MoveTo {
+                            x: x as f32,
+                            y: y as f32,
+                        },
+                        GeometryPathCommand::Line { x, y } => PathCmd::LineTo {
+                            x: x as f32,
+                            y: y as f32,
+                        },
+                        GeometryPathCommand::Quad { cpx, cpy, x, y } => PathCmd::QuadTo {
+                            cx: cpx as f32,
+                            cy: cpy as f32,
+                            x: x as f32,
+                            y: y as f32,
+                        },
+                        GeometryPathCommand::Cubic {
+                            cp1x,
+                            cp1y,
+                            cp2x,
+                            cp2y,
+                            x,
+                            y,
+                        } => PathCmd::CubicTo {
+                            x1: cp1x as f32,
+                            y1: cp1y as f32,
+                            x2: cp2x as f32,
+                            y2: cp2y as f32,
+                            x: x as f32,
+                            y: y as f32,
+                        },
+                        GeometryPathCommand::Close => PathCmd::Close {},
+                    })
+                    .collect(),
+                fill: Some(fill),
+                stroke: stroke.as_ref().map(|stroke| stroke.color.clone()),
+                stroke_width: stroke.map_or(0.0, |stroke| stroke.width as f32),
+            }),
+        }
     }
 }
 
@@ -944,7 +1254,7 @@ fn border_stroke(style: BorderStyle) -> (f32, Option<String>) {
 mod tests {
     use super::*;
     use xlsx_model::Hyperlink;
-    use xlsx_model::workbook::{Cell, FreezePane, Sheet};
+    use xlsx_model::workbook::{AnchorCell, Cell, DrawingAnchor, FreezePane, Sheet, SheetDrawing};
 
     fn text_cell(s: &str) -> Cell {
         Cell {
@@ -1525,5 +1835,198 @@ mod tests {
         assert_eq!(texts[0].0, "merged");
         let dc = geometry::col_chars_to_px(geometry::DEFAULT_COL_WIDTH_CHARS);
         assert!((texts[0].1.w - dc * 2.0).abs() < 0.01);
+    }
+
+    fn pie_chart() -> ooxml_drawingml::chart::ChartSpace {
+        use ooxml_drawingml::chart::{ChartSeries, ChartSpace};
+        ChartSpace {
+            chart_type: "pie".to_owned(),
+            title: Some("Sales".to_owned()),
+            legend: None,
+            series: vec![ChartSeries {
+                name: Some("Revenue".to_owned()),
+                categories: vec!["North".to_owned(), "South".to_owned()],
+                values: vec![10.0, 25.0],
+                color: "#4472C4".to_owned(),
+                index: None,
+                order: None,
+                category_formula: None,
+                value_formula: None,
+                axis_ids: None,
+                points: None,
+                grouping: None,
+                marker: None,
+                smooth: None,
+            }],
+            axes: None,
+            plot_groups: Vec::new(),
+            axis_list: None,
+        }
+    }
+
+    fn anchored_chart(from_col: u32, from_row: u32, to_col: u32, to_row: u32) -> SheetDrawing {
+        SheetDrawing {
+            anchor: DrawingAnchor {
+                from: AnchorCell {
+                    col: from_col,
+                    col_offset_emu: 0,
+                    row: from_row,
+                    row_offset_emu: 0,
+                },
+                to: Some(AnchorCell {
+                    col: to_col,
+                    col_offset_emu: 0,
+                    row: to_row,
+                    row_offset_emu: 0,
+                }),
+                extent_emu: None,
+            },
+            chart: pie_chart(),
+        }
+    }
+
+    fn clip_span(dl: &DisplayList) -> Option<(usize, usize)> {
+        let push = dl
+            .commands
+            .iter()
+            .position(|c| matches!(c, DrawCmd::PushClip { .. }))?;
+        let pop = dl
+            .commands
+            .iter()
+            .position(|c| matches!(c, DrawCmd::PopClip {}))?;
+        Some((push, pop))
+    }
+
+    #[test]
+    fn charts_paint_paths_inside_a_clip_pair() {
+        let mut sheet = Sheet::new("Sheet1");
+        sheet.set_cell(CellRef::new(0, 0), num_cell(1.0));
+        sheet.drawings.push(anchored_chart(1, 1, 6, 12));
+        let mut wb = Workbook::default();
+        wb.sheets.push(sheet);
+
+        let vp = Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 400.0,
+        };
+        let dl = build_display_list(&wb, SheetId(0), &vp);
+
+        let (push, pop) = clip_span(&dl).expect("chart must emit a clip pair");
+        assert!(push < pop);
+        let inside = &dl.commands[push + 1..pop];
+        assert!(inside.iter().any(|c| matches!(c, DrawCmd::Path { .. })));
+        assert!(inside.iter().any(|c| matches!(c, DrawCmd::FillRect { .. })));
+        assert!(
+            inside
+                .iter()
+                .any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "Sales"))
+        );
+        assert!(
+            !dl.commands[..push]
+                .iter()
+                .chain(&dl.commands[pop + 1..])
+                .any(|c| matches!(c, DrawCmd::Path { .. })),
+            "paths only paint inside the chart clip"
+        );
+    }
+
+    #[test]
+    fn charts_clip_to_the_body_pane_and_track_scroll() {
+        let mut sheet = Sheet::new("Sheet1");
+        sheet.set_cell(CellRef::new(0, 0), num_cell(1.0));
+        sheet.freeze_pane = Some(FreezePane {
+            rows: 2,
+            cols: 1,
+            top_left: CellRef::new(2, 1),
+        });
+        sheet.drawings.push(anchored_chart(2, 3, 8, 14));
+        let geom = GridGeometry::new(&sheet);
+        let divider_x = geom.col_x(1);
+        let divider_y = geom.row_y(2);
+        let chart_x = geom.col_x(2);
+        let mut wb = Workbook::default();
+        wb.sheets.push(sheet);
+
+        let vp = Viewport {
+            x: 10.0,
+            y: 25.0,
+            width: 800.0,
+            height: 400.0,
+        };
+        let dl = build_display_list(&wb, SheetId(0), &vp);
+
+        let (push, pop) = clip_span(&dl).expect("chart must emit a clip pair");
+        let DrawCmd::PushClip { x, y, w, h } = dl.commands[push] else {
+            unreachable!()
+        };
+        assert_eq!(x, divider_x);
+        assert_eq!(y, divider_y);
+        assert_eq!(w, vp.width - divider_x);
+        assert_eq!(h, vp.height - divider_y);
+
+        let background = dl.commands[push + 1..pop]
+            .iter()
+            .find_map(|c| match c {
+                DrawCmd::FillRect { x, .. } => Some(*x),
+                _ => None,
+            })
+            .expect("chart background");
+        assert!((background - (chart_x - vp.x)).abs() < 0.01);
+    }
+
+    #[test]
+    fn chart_series_track_live_cell_values() {
+        let mut sheet = Sheet::new("Sheet1");
+        sheet.set_cell(CellRef::new(1, 0), text_cell("B\u{1eafc}"));
+        sheet.set_cell(CellRef::new(2, 0), text_cell("Nam"));
+        sheet.set_cell(CellRef::new(1, 1), num_cell(10.0));
+        sheet.set_cell(CellRef::new(2, 1), num_cell(25.0));
+        let mut drawing = anchored_chart(2, 1, 8, 14);
+        drawing.chart.chart_type = "column".to_owned();
+        let series = &mut drawing.chart.series[0];
+        series.categories = vec!["Old1".to_owned(), "Old2".to_owned()];
+        series.values = vec![1.0, 1.0];
+        series.category_formula = Some("Sheet1!$A$2:$A$3".to_owned());
+        series.value_formula = Some("Sheet1!$B$2:$B$3".to_owned());
+        sheet.drawings.push(drawing);
+        let mut wb = Workbook::default();
+        wb.sheets.push(sheet);
+
+        let vp = Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 400.0,
+        };
+        let dl = build_display_list(&wb, SheetId(0), &vp);
+        let (push, pop) = clip_span(&dl).expect("chart must emit a clip pair");
+        let labels: Vec<&str> = dl.commands[push + 1..pop]
+            .iter()
+            .filter_map(|c| match c {
+                DrawCmd::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(labels.contains(&"B\u{1eafc}"), "{labels:?}");
+        assert!(!labels.contains(&"Old1"), "{labels:?}");
+    }
+
+    #[test]
+    fn off_screen_charts_are_culled() {
+        let mut sheet = Sheet::new("Sheet1");
+        sheet.drawings.push(anchored_chart(40, 0, 46, 12));
+        let mut wb = Workbook::default();
+        wb.sheets.push(sheet);
+
+        let vp = Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 300.0,
+        };
+        let dl = build_display_list(&wb, SheetId(0), &vp);
+        assert!(clip_span(&dl).is_none());
     }
 }

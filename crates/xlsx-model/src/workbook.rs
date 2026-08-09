@@ -115,6 +115,34 @@ pub struct Sheet {
     pub manual_hidden_rows: BTreeSet<RowId>,
     pub auto_filter: Option<AutoFilter>,
     pub comments: BTreeMap<(RowId, ColId), Comment>,
+    /// Charts anchored on this sheet, parsed for display only — edits never
+    /// touch them and saves re-emit the preserved source parts.
+    pub drawings: Vec<SheetDrawing>,
+}
+
+/// One cell-anchored drawing object (today: only charts are modeled).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SheetDrawing {
+    pub anchor: DrawingAnchor,
+    pub chart: ooxml_drawingml::chart::ChartSpace,
+}
+
+/// Where a drawing sits on the grid, in cells plus EMU offsets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrawingAnchor {
+    pub from: AnchorCell,
+    /// `None` for one-cell/absolute anchors, which size by `extent_emu`.
+    pub to: Option<AnchorCell>,
+    /// `<xdr:ext cx cy>` when the anchor carries one.
+    pub extent_emu: Option<(i64, i64)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnchorCell {
+    pub col: u32,
+    pub col_offset_emu: i64,
+    pub row: u32,
+    pub row_offset_emu: i64,
 }
 
 impl Sheet {

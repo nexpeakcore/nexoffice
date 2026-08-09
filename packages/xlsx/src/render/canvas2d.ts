@@ -7,7 +7,7 @@
  * no allocation of app state and no reads back from the canvas.
  */
 
-import type { DisplayList, DrawCmd, LineCmd, TextCmd } from '../display-list/types';
+import type { DisplayList, DrawCmd, LineCmd, PathCmd, TextCmd } from '../display-list/types';
 
 const ALIGN_TO_TEXT_ALIGN: Record<NonNullable<TextCmd['align']>, CanvasTextAlign> = {
   left: 'left',
@@ -35,7 +35,27 @@ export function paintDisplayList(
   ctx.save();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, dl.width, dl.height);
-  for (const cmd of dl.commands) paintCommand(ctx, cmd);
+  let clipDepth = 0;
+  for (const cmd of dl.commands) {
+    if (cmd.op === 'pushClip') {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(cmd.x, cmd.y, cmd.w, cmd.h);
+      ctx.clip();
+      clipDepth += 1;
+    } else if (cmd.op === 'popClip') {
+      if (clipDepth > 0) {
+        ctx.restore();
+        clipDepth -= 1;
+      }
+    } else {
+      paintCommand(ctx, cmd);
+    }
+  }
+  while (clipDepth > 0) {
+    ctx.restore();
+    clipDepth -= 1;
+  }
   ctx.restore();
 }
 
@@ -51,6 +71,44 @@ function paintCommand(ctx: CanvasRenderingContext2D, cmd: DrawCmd): void {
     case 'text':
       paintText(ctx, cmd);
       return;
+    case 'path':
+      paintPath(ctx, cmd);
+      return;
+    case 'pushClip':
+    case 'popClip':
+      return;
+  }
+}
+
+function paintPath(ctx: CanvasRenderingContext2D, cmd: PathCmd): void {
+  ctx.beginPath();
+  for (const segment of cmd.commands) {
+    switch (segment.op) {
+      case 'moveTo':
+        ctx.moveTo(segment.x, segment.y);
+        break;
+      case 'lineTo':
+        ctx.lineTo(segment.x, segment.y);
+        break;
+      case 'quadTo':
+        ctx.quadraticCurveTo(segment.cx, segment.cy, segment.x, segment.y);
+        break;
+      case 'cubicTo':
+        ctx.bezierCurveTo(segment.x1, segment.y1, segment.x2, segment.y2, segment.x, segment.y);
+        break;
+      case 'close':
+        ctx.closePath();
+        break;
+    }
+  }
+  if (cmd.fill) {
+    ctx.fillStyle = cmd.fill;
+    ctx.fill();
+  }
+  if (cmd.stroke) {
+    ctx.strokeStyle = cmd.stroke;
+    ctx.lineWidth = cmd.strokeWidth || 0.5;
+    ctx.stroke();
   }
 }
 
