@@ -6,7 +6,6 @@
 use xlsx_model::styles::Theme;
 use xlsx_model::{AnchorCell, DrawingAnchor, SheetDrawing};
 
-use crate::ParseError;
 use crate::dom::{XmlElement, parse_dom};
 use crate::xml::{find_part, resolve_part_path};
 
@@ -69,20 +68,22 @@ pub(crate) fn worksheet_drawing_rid(data: &[u8]) -> Option<String> {
 
 /// Parses one sheet's drawing part into anchored charts. Anchors without a
 /// chart (pictures, plain shapes) are skipped — they are not modeled yet.
+/// Drawings are display-only, so parts that fail to parse (oversized,
+/// malformed) drop their charts rather than failing the workbook open.
 pub(crate) fn parse_sheet_drawings(
     parts: &[(String, Vec<u8>)],
     drawing_path: &str,
     theme: &Theme,
-) -> Result<Vec<SheetDrawing>, ParseError> {
+) -> Vec<SheetDrawing> {
     let Some(bytes) = find_part(parts, drawing_path) else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
-    let root = parse_dom(bytes, drawing_path)?;
+    let Ok(root) = parse_dom(bytes, drawing_path) else {
+        return Vec::new();
+    };
     let drawing_rels = {
         let rels_path = relationship_part_path(drawing_path);
-        find_part(parts, &rels_path)
-            .map(|bytes| parse_dom(bytes, &rels_path))
-            .transpose()?
+        find_part(parts, &rels_path).and_then(|bytes| parse_dom(bytes, &rels_path).ok())
     };
 
     let mut drawings = Vec::new();
@@ -95,7 +96,7 @@ pub(crate) fn parse_sheet_drawings(
                 ) else {
                     continue;
                 };
-                DrawingAnchor {
+                DrawingAnchor::Cell {
                     from,
                     to: Some(to),
                     extent_emu: None,
@@ -105,10 +106,27 @@ pub(crate) fn parse_sheet_drawings(
                 let Some(from) = anchor_element.child("from").and_then(anchor_cell) else {
                     continue;
                 };
-                DrawingAnchor {
+                DrawingAnchor::Cell {
                     from,
                     to: None,
                     extent_emu: extent(anchor_element),
+                }
+            }
+            "absoluteAnchor" => {
+                let position = |name: &str| {
+                    anchor_element
+                        .child("pos")
+                        .and_then(|pos| pos.attribute(name))
+                        .and_then(|value| value.parse().ok())
+                };
+                let (Some(x), Some(y), Some(ext)) =
+                    (position("x"), position("y"), extent(anchor_element))
+                else {
+                    continue;
+                };
+                DrawingAnchor::Absolute {
+                    pos_emu: (x, y),
+                    extent_emu: ext,
                 }
             }
             _ => continue,
@@ -134,14 +152,16 @@ pub(crate) fn parse_sheet_drawings(
         let Some(chart_bytes) = find_part(parts, &chart_path) else {
             continue;
         };
-        let mut chart_root = parse_dom(chart_bytes, &chart_path)?;
+        let Ok(mut chart_root) = parse_dom(chart_bytes, &chart_path) else {
+            continue;
+        };
         resolve_scheme_colors(&mut chart_root, theme);
         let Some(chart) = parse_chart_space(&chart_root) else {
             continue;
         };
         drawings.push(SheetDrawing { anchor, chart });
     }
-    Ok(drawings)
+    drawings
 }
 
 fn anchor_cell(element: &XmlElement) -> Option<AnchorCell> {

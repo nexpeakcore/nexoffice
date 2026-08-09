@@ -3050,11 +3050,14 @@ fn parses_anchored_charts_and_preserves_their_parts() {
     let drawings = &parsed.workbook.sheets[0].drawings;
     assert_eq!(drawings.len(), 1, "picture-only anchors are skipped");
     let anchored = &drawings[0];
-    assert_eq!(anchored.anchor.from.col, 2);
-    assert_eq!(anchored.anchor.from.col_offset_emu, 19050);
-    assert_eq!(anchored.anchor.from.row, 1);
-    assert_eq!(anchored.anchor.from.row_offset_emu, 9525);
-    let to = anchored.anchor.to.as_ref().unwrap();
+    let xlsx_model::DrawingAnchor::Cell { from, to, .. } = &anchored.anchor else {
+        panic!("expected a cell anchor");
+    };
+    assert_eq!(from.col, 2);
+    assert_eq!(from.col_offset_emu, 19050);
+    assert_eq!(from.row, 1);
+    assert_eq!(from.row_offset_emu, 9525);
+    let to = to.as_ref().unwrap();
     assert_eq!((to.col, to.row), (8, 16));
     assert_eq!(anchored.chart.chart_type, "column");
     assert_eq!(anchored.chart.title.as_deref(), Some("Sales"));
@@ -3073,4 +3076,52 @@ fn parses_anchored_charts_and_preserves_their_parts() {
     assert_eq!(part_bytes(&saved, "xl/charts/chart1.xml"), chart);
     let sheet = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
     assert!(sheet.contains(r#"<drawing r:id="rId1"/>"#), "{sheet}");
+}
+
+/// Absolute anchors render too, and a chart part that trips the DOM guards
+/// only drops its own chart instead of failing the workbook open.
+#[test]
+fn absolute_anchors_parse_and_bad_chart_parts_are_skipped() {
+    let body = r#"<sheetData/><drawing r:id="rId1"/>"#;
+    let mut parts = package(body, &[], false);
+    parts.push((
+        "xl/worksheets/_rels/sheet1.xml.rels".to_owned(),
+        br#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>"#.to_vec(),
+    ));
+    parts.push((
+        "xl/drawings/drawing1.xml".to_owned(),
+        br#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<xdr:absoluteAnchor><xdr:pos x="190500" y="95250"/><xdr:ext cx="1905000" cy="952500"/>
+<xdr:graphicFrame><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData><c:chart r:id="rId1"/></a:graphicData></a:graphic></xdr:graphicFrame>
+<xdr:clientData/></xdr:absoluteAnchor>
+<xdr:twoCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>4</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>8</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>
+<xdr:graphicFrame><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData><c:chart r:id="rId2"/></a:graphicData></a:graphic></xdr:graphicFrame>
+<xdr:clientData/></xdr:twoCellAnchor>
+</xdr:wsDr>"#.to_vec(),
+    ));
+    parts.push((
+        "xl/drawings/_rels/drawing1.xml.rels".to_owned(),
+        br#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart2.xml"/></Relationships>"#.to_vec(),
+    ));
+    parts.push((
+        "xl/charts/chart1.xml".to_owned(),
+        br#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea><c:pieChart><c:ser><c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>1</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser></c:pieChart></c:plotArea></c:chart></c:chartSpace>"#.to_vec(),
+    ));
+    let deep = format!("{}<c:chart/>{}", "<a>".repeat(80), "</a>".repeat(80));
+    parts.push(("xl/charts/chart2.xml".to_owned(), deep.into_bytes()));
+
+    let workbook = parse_workbook_with_package(&parts).unwrap().workbook;
+    let drawings = &workbook.sheets[0].drawings;
+    assert_eq!(
+        drawings.len(),
+        1,
+        "the too-deep chart part is skipped, not fatal"
+    );
+    assert_eq!(
+        drawings[0].anchor,
+        xlsx_model::DrawingAnchor::Absolute {
+            pos_emu: (190_500, 95_250),
+            extent_emu: (1_905_000, 952_500),
+        }
+    );
 }

@@ -574,16 +574,43 @@ fn emit_charts(
     let frozen_x = geom.col_x(frozen_cols);
     let frozen_y = geom.row_y(frozen_rows);
     for drawing in &sheet.drawings {
-        let from = &drawing.anchor.from;
-        let x0 = f64::from(geom.col_x(from.col)) + from.col_offset_emu as f64 / EMU_PER_PX;
-        let y0 = f64::from(geom.row_y(from.row)) + from.row_offset_emu as f64 / EMU_PER_PX;
-        let (x1, y1) = match (&drawing.anchor.to, drawing.anchor.extent_emu) {
-            (Some(to), _) => (
-                f64::from(geom.col_x(to.col)) + to.col_offset_emu as f64 / EMU_PER_PX,
-                f64::from(geom.row_y(to.row)) + to.row_offset_emu as f64 / EMU_PER_PX,
-            ),
-            (None, Some((cx, cy))) => (x0 + cx as f64 / EMU_PER_PX, y0 + cy as f64 / EMU_PER_PX),
-            (None, None) => continue,
+        let (x0, y0, x1, y1, anchor_col, anchor_row) = match &drawing.anchor {
+            xlsx_model::DrawingAnchor::Cell {
+                from,
+                to,
+                extent_emu,
+            } => {
+                let x0 = f64::from(geom.col_x(from.col)) + from.col_offset_emu as f64 / EMU_PER_PX;
+                let y0 = f64::from(geom.row_y(from.row)) + from.row_offset_emu as f64 / EMU_PER_PX;
+                let (x1, y1) = match (to, extent_emu) {
+                    (Some(to), _) => (
+                        f64::from(geom.col_x(to.col)) + to.col_offset_emu as f64 / EMU_PER_PX,
+                        f64::from(geom.row_y(to.row)) + to.row_offset_emu as f64 / EMU_PER_PX,
+                    ),
+                    (None, Some((cx, cy))) => {
+                        (x0 + *cx as f64 / EMU_PER_PX, y0 + *cy as f64 / EMU_PER_PX)
+                    }
+                    (None, None) => continue,
+                };
+                (x0, y0, x1, y1, from.col, from.row)
+            }
+            xlsx_model::DrawingAnchor::Absolute {
+                pos_emu,
+                extent_emu,
+            } => {
+                let x0 = pos_emu.0 as f64 / EMU_PER_PX;
+                let y0 = pos_emu.1 as f64 / EMU_PER_PX;
+                let x1 = x0 + extent_emu.0 as f64 / EMU_PER_PX;
+                let y1 = y0 + extent_emu.1 as f64 / EMU_PER_PX;
+                (
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    geom.col_at_x(x0 as f32),
+                    geom.row_at_y(y0 as f32),
+                )
+            }
         };
         if x1 <= x0 || y1 <= y0 {
             continue;
@@ -601,7 +628,7 @@ fn emit_charts(
             }
         };
         let (vx, clip_left, clip_right) = axis(
-            frozen_cols > 0 && from.col < frozen_cols,
+            frozen_cols > 0 && anchor_col < frozen_cols,
             x0,
             viewport.x,
             frozen_cols,
@@ -609,7 +636,7 @@ fn emit_charts(
             frozen_x,
         );
         let (vy, clip_top, clip_bottom) = axis(
-            frozen_rows > 0 && from.row < frozen_rows,
+            frozen_rows > 0 && anchor_row < frozen_rows,
             y0,
             viewport.y,
             frozen_rows,
@@ -1866,7 +1893,7 @@ mod tests {
 
     fn anchored_chart(from_col: u32, from_row: u32, to_col: u32, to_row: u32) -> SheetDrawing {
         SheetDrawing {
-            anchor: DrawingAnchor {
+            anchor: DrawingAnchor::Cell {
                 from: AnchorCell {
                     col: from_col,
                     col_offset_emu: 0,
