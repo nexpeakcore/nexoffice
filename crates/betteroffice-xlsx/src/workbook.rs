@@ -1383,6 +1383,7 @@ impl Workbook {
     /// resolved against the workbook now to seed the cached data; rendering
     /// keeps tracking the ranges live afterwards.
     pub fn add_chart(&mut self, sheet: SheetId, spec: &ChartSpec) -> Result<()> {
+        self.ensure_chart_authoring_allowed()?;
         self.ensure_worksheet_sheet(sheet)?;
         if !matches!(
             spec.chart_type.as_str(),
@@ -1502,6 +1503,7 @@ impl Workbook {
 
     /// Removes a created chart by its position in `Sheet::drawings`.
     pub fn remove_chart(&mut self, sheet: SheetId, index: usize) -> Result<()> {
+        self.ensure_chart_authoring_allowed()?;
         self.ensure_worksheet_sheet(sheet)?;
         let target = self
             .model
@@ -1519,6 +1521,18 @@ impl Workbook {
         }
         target.drawings.remove(index);
         self.edited_since_open = true;
+        Ok(())
+    }
+
+    /// Drawings are sidecar state the authority never carries, so authoring
+    /// them on a collaborative replica would silently diverge from peers.
+    fn ensure_chart_authoring_allowed(&self) -> Result<()> {
+        if self.is_collaborative() {
+            return Err(Error::InvalidOperation(
+                "charts cannot be authored on a collaborative replica; they do not sync to peers yet"
+                    .to_owned(),
+            ));
+        }
         Ok(())
     }
 

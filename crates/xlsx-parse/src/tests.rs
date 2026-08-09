@@ -3305,3 +3305,16 @@ fn created_charts_use_strict_namespaces_in_strict_packages() {
         "{rels}"
     );
 }
+
+#[test]
+fn created_charts_reject_malformed_series_colors() {
+    let mut sheet = xlsx_model::workbook::Sheet::new("Sheet1");
+    let mut drawing = created_column_chart();
+    drawing.chart.series[0].color = "\"><script>".to_owned();
+    sheet.drawings.push(drawing);
+    let mut wb = Workbook::default();
+    wb.sheets.push(sheet);
+
+    let error = serialize_workbook(&wb).unwrap_err();
+    assert!(error.to_string().contains("color"), "{error}");
+}

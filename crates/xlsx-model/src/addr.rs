@@ -193,7 +193,7 @@ pub fn parse_sheet_range(reference: &str) -> Option<(Option<String>, CellRange)>
         None => (None, reference),
     };
     let range = CellRange::parse_a1(&range.replace('$', "")).ok()?;
-    Some((sheet, range))
+    Some((sheet, CellRange::new(range.start, range.end)))
 }
 
 #[cfg(test)]

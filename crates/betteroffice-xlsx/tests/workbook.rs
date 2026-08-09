@@ -4595,13 +4595,13 @@ fn charts_survive_edits_and_saves() {
     assert!(paints_chart(&standalone), "chart paints in standalone mode");
 }
 
-/// An authored chart paints immediately, survives collaborative edits, and
-/// serializes into real chart parts that parse back on reopen.
+/// An authored chart paints immediately, survives edits, and serializes into
+/// real chart parts that parse back on reopen.
 #[test]
 fn added_charts_paint_save_and_reopen() {
     use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
 
-    let mut workbook = Workbook::open_collaborative(&sample_xlsx(), 9).unwrap();
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
     workbook
         .add_chart(
             SheetId(0),
@@ -4816,4 +4816,56 @@ fn add_chart_rejects_out_of_bounds_anchors() {
         end: CellRef::new(2, 2),
     };
     assert!(workbook.add_chart(SheetId(0), &spec(inverted)).is_err());
+}
+
+#[test]
+fn chart_authoring_is_refused_on_collaborative_replicas() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open_collaborative(&sample_xlsx(), 11).unwrap();
+    let error = workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "pie".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, Error::InvalidOperation(message) if message.contains("collaborative")),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn inverted_chart_data_ranges_normalize() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "pie".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A2:A1".to_owned(),
+                }],
+            },
+        )
+        .unwrap();
+    let sheet = workbook.model().sheet(SheetId(0)).unwrap();
+    let series = &sheet.drawings[0].chart.series[0];
+    assert_eq!(series.value_formula.as_deref(), Some("Data!$A$1:$A$2"));
+    assert_eq!(series.values, [10.0, 5.0]);
 }

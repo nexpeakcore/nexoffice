@@ -206,12 +206,12 @@ fn chart_xml(chart: &ChartSpace, namespaces: DrawingNamespaces) -> Result<Vec<u8
 }
 
 fn plot_element(chart: &ChartSpace) -> Result<String, ParseError> {
-    let series: String = chart
+    let series = chart
         .series
         .iter()
         .enumerate()
         .map(|(index, series)| series_xml(series, index, &chart.chart_type))
-        .collect();
+        .collect::<Result<String, ParseError>>()?;
     Ok(match chart.chart_type.as_str() {
         "column" | "bar" => {
             let direction = if chart.chart_type == "bar" {
@@ -257,7 +257,7 @@ fn axes() -> String {
     )
 }
 
-fn series_xml(series: &ChartSeries, index: usize, chart_type: &str) -> String {
+fn series_xml(series: &ChartSeries, index: usize, chart_type: &str) -> Result<String, ParseError> {
     let name = series
         .name
         .as_deref()
@@ -268,6 +268,12 @@ fn series_xml(series: &ChartSeries, index: usize, chart_type: &str) -> String {
         .strip_prefix('#')
         .unwrap_or(&series.color)
         .to_uppercase();
+    if color.len() != 6 || !color.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ParseError::Malformed(format!(
+            "chart series color must be #RRGGBB, got {:?}",
+            series.color
+        )));
+    }
     let properties = if chart_type == "line" {
         format!(
             r#"<c:spPr><a:ln w="28575"><a:solidFill><a:srgbClr val="{color}"/></a:solidFill></a:ln></c:spPr>"#
@@ -309,9 +315,9 @@ fn series_xml(series: &ChartSeries, index: usize, chart_type: &str) -> String {
             )
         })
         .unwrap_or_default();
-    format!(
+    Ok(format!(
         r#"<c:ser><c:idx val="{index}"/><c:order val="{index}"/>{name}{properties}{categories}{values}</c:ser>"#
-    )
+    ))
 }
 
 fn next_free_path(used_paths: &mut HashSet<String>, build: impl Fn(usize) -> String) -> String {
