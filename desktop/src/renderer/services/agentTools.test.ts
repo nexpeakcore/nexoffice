@@ -231,10 +231,10 @@ describe('executeXlsxAgentTool', () => {
     const spaced = validateCreateChart(access, {
       chart_type: 'line',
       anchor: 'A1:C3',
-      series: [{ values: 'Budget! C2:C10' }],
+      series: [{ values: 'budget! c2:c10' }],
     })
     if (!('proposal' in spaced)) throw new Error(JSON.stringify(spaced))
-    expect(spaced.proposal.series).toEqual([{ values: 'Budget!C2:C10' }])
+    expect(spaced.proposal.series).toEqual([{ values: 'budget!C2:C10' }])
   })
 
   it('routes the chart to the anchor-qualified sheet and rejects unknown names', () => {

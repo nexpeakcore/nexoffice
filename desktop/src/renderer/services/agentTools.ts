@@ -56,10 +56,11 @@ const A1_CELL = /^\$?([A-Za-z]{1,3})\$?(\d+)$/
 
 /** A sheet-qualified reference rebuilt from its parts, requoting when needed. */
 function joinSheetQualifier(parts: { sheet?: string; range: string }): string {
-  if (parts.sheet === undefined) return parts.range
+  const range = parts.range.toUpperCase()
+  if (parts.sheet === undefined) return range
   const plain = /^[A-Za-z0-9_]+$/.test(parts.sheet)
   const sheet = plain ? parts.sheet : `'${parts.sheet.replace(/'/g, "''")}'`
-  return `${sheet}!${parts.range}`
+  return `${sheet}!${range}`
 }
 
 /** Split an optional sheet qualifier off a range reference; null on malformed quoting. */
