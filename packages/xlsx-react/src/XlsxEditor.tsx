@@ -2449,21 +2449,23 @@ function XlsxEditorContent({
               </button>
             );
           })}
-          <button
-            onClick={addSheet}
-            aria-label={t('editor.addSheet')}
-            title={t('editor.addSheet')}
-            style={{
-              border: 'none',
-              padding: '4px 10px',
-              cursor: 'pointer',
-              background: 'transparent',
-              color: '#555',
-              fontWeight: 600,
-            }}
-          >
-            +
-          </button>
+          {!collaborationEnabled && (
+            <button
+              onClick={addSheet}
+              aria-label={t('editor.addSheet')}
+              title={t('editor.addSheet')}
+              style={{
+                border: 'none',
+                padding: '4px 10px',
+                cursor: 'pointer',
+                background: 'transparent',
+                color: '#555',
+                fontWeight: 600,
+              }}
+            >
+              +
+            </button>
+          )}
         </div>
       )}
     </div>
