@@ -229,4 +229,46 @@ describe('executeXlsxAgentTool', () => {
       })
     ).toHaveProperty('error')
   })
+
+  it('routes the chart to the anchor-qualified sheet and rejects unknown names', () => {
+    const access = fakeAccess()
+    const validated = validateCreateChart(access, {
+      chart_type: 'line',
+      anchor: 'budget!D2:K16',
+      series: [{ values: 'A1:A2' }],
+    })
+    if (!('proposal' in validated)) throw new Error(JSON.stringify(validated))
+    expect(validated.proposal.sheet).toBe(0)
+    expect(validated.proposal.sheetName).toBe('Budget')
+    expect(
+      validateCreateChart(access, {
+        chart_type: 'line',
+        sheet: 1,
+        anchor: 'Budget!D2:K16',
+        series: [{ values: 'A1:A2' }],
+      })
+    ).toHaveProperty('error')
+    expect(
+      validateCreateChart(access, {
+        chart_type: 'line',
+        anchor: 'Nowhere!D2:K16',
+        series: [{ values: 'A1:A2' }],
+      })
+    ).toHaveProperty('error')
+    expect(
+      validateCreateChart(access, {
+        chart_type: 'line',
+        anchor: 'A1:C3',
+        series: [{ values: 'Dtaa!C2:C10' }],
+      })
+    ).toHaveProperty('error')
+    expect(
+      validateCreateChart(access, {
+        chart_type: 'line',
+        anchor: 'A1:C3',
+        categories: 'Nope!A1:A2',
+        series: [{ values: 'A1:A2' }],
+      })
+    ).toHaveProperty('error')
+  })
 })

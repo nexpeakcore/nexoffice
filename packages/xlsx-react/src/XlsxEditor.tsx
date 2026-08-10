@@ -1832,13 +1832,12 @@ function XlsxEditorContent({
     ? normalizedSelection.right - normalizedSelection.left + 1
     : 1;
 
-  // append a new empty sheet with a fresh default name and switch to it.
   const addSheet = () => {
     const handle = handleRef.current;
     if (!handle || !sheetInfo) return;
-    const names = new Set(sheetInfo.sheetNames);
+    const names = new Set(sheetInfo.sheetNames.map((name) => name.toLowerCase()));
     let ordinal = sheetInfo.sheetNames.length + 1;
-    while (names.has(`Sheet${ordinal}`)) ordinal += 1;
+    while (names.has(`sheet${ordinal}`)) ordinal += 1;
     const index = sheetInfo.sheetNames.length;
     try {
       applyResult(handle.applyOps([{ type: 'addSheet', index, name: `Sheet${ordinal}` }]));
