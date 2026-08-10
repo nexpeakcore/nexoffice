@@ -219,7 +219,7 @@ describe('executeXlsxAgentTool', () => {
     })
     if (!('proposal' in validated)) throw new Error(`expected a proposal: ${JSON.stringify(validated)}`)
     expect(validated.proposal.anchor).toBe('D2:K16')
-    expect(validated.proposal.categories).toBe("'Budget'!A2:A10")
+    expect(validated.proposal.categories).toBe('Budget!A2:A10')
     expect(validated.proposal.series).toEqual([{ values: 'Budget!C2:C10' }])
     expect(
       validateCreateChart(access, {
@@ -228,6 +228,13 @@ describe('executeXlsxAgentTool', () => {
         series: [{ values: "'Broken!C2:C10" }],
       })
     ).toHaveProperty('error')
+    const spaced = validateCreateChart(access, {
+      chart_type: 'line',
+      anchor: 'A1:C3',
+      series: [{ values: 'Budget! C2:C10' }],
+    })
+    if (!('proposal' in spaced)) throw new Error(JSON.stringify(spaced))
+    expect(spaced.proposal.series).toEqual([{ values: 'Budget!C2:C10' }])
   })
 
   it('routes the chart to the anchor-qualified sheet and rejects unknown names', () => {

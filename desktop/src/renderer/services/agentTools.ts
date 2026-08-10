@@ -54,6 +54,14 @@ function columnNumber(letters: string): number {
 
 const A1_CELL = /^\$?([A-Za-z]{1,3})\$?(\d+)$/
 
+/** A sheet-qualified reference rebuilt from its parts, requoting when needed. */
+function joinSheetQualifier(parts: { sheet?: string; range: string }): string {
+  if (parts.sheet === undefined) return parts.range
+  const plain = /^[A-Za-z0-9_]+$/.test(parts.sheet)
+  const sheet = plain ? parts.sheet : `'${parts.sheet.replace(/'/g, "''")}'`
+  return `${sheet}!${parts.range}`
+}
+
 /** Split an optional sheet qualifier off a range reference; null on malformed quoting. */
 export function splitSheetQualifier(
   reference: string
@@ -62,7 +70,7 @@ export function splitSheetQualifier(
   const bang = trimmed.lastIndexOf('!')
   if (bang === -1) return { range: trimmed }
   const rawSheet = trimmed.slice(0, bang)
-  const range = trimmed.slice(bang + 1)
+  const range = trimmed.slice(bang + 1).trim()
   if (rawSheet === '') return null
   if (rawSheet.startsWith("'")) {
     if (!rawSheet.endsWith("'") || rawSheet.length < 2) return null
@@ -194,10 +202,11 @@ export function validateCreateChart(
     if (valuesParts.sheet !== undefined && sheetIndexByName(valuesParts.sheet) === -1) {
       return { error: `series range names unknown sheet "${valuesParts.sheet}"` }
     }
+    const normalized = joinSheetQualifier(valuesParts)
     const name = typeof record?.['name'] === 'string' ? record['name'] : undefined
-    series.push(name === undefined ? { values } : { name, values })
+    series.push(name === undefined ? { values: normalized } : { name, values: normalized })
   }
-  const categories = typeof args['categories'] === 'string' ? args['categories'].trim() : undefined
+  let categories = typeof args['categories'] === 'string' ? args['categories'].trim() : undefined
   if (categories !== undefined) {
     const parts = splitSheetQualifier(categories)
     if (parts === null || rangeCellCount(parts.range) === null) {
@@ -206,6 +215,7 @@ export function validateCreateChart(
     if (parts.sheet !== undefined && sheetIndexByName(parts.sheet) === -1) {
       return { error: `categories range names unknown sheet "${parts.sheet}"` }
     }
+    categories = joinSheetQualifier(parts)
   }
   const title = typeof args['title'] === 'string' && args['title'].trim() !== '' ? args['title'].trim() : undefined
   const proposal: CreateChartProposal = {
