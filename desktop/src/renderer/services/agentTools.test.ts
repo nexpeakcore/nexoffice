@@ -214,13 +214,13 @@ describe('executeXlsxAgentTool', () => {
     const validated = validateCreateChart(access, {
       chart_type: 'line',
       anchor: 'Summary!D2:K16',
-      categories: "'Doanh thu'!A2:A10",
-      series: [{ values: 'Data!C2:C10' }],
+      categories: "'Budget'!A2:A10",
+      series: [{ values: 'Budget!C2:C10' }],
     })
     if (!('proposal' in validated)) throw new Error(`expected a proposal: ${JSON.stringify(validated)}`)
     expect(validated.proposal.anchor).toBe('D2:K16')
-    expect(validated.proposal.categories).toBe("'Doanh thu'!A2:A10")
-    expect(validated.proposal.series).toEqual([{ values: 'Data!C2:C10' }])
+    expect(validated.proposal.categories).toBe("'Budget'!A2:A10")
+    expect(validated.proposal.series).toEqual([{ values: 'Budget!C2:C10' }])
     expect(
       validateCreateChart(access, {
         chart_type: 'line',
