@@ -54,6 +54,32 @@ function columnNumber(letters: string): number {
 
 const A1_CELL = /^\$?([A-Za-z]{1,3})\$?(\d+)$/
 
+/** A sheet-qualified reference rebuilt from its parts, requoting when needed. */
+function joinSheetQualifier(parts: { sheet?: string; range: string }): string {
+  const range = parts.range.toUpperCase()
+  if (parts.sheet === undefined) return range
+  const plain = /^[A-Za-z0-9_]+$/.test(parts.sheet)
+  const sheet = plain ? parts.sheet : `'${parts.sheet.replace(/'/g, "''")}'`
+  return `${sheet}!${range}`
+}
+
+/** Split an optional sheet qualifier off a range reference; null on malformed quoting. */
+export function splitSheetQualifier(
+  reference: string
+): { sheet?: string; range: string } | null {
+  const trimmed = reference.trim()
+  const bang = trimmed.lastIndexOf('!')
+  if (bang === -1) return { range: trimmed }
+  const rawSheet = trimmed.slice(0, bang)
+  const range = trimmed.slice(bang + 1).trim()
+  if (rawSheet === '') return null
+  if (rawSheet.startsWith("'")) {
+    if (!rawSheet.endsWith("'") || rawSheet.length < 2) return null
+    return { sheet: rawSheet.slice(1, -1).replace(/''/g, "'"), range }
+  }
+  return { sheet: rawSheet, range }
+}
+
 /** 0-based row/col of a single A1 cell, or null when it does not parse. */
 export function a1ToRowCol(a1: string): { row: number; col: number } | null {
   const match = A1_CELL.exec(a1.trim())
@@ -124,21 +150,37 @@ export function validateCreateChart(
   args: Record<string, unknown>
 ): { proposal: CreateChartProposal } | { error: string } {
   const info = access.sheetInfo()
-  const sheet =
+  const requestedSheet =
     typeof args['sheet'] === 'number' && Number.isInteger(args['sheet'])
       ? args['sheet']
       : info.activeSheet
-  if (sheet < 0 || sheet >= info.sheetNames.length) {
-    return { error: `sheet ${sheet} out of range (0..${info.sheetNames.length - 1})` }
+  if (requestedSheet < 0 || requestedSheet >= info.sheetNames.length) {
+    return { error: `sheet ${requestedSheet} out of range (0..${info.sheetNames.length - 1})` }
   }
   const chartType = typeof args['chart_type'] === 'string' ? args['chart_type'] : ''
   if (!(CHART_TYPES as readonly string[]).includes(chartType)) {
     return { error: `chart_type must be one of ${CHART_TYPES.join(', ')}; got "${chartType}"` }
   }
-  const anchor = typeof args['anchor'] === 'string' ? args['anchor'].trim().toUpperCase() : ''
-  const anchorCells = rangeCellCount(anchor)
-  if (anchorCells === null || !anchor.includes(':')) {
-    return { error: `anchor must be an A1 rectangle like "D2:K16"; got "${anchor}"` }
+  const sheetIndexByName = (name: string): number =>
+    info.sheetNames.findIndex((candidate) => candidate.toLowerCase() === name.toLowerCase())
+  const rawAnchor = typeof args['anchor'] === 'string' ? args['anchor'] : ''
+  const anchorParts = splitSheetQualifier(rawAnchor)
+  const anchor = anchorParts ? anchorParts.range.toUpperCase() : ''
+  if (rangeCellCount(anchor) === null || !anchor.includes(':')) {
+    return { error: `anchor must be an A1 rectangle like "D2:K16"; got "${rawAnchor}"` }
+  }
+  let sheet = requestedSheet
+  if (anchorParts?.sheet !== undefined) {
+    const anchorSheet = sheetIndexByName(anchorParts.sheet)
+    if (anchorSheet === -1) {
+      return { error: `anchor names unknown sheet "${anchorParts.sheet}"` }
+    }
+    if (typeof args['sheet'] === 'number' && anchorSheet !== sheet) {
+      return {
+        error: `anchor sheet "${anchorParts.sheet}" conflicts with sheet index ${sheet}`,
+      }
+    }
+    sheet = anchorSheet
   }
   const rawSeries = Array.isArray(args['series']) ? args['series'] : null
   if (!rawSeries || rawSeries.length === 0) {
@@ -154,15 +196,27 @@ export function validateCreateChart(
   for (const entry of rawSeries) {
     const record = typeof entry === 'object' && entry !== null ? (entry as Record<string, unknown>) : null
     const values = typeof record?.['values'] === 'string' ? record['values'].trim() : ''
-    if (rangeCellCount(values) === null) {
+    const valuesParts = splitSheetQualifier(values)
+    if (valuesParts === null || rangeCellCount(valuesParts.range) === null) {
       return { error: `each series needs an A1 values range; got ${JSON.stringify(entry)}` }
     }
+    if (valuesParts.sheet !== undefined && sheetIndexByName(valuesParts.sheet) === -1) {
+      return { error: `series range names unknown sheet "${valuesParts.sheet}"` }
+    }
+    const normalized = joinSheetQualifier(valuesParts)
     const name = typeof record?.['name'] === 'string' ? record['name'] : undefined
-    series.push(name === undefined ? { values } : { name, values })
+    series.push(name === undefined ? { values: normalized } : { name, values: normalized })
   }
-  const categories = typeof args['categories'] === 'string' ? args['categories'].trim() : undefined
-  if (categories !== undefined && rangeCellCount(categories) === null) {
-    return { error: `categories must be an A1 range; got "${categories}"` }
+  let categories = typeof args['categories'] === 'string' ? args['categories'].trim() : undefined
+  if (categories !== undefined) {
+    const parts = splitSheetQualifier(categories)
+    if (parts === null || rangeCellCount(parts.range) === null) {
+      return { error: `categories must be an A1 range; got "${categories}"` }
+    }
+    if (parts.sheet !== undefined && sheetIndexByName(parts.sheet) === -1) {
+      return { error: `categories range names unknown sheet "${parts.sheet}"` }
+    }
+    categories = joinSheetQualifier(parts)
   }
   const title = typeof args['title'] === 'string' && args['title'].trim() !== '' ? args['title'].trim() : undefined
   const proposal: CreateChartProposal = {

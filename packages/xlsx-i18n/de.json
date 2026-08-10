@@ -29,7 +29,8 @@
     "appLabel": null,
     "demoCellText": null,
     "openError": null,
-    "sheetTabsLabel": null
+    "sheetTabsLabel": null,
+    "addSheet": "Blatt hinzufügen"
   },
   "filter": {
     "columnButton": "Spalte {column} filtern",

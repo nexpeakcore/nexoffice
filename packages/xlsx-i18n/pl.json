@@ -29,7 +29,8 @@
     "appLabel": null,
     "demoCellText": null,
     "openError": null,
-    "sheetTabsLabel": null
+    "sheetTabsLabel": null,
+    "addSheet": "Dodaj arkusz"
   },
   "filter": {
     "columnButton": "Filtruj kolumnę {column}",

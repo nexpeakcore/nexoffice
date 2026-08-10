@@ -1832,6 +1832,21 @@ function XlsxEditorContent({
     ? normalizedSelection.right - normalizedSelection.left + 1
     : 1;
 
+  const addSheet = () => {
+    const handle = handleRef.current;
+    if (!handle || !sheetInfo) return;
+    const names = new Set(sheetInfo.sheetNames.map((name) => name.toLowerCase()));
+    let ordinal = sheetInfo.sheetNames.length + 1;
+    while (names.has(`sheet${ordinal}`)) ordinal += 1;
+    const index = sheetInfo.sheetNames.length;
+    try {
+      applyResult(handle.applyOps([{ type: 'addSheet', index, name: `Sheet${ordinal}` }]));
+      switchSheet(index);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   // switch sheets: retarget the core, reset scroll + selection, reread info.
   const switchSheet = (index: number) => {
     const handle = handleRef.current;
@@ -2401,18 +2416,24 @@ function XlsxEditorContent({
 
       {sheetInfo && sheetInfo.sheetNames.length > 0 && (
         <div
-          data-testid="xlsx-sheet-tabs"
-          role="tablist"
-          aria-label={t('editor.sheetTabsLabel')}
           style={{
             display: 'flex',
-            gap: 2,
-            padding: '4px 6px',
+            alignItems: 'center',
             borderTop: '1px solid #e0e0e0',
             background: '#fafafa',
-            overflowX: 'auto',
           }}
         >
+          <div
+            data-testid="xlsx-sheet-tabs"
+            role="tablist"
+            aria-label={t('editor.sheetTabsLabel')}
+            style={{
+              display: 'flex',
+              gap: 2,
+              padding: '4px 6px',
+              overflowX: 'auto',
+            }}
+          >
           {sheetInfo.sheetNames.map((name, i) => {
             const active = i === sheetInfo.activeSheet;
             return (
@@ -2434,6 +2455,24 @@ function XlsxEditorContent({
               </button>
             );
           })}
+          </div>
+          {!collaborationEnabled && (
+            <button
+              onClick={addSheet}
+              aria-label={t('editor.addSheet')}
+              title={t('editor.addSheet')}
+              style={{
+                border: 'none',
+                padding: '4px 10px',
+                cursor: 'pointer',
+                background: 'transparent',
+                color: '#555',
+                fontWeight: 600,
+              }}
+            >
+              +
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -29,7 +29,8 @@
     "appLabel": null,
     "demoCellText": null,
     "openError": null,
-    "sheetTabsLabel": null
+    "sheetTabsLabel": null,
+    "addSheet": "Tambah sheet"
   },
   "filter": {
     "columnButton": "Filter kolom {column}",

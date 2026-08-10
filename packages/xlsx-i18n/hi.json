@@ -29,7 +29,8 @@
     "appLabel": null,
     "demoCellText": null,
     "openError": null,
-    "sheetTabsLabel": null
+    "sheetTabsLabel": null,
+    "addSheet": "शीट जोड़ें"
   },
   "filter": {
     "columnButton": "स्तंभ {column} फ़िल्टर करें",

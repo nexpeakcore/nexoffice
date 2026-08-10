@@ -208,4 +208,74 @@ describe('executeXlsxAgentTool', () => {
     ])
     expect(result).toEqual({ applied: true, sheet: 1, chartType: 'pie', anchor: 'D2:J14' })
   })
+
+  it('accepts sheet-qualified chart ranges and strips the anchor qualifier', () => {
+    const access = fakeAccess()
+    const validated = validateCreateChart(access, {
+      chart_type: 'line',
+      anchor: 'Summary!D2:K16',
+      categories: "'Budget'!A2:A10",
+      series: [{ values: 'Budget!C2:C10' }],
+    })
+    if (!('proposal' in validated)) throw new Error(`expected a proposal: ${JSON.stringify(validated)}`)
+    expect(validated.proposal.anchor).toBe('D2:K16')
+    expect(validated.proposal.categories).toBe('Budget!A2:A10')
+    expect(validated.proposal.series).toEqual([{ values: 'Budget!C2:C10' }])
+    expect(
+      validateCreateChart(access, {
+        chart_type: 'line',
+        anchor: 'A1:C3',
+        series: [{ values: "'Broken!C2:C10" }],
+      })
+    ).toHaveProperty('error')
+    const spaced = validateCreateChart(access, {
+      chart_type: 'line',
+      anchor: 'A1:C3',
+      series: [{ values: 'budget! c2:c10' }],
+    })
+    if (!('proposal' in spaced)) throw new Error(JSON.stringify(spaced))
+    expect(spaced.proposal.series).toEqual([{ values: 'budget!C2:C10' }])
+  })
+
+  it('routes the chart to the anchor-qualified sheet and rejects unknown names', () => {
+    const access = fakeAccess()
+    const validated = validateCreateChart(access, {
+      chart_type: 'line',
+      anchor: 'budget!D2:K16',
+      series: [{ values: 'A1:A2' }],
+    })
+    if (!('proposal' in validated)) throw new Error(JSON.stringify(validated))
+    expect(validated.proposal.sheet).toBe(0)
+    expect(validated.proposal.sheetName).toBe('Budget')
+    expect(
+      validateCreateChart(access, {
+        chart_type: 'line',
+        sheet: 1,
+        anchor: 'Budget!D2:K16',
+        series: [{ values: 'A1:A2' }],
+      })
+    ).toHaveProperty('error')
+    expect(
+      validateCreateChart(access, {
+        chart_type: 'line',
+        anchor: 'Nowhere!D2:K16',
+        series: [{ values: 'A1:A2' }],
+      })
+    ).toHaveProperty('error')
+    expect(
+      validateCreateChart(access, {
+        chart_type: 'line',
+        anchor: 'A1:C3',
+        series: [{ values: 'Dtaa!C2:C10' }],
+      })
+    ).toHaveProperty('error')
+    expect(
+      validateCreateChart(access, {
+        chart_type: 'line',
+        anchor: 'A1:C3',
+        categories: 'Nope!A1:A2',
+        series: [{ values: 'A1:A2' }],
+      })
+    ).toHaveProperty('error')
+  })
 })

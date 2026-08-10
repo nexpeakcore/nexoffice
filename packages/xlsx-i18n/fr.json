@@ -29,7 +29,8 @@
     "appLabel": null,
     "demoCellText": null,
     "openError": null,
-    "sheetTabsLabel": null
+    "sheetTabsLabel": null,
+    "addSheet": "Ajouter une feuille"
   },
   "filter": {
     "columnButton": "Filtrer la colonne {column}",
