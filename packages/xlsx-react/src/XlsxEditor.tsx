@@ -2416,18 +2416,24 @@ function XlsxEditorContent({
 
       {sheetInfo && sheetInfo.sheetNames.length > 0 && (
         <div
-          data-testid="xlsx-sheet-tabs"
-          role="tablist"
-          aria-label={t('editor.sheetTabsLabel')}
           style={{
             display: 'flex',
-            gap: 2,
-            padding: '4px 6px',
+            alignItems: 'center',
             borderTop: '1px solid #e0e0e0',
             background: '#fafafa',
-            overflowX: 'auto',
           }}
         >
+          <div
+            data-testid="xlsx-sheet-tabs"
+            role="tablist"
+            aria-label={t('editor.sheetTabsLabel')}
+            style={{
+              display: 'flex',
+              gap: 2,
+              padding: '4px 6px',
+              overflowX: 'auto',
+            }}
+          >
           {sheetInfo.sheetNames.map((name, i) => {
             const active = i === sheetInfo.activeSheet;
             return (
@@ -2449,6 +2455,7 @@ function XlsxEditorContent({
               </button>
             );
           })}
+          </div>
           {!collaborationEnabled && (
             <button
               onClick={addSheet}

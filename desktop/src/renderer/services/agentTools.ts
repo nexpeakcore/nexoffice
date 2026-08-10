@@ -54,11 +54,7 @@ function columnNumber(letters: string): number {
 
 const A1_CELL = /^\$?([A-Za-z]{1,3})\$?(\d+)$/
 
-/**
- * Split an optional sheet qualifier off a range reference: "Sheet2!B2:B10",
- * "'Doanh thu'!A1:A9" or plain "A1:B2". Returns null when the quoting is
- * malformed.
- */
+/** Split an optional sheet qualifier off a range reference; null on malformed quoting. */
 export function splitSheetQualifier(
   reference: string
 ): { sheet?: string; range: string } | null {
