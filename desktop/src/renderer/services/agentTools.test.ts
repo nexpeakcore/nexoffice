@@ -208,4 +208,25 @@ describe('executeXlsxAgentTool', () => {
     ])
     expect(result).toEqual({ applied: true, sheet: 1, chartType: 'pie', anchor: 'D2:J14' })
   })
+
+  it('accepts sheet-qualified chart ranges and strips the anchor qualifier', () => {
+    const access = fakeAccess()
+    const validated = validateCreateChart(access, {
+      chart_type: 'line',
+      anchor: 'Summary!D2:K16',
+      categories: "'Doanh thu'!A2:A10",
+      series: [{ values: 'Data!C2:C10' }],
+    })
+    if (!('proposal' in validated)) throw new Error(`expected a proposal: ${JSON.stringify(validated)}`)
+    expect(validated.proposal.anchor).toBe('D2:K16')
+    expect(validated.proposal.categories).toBe("'Doanh thu'!A2:A10")
+    expect(validated.proposal.series).toEqual([{ values: 'Data!C2:C10' }])
+    expect(
+      validateCreateChart(access, {
+        chart_type: 'line',
+        anchor: 'A1:C3',
+        series: [{ values: "'Broken!C2:C10" }],
+      })
+    ).toHaveProperty('error')
+  })
 })

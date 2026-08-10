@@ -1832,6 +1832,22 @@ function XlsxEditorContent({
     ? normalizedSelection.right - normalizedSelection.left + 1
     : 1;
 
+  // append a new empty sheet with a fresh default name and switch to it.
+  const addSheet = () => {
+    const handle = handleRef.current;
+    if (!handle || !sheetInfo) return;
+    const names = new Set(sheetInfo.sheetNames);
+    let ordinal = sheetInfo.sheetNames.length + 1;
+    while (names.has(`Sheet${ordinal}`)) ordinal += 1;
+    const index = sheetInfo.sheetNames.length;
+    try {
+      applyResult(handle.applyOps([{ type: 'addSheet', index, name: `Sheet${ordinal}` }]));
+      switchSheet(index);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   // switch sheets: retarget the core, reset scroll + selection, reread info.
   const switchSheet = (index: number) => {
     const handle = handleRef.current;
@@ -2434,6 +2450,21 @@ function XlsxEditorContent({
               </button>
             );
           })}
+          <button
+            onClick={addSheet}
+            aria-label={t('editor.addSheet')}
+            title={t('editor.addSheet')}
+            style={{
+              border: 'none',
+              padding: '4px 10px',
+              cursor: 'pointer',
+              background: 'transparent',
+              color: '#555',
+              fontWeight: 600,
+            }}
+          >
+            +
+          </button>
         </div>
       )}
     </div>

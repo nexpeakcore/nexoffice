@@ -120,7 +120,8 @@
     "appLabel": "Spreadsheet editor",
     "demoCellText": "OpenOOXML xlsx",
     "openError": "Couldn't open this workbook",
-    "sheetTabsLabel": "Sheets"
+    "sheetTabsLabel": "Sheets",
+    "addSheet": "Add sheet"
   },
   "filter": {
     "columnButton": "Filter column {column}",

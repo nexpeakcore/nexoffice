@@ -29,7 +29,8 @@
     "appLabel": null,
     "demoCellText": null,
     "openError": null,
-    "sheetTabsLabel": null
+    "sheetTabsLabel": null,
+    "addSheet": "添加工作表"
   },
   "filter": {
     "columnButton": "筛选 {column} 列",

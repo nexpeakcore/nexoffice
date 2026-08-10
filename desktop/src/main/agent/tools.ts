@@ -77,7 +77,8 @@ const XLSX_TOOLS: ChatToolFunction[] = [
       properties: {
         sheet: {
           type: 'integer',
-          description: 'Sheet index from list_sheets; defaults to the active sheet.',
+          description:
+            '0-based sheet index from list_sheets the chart is placed on; defaults to the active sheet.',
         },
         chart_type: {
           type: 'string',
@@ -92,7 +93,8 @@ const XLSX_TOOLS: ChatToolFunction[] = [
         },
         categories: {
           type: 'string',
-          description: 'A1 range of the category labels, e.g. "A2:A10".',
+          description:
+            'A1 range of the category labels, e.g. "A2:A10". May be sheet-qualified ("Data!A2:A10") to read another sheet.',
         },
         series: {
           type: 'array',
@@ -103,7 +105,8 @@ const XLSX_TOOLS: ChatToolFunction[] = [
               name: { type: 'string', description: 'Legend label for the series.' },
               values: {
                 type: 'string',
-                description: 'A1 range of numeric values, e.g. "C2:C10".',
+                description:
+                  'A1 range of numeric values, e.g. "C2:C10". May be sheet-qualified ("Data!C2:C10").',
               },
             },
             required: ['values'],
