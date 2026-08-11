@@ -1,20 +1,36 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#2563eb"/>
-      <stop offset="100%" stop-color="#0f172a"/>
+    <linearGradient id="background" x1="132" y1="108" x2="892" y2="912" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#172554"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="document" x1="188" y1="308" x2="560" y2="808" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <linearGradient id="sheet" x1="320" y1="194" x2="706" y2="700" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#36a269"/>
+      <stop offset="1" stop-color="#217346"/>
+    </linearGradient>
+    <linearGradient id="slides" x1="466" y1="332" x2="854" y2="828" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#67e8f9"/>
+      <stop offset="1" stop-color="#0891b2"/>
     </linearGradient>
   </defs>
-  <rect width="1024" height="1024" rx="220" fill="url(#bg)"/>
-  <!-- document sheet -->
-  <rect x="272" y="192" width="480" height="640" rx="48" fill="#ffffff" opacity="0.96"/>
-  <!-- text lines -->
-  <rect x="352" y="320" width="320" height="48" rx="24" fill="#2563eb"/>
-  <rect x="352" y="416" width="240" height="36" rx="18" fill="#94a3b8"/>
-  <rect x="352" y="500" width="320" height="36" rx="18" fill="#cbd5e1"/>
-  <rect x="352" y="584" width="280" height="36" rx="18" fill="#cbd5e1"/>
-  <rect x="352" y="668" width="200" height="36" rx="18" fill="#cbd5e1"/>
-  <!-- grid accent: spreadsheet corner -->
-  <path d="M560 192h160a48 48 0 0 1 48 48v160" fill="none" stroke="#22d3ee" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M592 224h96a32 32 0 0 1 32 32v96" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect width="1024" height="1024" rx="228" fill="url(#background)"/>
+  <rect x="164" y="308" width="396" height="506" rx="88" fill="url(#document)"/>
+  <path d="M438 308H472C520 308 560 348 560 396V430L438 308Z" fill="#60a5fa"/>
+  <rect x="230" y="432" width="188" height="52" rx="26" fill="#eff6ff"/>
+  <rect x="230" y="534" width="140" height="52" rx="26" fill="#eff6ff"/>
+  <rect x="230" y="636" width="166" height="52" rx="26" fill="#eff6ff"/>
+  <rect x="316" y="194" width="392" height="506" rx="88" fill="url(#sheet)"/>
+  <path d="M586 194H620C668 194 708 234 708 282V316L586 194Z" fill="#6fcf97"/>
+  <rect x="384" y="298" width="82" height="82" rx="24" fill="#f0fdf4"/>
+  <rect x="496" y="298" width="82" height="82" rx="24" fill="#f0fdf4"/>
+  <rect x="384" y="410" width="82" height="82" rx="24" fill="#f0fdf4"/>
+  <rect x="496" y="410" width="82" height="82" rx="24" fill="#f0fdf4"/>
+  <rect x="464" y="332" width="396" height="506" rx="88" fill="url(#slides)"/>
+  <path d="M738 332H772C820 332 860 372 860 420V454L738 332Z" fill="#a5f3fc"/>
+  <rect x="528" y="454" width="268" height="188" rx="34" fill="#ecfeff"/>
+  <rect x="592" y="690" width="140" height="52" rx="26" fill="#ecfeff"/>
 </svg>
