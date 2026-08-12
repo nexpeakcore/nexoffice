@@ -351,6 +351,8 @@ export interface WorkbookHandle extends CollaborationReplica {
    * Refused on sheets that already have drawings from the source file.
    */
   addChart(args: AddChartArgs): SheetInfo;
+  /** re-anchor a chart created this session over a new A1 rectangle. */
+  setChartAnchor(sheet: number, index: number, anchor: string): SheetInfo;
   /** remove a chart created this session by its index on the sheet. */
   removeChart(sheet: number, index: number): SheetInfo;
   /** raw op-list escape hatch for structural ops (insert/delete rows, merges…). */
@@ -677,6 +679,12 @@ export function openWorkbook(
     },
     addChart(args: AddChartArgs): SheetInfo {
       return parseJson(() => doc.addChartJson(JSON.stringify(args)), true);
+    },
+    setChartAnchor(sheet: number, index: number, anchor: string): SheetInfo {
+      return parseJson(
+        () => doc.setChartAnchorJson(JSON.stringify({ sheet, index, anchor })),
+        true
+      );
     },
     removeChart(sheet: number, index: number): SheetInfo {
       return parseJson(() => doc.removeChartJson(JSON.stringify({ sheet, index })), true);

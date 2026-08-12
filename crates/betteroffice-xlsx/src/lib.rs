@@ -20,8 +20,8 @@ pub use workbook::{
 pub use xlsx_model::addr::AddrError;
 pub use xlsx_model::{
     AutoFilter, AutoFilterColumn, Cell, CellRange, CellRef, CellValue, ColId, Comment, DateSystem,
-    DefinedName, ErrorValue, FreezePane, Hyperlink, MAX_COLS, MAX_ROWS, RowId, Sheet, SheetId,
-    Workbook as WorkbookModel,
+    DefinedName, DrawingAnchor, ErrorValue, FreezePane, Hyperlink, MAX_COLS, MAX_ROWS, RowId,
+    Sheet, SheetId, Workbook as WorkbookModel,
 };
 pub use xlsx_ops::{
     BorderLineStyle, BorderPatch, BorderPreset, CapturedFormat, CellState, HorizontalAlignment,

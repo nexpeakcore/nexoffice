@@ -36,6 +36,7 @@ export const xlsxdocument_renderRangePng: (a: number, b: number, c: number) => [
 export const xlsxdocument_saveBytes: (a: number) => [number, number, number, number];
 export const xlsxdocument_selectionFormattingJson: (a: number, b: number, c: number) => [number, number, number, number];
 export const xlsxdocument_setActiveSheet: (a: number, b: number) => [number, number];
+export const xlsxdocument_setChartAnchorJson: (a: number, b: number, c: number) => [number, number, number, number];
 export const xlsxdocument_setRangeNumberFormatJson: (a: number, b: number, c: number) => [number, number, number, number];
 export const xlsxdocument_sheetAutoFilterJson: (a: number, b: number, c: number) => [number, number, number, number];
 export const xlsxdocument_sheetCommentsJson: (a: number, b: number, c: number) => [number, number, number, number];

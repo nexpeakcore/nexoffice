@@ -12,6 +12,7 @@ export type {
   LineCmd,
   TextCmd,
   DrawCmd,
+  ChartRegion,
   DisplayList,
   GridMeta,
   HyperlinkRegion,

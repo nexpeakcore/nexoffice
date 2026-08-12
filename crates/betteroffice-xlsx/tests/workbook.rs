@@ -5092,3 +5092,58 @@ fn add_chart_rejects_mismatched_category_and_value_lengths() {
         "{error:?}"
     );
 }
+
+#[test]
+fn created_charts_can_be_re_anchored() {
+    use betteroffice_xlsx::{ChartSeriesSpec, ChartSpec};
+
+    let mut workbook = Workbook::open(&sample_xlsx()).unwrap();
+    workbook
+        .add_chart(
+            SheetId(0),
+            &ChartSpec {
+                chart_type: "pie".to_owned(),
+                title: None,
+                anchor: CellRange::parse_a1("C3:J14").unwrap(),
+                categories: None,
+                series: vec![ChartSeriesSpec {
+                    name: None,
+                    values: "A1:A2".to_owned(),
+                }],
+            },
+        )
+        .unwrap();
+    workbook
+        .set_chart_anchor(SheetId(0), 0, CellRange::parse_a1("E5:M20").unwrap())
+        .unwrap();
+    let sheet = workbook.model().sheet(SheetId(0)).unwrap();
+    let betteroffice_xlsx::DrawingAnchor::Cell { from, to, .. } = &sheet.drawings[0].anchor else {
+        panic!("expected cell anchor");
+    };
+    assert_eq!((from.col, from.row), (4, 4));
+    assert_eq!(to.unwrap().col, 12);
+
+    assert!(
+        workbook
+            .set_chart_anchor(SheetId(0), 0, CellRange::parse_a1("A1:B2").unwrap())
+            .is_err(),
+        "tiny anchors are rejected"
+    );
+    assert!(
+        workbook
+            .set_chart_anchor(SheetId(0), 3, CellRange::parse_a1("E5:M20").unwrap())
+            .is_err(),
+        "missing index is rejected"
+    );
+
+    let viewport = Viewport {
+        x: 0.0,
+        y: 0.0,
+        width: 1200.0,
+        height: 800.0,
+    };
+    let charts = workbook.display_list(&viewport).unwrap().charts;
+    assert_eq!(charts.len(), 1);
+    assert!(charts[0].created);
+    assert!(charts[0].w > 0.0 && charts[0].h > 0.0);
+}

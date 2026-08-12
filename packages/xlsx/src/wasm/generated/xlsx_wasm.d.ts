@@ -105,6 +105,10 @@ export class XlsxDocument {
      * switch the active sheet by index.
      */
     setActiveSheet(index: number): void;
+    /**
+     * re-anchor a created chart; returns updated `SheetInfo` json.
+     */
+    setChartAnchorJson(args: string): string;
     setRangeNumberFormatJson(args: string): string;
     /**
      * the sheet's auto filter as a camelCase spec json, or `null` when unset.
@@ -185,6 +189,7 @@ export interface InitOutput {
     readonly xlsxdocument_saveBytes: (a: number) => [number, number, number, number];
     readonly xlsxdocument_selectionFormattingJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly xlsxdocument_setActiveSheet: (a: number, b: number) => [number, number];
+    readonly xlsxdocument_setChartAnchorJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly xlsxdocument_setRangeNumberFormatJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly xlsxdocument_sheetAutoFilterJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly xlsxdocument_sheetCommentsJson: (a: number, b: number, c: number) => [number, number, number, number];

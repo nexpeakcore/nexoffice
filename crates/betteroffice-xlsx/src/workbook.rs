@@ -1523,6 +1523,56 @@ impl Workbook {
         Ok(())
     }
 
+    /// Re-anchors a created chart over a new grid rectangle.
+    pub fn set_chart_anchor(
+        &mut self,
+        sheet: SheetId,
+        index: usize,
+        anchor: CellRange,
+    ) -> Result<()> {
+        self.ensure_chart_authoring_allowed()?;
+        self.ensure_worksheet_sheet(sheet)?;
+        validate_range(anchor)?;
+        if anchor.end.col <= anchor.start.col.saturating_add(1)
+            || anchor.end.row <= anchor.start.row.saturating_add(1)
+        {
+            return Err(Error::InvalidOperation(
+                "the chart anchor range is too small".to_owned(),
+            ));
+        }
+        let target = self
+            .model
+            .sheet_mut(sheet)
+            .ok_or(Error::SheetOutOfRange(sheet))?;
+        let Some(drawing) = target.drawings.get_mut(index) else {
+            return Err(Error::InvalidOperation(format!(
+                "no chart at index {index}"
+            )));
+        };
+        if !drawing.created {
+            return Err(Error::InvalidOperation(
+                "only charts created in this session can be moved".to_owned(),
+            ));
+        }
+        drawing.anchor = xlsx_model::DrawingAnchor::Cell {
+            from: xlsx_model::AnchorCell {
+                col: anchor.start.col,
+                col_offset_emu: 0,
+                row: anchor.start.row,
+                row_offset_emu: 0,
+            },
+            to: Some(xlsx_model::AnchorCell {
+                col: anchor.end.col,
+                col_offset_emu: 0,
+                row: anchor.end.row,
+                row_offset_emu: 0,
+            }),
+            extent_emu: None,
+        };
+        self.edited_since_open = true;
+        Ok(())
+    }
+
     /// Removes a created chart by its position in `Sheet::drawings`.
     pub fn remove_chart(&mut self, sheet: SheetId, index: usize) -> Result<()> {
         self.ensure_chart_authoring_allowed()?;

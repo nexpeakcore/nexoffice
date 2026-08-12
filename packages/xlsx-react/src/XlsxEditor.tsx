@@ -33,6 +33,7 @@ import {
 import type {
   CellAddr,
   CellComment,
+  ChartRegion,
   CellEdit,
   CellInputEdit,
   CapturedFormat,
@@ -207,6 +208,25 @@ interface HeaderTrack {
   index: number;
   start: number;
   size: number;
+}
+
+/** which resize corner of `region` the logical point grabs, if any. */
+function chartCornerAt(
+  region: ChartRegion,
+  x: number,
+  y: number,
+  zoom: number
+): 'nw' | 'ne' | 'sw' | 'se' | null {
+  const grab = 10 / zoom;
+  const nearLeft = Math.abs(x - region.x) <= grab;
+  const nearRight = Math.abs(x - (region.x + region.w)) <= grab;
+  const nearTop = Math.abs(y - region.y) <= grab;
+  const nearBottom = Math.abs(y - (region.y + region.h)) <= grab;
+  if (nearTop && nearLeft) return 'nw';
+  if (nearTop && nearRight) return 'ne';
+  if (nearBottom && nearLeft) return 'sw';
+  if (nearBottom && nearRight) return 'se';
+  return null;
 }
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -487,6 +507,23 @@ function XlsxEditorContent({
   const [sheetInfo, setSheetInfo] = useState<SheetInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [frame, setFrame] = useState<DisplayList | null>(null);
+  const [selectedChart, setSelectedChart] = useState<number | null>(null);
+  const [chartGhost, setChartGhost] = useState<{
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  } | null>(null);
+  const chartGhostRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const commitChartRectRef = useRef<(index: number, rect: { x: number; y: number; w: number; h: number }) => void>(() => {});
+  const chartGestureRef = useRef<{
+    index: number;
+    mode: 'move' | 'resize';
+    corner?: 'nw' | 'ne' | 'sw' | 'se';
+    startX: number;
+    startY: number;
+    rect: { x: number; y: number; w: number; h: number };
+  } | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [editing, setEditing] = useState<EditState | null>(null);
   const [focusedCell, setFocusedCell] = useState<CellEdit | null>(null);
@@ -878,6 +915,22 @@ function XlsxEditorContent({
     const stop = () => {
       draggingRef.current = false;
       setDragging(false);
+      const gesture = chartGestureRef.current;
+      if (gesture) {
+        chartGestureRef.current = null;
+        const ghost = chartGhostRef.current;
+        if (
+          ghost &&
+          (Math.abs(ghost.x - gesture.rect.x) > 2 ||
+            Math.abs(ghost.y - gesture.rect.y) > 2 ||
+            Math.abs(ghost.w - gesture.rect.w) > 2 ||
+            Math.abs(ghost.h - gesture.rect.h) > 2)
+        ) {
+          commitChartRectRef.current(gesture.index, ghost);
+        } else {
+          setChartGhost(null);
+        }
+      }
     };
     window.addEventListener('mouseup', stop);
     return () => window.removeEventListener('mouseup', stop);
@@ -977,6 +1030,70 @@ function XlsxEditorContent({
     },
     [zoom]
   );
+
+  const pointToLogical = useCallback(
+    (clientX: number, clientY: number): { x: number; y: number } | null => {
+      const canvas = canvasRef.current;
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      return { x: (clientX - rect.left) / zoom, y: (clientY - rect.top) / zoom };
+    },
+    [zoom]
+  );
+
+  const chartAtPoint = useCallback((x: number, y: number): ChartRegion | null => {
+    const charts = frameRef.current?.charts;
+    if (!charts) return null;
+    for (let i = charts.length - 1; i >= 0; i--) {
+      const c = charts[i]!;
+      if (x >= c.x && x <= c.x + c.w && y >= c.y && y <= c.y + c.h) return c;
+    }
+    return null;
+  }, []);
+
+  const commitChartRect = useCallback(
+    (index: number, rect: { x: number; y: number; w: number; h: number }) => {
+      const handle = handleRef.current;
+      const grid = frameRef.current?.grid;
+      if (!handle || !grid) return;
+      const from = cellAtPoint(grid, rect.x + 1, rect.y + 1);
+      const to = cellAtPoint(grid, rect.x + rect.w - 1, rect.y + rect.h - 1);
+      if (!from || !to) return;
+      if (to.col <= from.col + 1 || to.row <= from.row + 1) return;
+      const anchor = `${columnLabel(from.col)}${from.row + 1}:${columnLabel(to.col)}${to.row + 1}`;
+      try {
+        handle.setChartAnchor(activeSheet, index, anchor);
+        setSelectedChart(null);
+        setChartGhost(null);
+        refreshProposals();
+        onEditRef.current?.();
+      } catch (e) {
+        setChartGhost(null);
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [activeSheet, refreshProposals]
+  );
+
+  useEffect(() => {
+    chartGhostRef.current = chartGhost;
+  }, [chartGhost]);
+  useEffect(() => {
+    commitChartRectRef.current = commitChartRect;
+  }, [commitChartRect]);
+
+  const removeSelectedChart = useCallback(() => {
+    const handle = handleRef.current;
+    if (!handle || selectedChart === null) return;
+    try {
+      handle.removeChart(activeSheet, selectedChart);
+      setSelectedChart(null);
+      refreshProposals();
+      onEditRef.current?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [activeSheet, selectedChart, refreshProposals]);
 
   const openEditor = useCallback(
     (seed?: string) => {
@@ -1591,6 +1708,18 @@ function XlsxEditorContent({
     (e: React.KeyboardEvent) => {
       const handle = handleRef.current;
       if (!handle || !selection || !sheetInfo || editing) return;
+      if (selectedChart !== null) {
+        if (e.key === 'Delete' || e.key === 'Backspace') {
+          removeSelectedChart();
+          e.preventDefault();
+          return;
+        }
+        if (e.key === 'Escape') {
+          setSelectedChart(null);
+          e.preventDefault();
+          return;
+        }
+      }
       const mod = e.metaKey || e.ctrlKey;
       const lower = e.key.toLowerCase();
 
@@ -1674,6 +1803,46 @@ function XlsxEditorContent({
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (!selection || editing) return;
+      const logical = pointToLogical(e.clientX, e.clientY);
+      if (logical) {
+        if (selectedChart !== null) {
+          const charts = frameRef.current?.charts;
+          const region = charts?.find((c) => c.index === selectedChart);
+          if (region) {
+            const corner = chartCornerAt(region, logical.x, logical.y, zoom);
+            if (corner) {
+              chartGestureRef.current = {
+                index: region.index,
+                mode: 'resize',
+                corner,
+                startX: logical.x,
+                startY: logical.y,
+                rect: { x: region.x, y: region.y, w: region.w, h: region.h },
+              };
+              setChartGhost({ x: region.x, y: region.y, w: region.w, h: region.h });
+              e.preventDefault();
+              return;
+            }
+          }
+        }
+        const hit = chartAtPoint(logical.x, logical.y);
+        if (hit && hit.created) {
+          setSelectedChart(hit.index);
+          chartGestureRef.current = {
+            index: hit.index,
+            mode: 'move',
+            startX: logical.x,
+            startY: logical.y,
+            rect: { x: hit.x, y: hit.y, w: hit.w, h: hit.h },
+          };
+          setChartGhost({ x: hit.x, y: hit.y, w: hit.w, h: hit.h });
+          focusContainer();
+          e.preventDefault();
+          return;
+        }
+        if (selectedChart !== null) setSelectedChart(null);
+        if (hit && !hit.created) return;
+      }
       const addr = pointToCell(e.clientX, e.clientY);
       if (!addr) return;
       if (e.shiftKey) setSelection((prev) => (prev ? extendTo(prev, addr, limits()) : prev));
@@ -1683,11 +1852,48 @@ function XlsxEditorContent({
       setDragging(true);
       focusContainer();
     },
-    [editing, selection, pointToCell, limits, focusContainer]
+    [
+      editing,
+      selection,
+      selectedChart,
+      zoom,
+      pointToCell,
+      pointToLogical,
+      chartAtPoint,
+      limits,
+      focusContainer,
+    ]
   );
 
   const onMouseMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
+      const gesture = chartGestureRef.current;
+      if (gesture) {
+        const logical = pointToLogical(e.clientX, e.clientY);
+        if (!logical) return;
+        const dx = logical.x - gesture.startX;
+        const dy = logical.y - gesture.startY;
+        const base = gesture.rect;
+        if (gesture.mode === 'move') {
+          setChartGhost({ x: base.x + dx, y: base.y + dy, w: base.w, h: base.h });
+        } else {
+          let { x, y, w, h } = base;
+          if (gesture.corner === 'nw' || gesture.corner === 'sw') {
+            x = base.x + dx;
+            w = base.w - dx;
+          } else {
+            w = base.w + dx;
+          }
+          if (gesture.corner === 'nw' || gesture.corner === 'ne') {
+            y = base.y + dy;
+            h = base.h - dy;
+          } else {
+            h = base.h + dy;
+          }
+          if (w > 40 && h > 40) setChartGhost({ x, y, w, h });
+        }
+        return;
+      }
       const addr = pointToCell(e.clientX, e.clientY);
       if (!addr) {
         if (!draggingRef.current) {
@@ -2286,6 +2492,53 @@ function XlsxEditorContent({
               pointerEvents: 'none',
             }}
           >
+            {(() => {
+              const region =
+                selectedChart !== null
+                  ? frame?.charts?.find((c) => c.index === selectedChart)
+                  : undefined;
+              const rect = chartGhost ?? region;
+              if (!rect) return null;
+              const corners: Array<['nw' | 'ne' | 'sw' | 'se', number, number]> = [
+                ['nw', rect.x, rect.y],
+                ['ne', rect.x + rect.w, rect.y],
+                ['sw', rect.x, rect.y + rect.h],
+                ['se', rect.x + rect.w, rect.y + rect.h],
+              ];
+              return (
+                <div data-testid="xlsx-chart-selection">
+                  <div
+                    style={{
+                      position: 'absolute',
+                      left: rect.x * zoom,
+                      top: rect.y * zoom,
+                      width: rect.w * zoom,
+                      height: rect.h * zoom,
+                      border: `2px ${chartGhost ? 'dashed' : 'solid'} ${BRAND}`,
+                      boxSizing: 'border-box',
+                      pointerEvents: 'none',
+                    }}
+                  />
+                  {!chartGhost &&
+                    corners.map(([corner, cx, cy]) => (
+                      <div
+                        key={corner}
+                        style={{
+                          position: 'absolute',
+                          left: cx * zoom - 5,
+                          top: cy * zoom - 5,
+                          width: 10,
+                          height: 10,
+                          background: '#ffffff',
+                          border: `2px solid ${BRAND}`,
+                          borderRadius: 2,
+                          pointerEvents: 'none',
+                        }}
+                      />
+                    ))}
+                </div>
+              );
+            })()}
             {scaledSelectionRect && (
               <div
                 data-testid="xlsx-selection"
