@@ -669,12 +669,16 @@ fn emit_charts(
             w: clip.w,
             h: clip.h,
         });
+        let region_left = (vx as f32).max(clip.x);
+        let region_top = (vy as f32).max(clip.y);
+        let region_right = ((vx + w) as f32).min(clip.x + clip.w);
+        let region_bottom = ((vy + h) as f32).min(clip.y + clip.h);
         regions.push(display_list::ChartRegion {
             index: drawing_index,
-            x: vx as f32,
-            y: vy as f32,
-            w: w as f32,
-            h: h as f32,
+            x: region_left,
+            y: region_top,
+            w: region_right - region_left,
+            h: region_bottom - region_top,
             created: drawing.created,
         });
         let chart = refreshed_chart(wb, sheet, &drawing.chart);

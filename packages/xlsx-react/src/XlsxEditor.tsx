@@ -1055,12 +1055,29 @@ function XlsxEditorContent({
     (index: number, rect: { x: number; y: number; w: number; h: number }) => {
       const handle = handleRef.current;
       const grid = frameRef.current?.grid;
-      if (!handle || !grid) return;
-      const from = cellAtPoint(grid, rect.x + 1, rect.y + 1);
-      const to = cellAtPoint(grid, rect.x + rect.w - 1, rect.y + rect.h - 1);
-      if (!from || !to) return;
-      if (to.col <= from.col + 1 || to.row <= from.row + 1) return;
-      const anchor = `${columnLabel(from.col)}${from.row + 1}:${columnLabel(to.col)}${to.row + 1}`;
+      if (!handle || !grid) {
+        setChartGhost(null);
+        return;
+      }
+      const colOffsets = grid.colOffsets;
+      const rowOffsets = grid.rowOffsets;
+      const clampX = (v: number) =>
+        Math.min(Math.max(v, colOffsets[0]! + 1), colOffsets[colOffsets.length - 1]! - 1);
+      const clampY = (v: number) =>
+        Math.min(Math.max(v, rowOffsets[0]! + 1), rowOffsets[rowOffsets.length - 1]! - 1);
+      const from = cellAtPoint(grid, clampX(rect.x + 1), clampY(rect.y + 1));
+      const to = cellAtPoint(grid, clampX(rect.x + rect.w - 1), clampY(rect.y + rect.h - 1));
+      if (!from || !to) {
+        setChartGhost(null);
+        return;
+      }
+      const endCol = to.col + 1;
+      const endRow = to.row + 1;
+      if (endCol <= from.col + 1 || endRow <= from.row + 1) {
+        setChartGhost(null);
+        return;
+      }
+      const anchor = `${columnLabel(from.col)}${from.row + 1}:${columnLabel(endCol)}${endRow + 1}`;
       try {
         handle.setChartAnchor(activeSheet, index, anchor);
         setSelectedChart(null);
@@ -1074,6 +1091,12 @@ function XlsxEditorContent({
     },
     [activeSheet, refreshProposals]
   );
+
+  useEffect(() => {
+    setSelectedChart(null);
+    setChartGhost(null);
+    chartGestureRef.current = null;
+  }, [activeSheet, file]);
 
   useEffect(() => {
     chartGhostRef.current = chartGhost;
@@ -1788,6 +1811,8 @@ function XlsxEditorContent({
       selection,
       sheetInfo,
       editing,
+      selectedChart,
+      removeSelectedChart,
       limits,
       copySelection,
       pasteSelection,

@@ -3,8 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 use xlsx_model::{
-    AutoFilter, Cell, CellRange, CellRef, CellValue, ColId, Comment, DefinedName, FreezePane,
-    Hyperlink, RowId, SheetId,
+    AutoFilter, Cell, CellRange, CellRef, CellValue, ColId, Comment, DefinedName, DrawingAnchor,
+    FreezePane, Hyperlink, RowId, SheetDrawing, SheetId,
 };
 
 use crate::formatting::{CapturedFormat, NumberFormatMutation, StylePatch};
@@ -164,6 +164,24 @@ pub enum Op {
         index: usize,
         name: String,
     },
+    /// Insert a chart drawing at `index` on a sheet. Drawings are sidecar
+    /// display state: never synced to the collaboration authority.
+    AddChartDrawing {
+        sheet: SheetId,
+        index: usize,
+        drawing: Box<SheetDrawing>,
+    },
+    RemoveChartDrawing {
+        sheet: SheetId,
+        index: usize,
+        drawing: Box<SheetDrawing>,
+    },
+    SetChartAnchor {
+        sheet: SheetId,
+        index: usize,
+        from: DrawingAnchor,
+        to: DrawingAnchor,
+    },
     RemoveSheet {
         index: usize,
     },
@@ -221,6 +239,15 @@ impl Transaction {
             proposed: true,
         }
     }
+}
+
+/// Ops that mutate display-only sidecar state (chart drawings): they carry
+/// undo but must never reach the collaboration authority.
+pub fn is_sidecar_op(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::AddChartDrawing { .. } | Op::RemoveChartDrawing { .. } | Op::SetChartAnchor { .. }
+    )
 }
 
 #[cfg(test)]

@@ -121,7 +121,7 @@ pub struct Sheet {
 }
 
 /// One cell-anchored drawing object (today: only charts are modeled).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SheetDrawing {
     pub anchor: DrawingAnchor,
     pub chart: ooxml_drawingml::chart::ChartSpace,
@@ -132,7 +132,7 @@ pub struct SheetDrawing {
 }
 
 /// Where a drawing sits on the grid, in cells plus EMU offsets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DrawingAnchor {
     /// `twoCellAnchor`/`oneCellAnchor`: pinned to a grid cell, sized by a
     /// second cell or an explicit `<xdr:ext cx cy>`.
@@ -148,7 +148,7 @@ pub enum DrawingAnchor {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnchorCell {
     pub col: u32,
     pub col_offset_emu: i64,
