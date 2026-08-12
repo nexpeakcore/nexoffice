@@ -140,6 +140,18 @@ const BASE_STYLE: CSSProperties = {
   caretColor: 'transparent',
 };
 
+let compositionMeasureContext: CanvasRenderingContext2D | null = null;
+
+/** Pixel width of `text` at `fontPx`, for sizing the visible composition box. */
+function measureCompositionWidth(text: string, fontPx: number): number {
+  if (!compositionMeasureContext) {
+    compositionMeasureContext = document.createElement('canvas').getContext('2d');
+  }
+  if (!compositionMeasureContext) return text.length * fontPx * 0.6;
+  compositionMeasureContext.font = `${fontPx}px sans-serif`;
+  return compositionMeasureContext.measureText(text).width;
+}
+
 function previousCodePointOffset(text: string, offset: number): number {
   if (offset <= 0) return 0;
   const last = text.charCodeAt(offset - 1);
@@ -248,6 +260,7 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
   resolveDisplayListQueriesRef.current = resolveDisplayListQueries;
   const [positionStyle, setPositionStyle] = useState<CSSProperties>({ left: 0, top: 0, height: 1 });
   const [composingVisible, setComposingVisible] = useState(false);
+  const [composingWidth, setComposingWidth] = useState(2);
   const [selectionEpoch, setSelectionEpoch] = useState(0);
 
   const enqueueInputOperation = useCallback((operation: () => void | Promise<void>): void => {
@@ -1064,6 +1077,7 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
       compositionCommitRef.current = '';
       event.currentTarget.value = '';
       setComposingVisible(true);
+      setComposingWidth(2);
       onCaretInterrupt?.();
     },
     [onCaretInterrupt]
@@ -1072,6 +1086,9 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
   const handleCompositionUpdate = useCallback(
     (event: React.CompositionEvent<HTMLTextAreaElement>) => {
       compositionCommitRef.current = event.data;
+      const height = event.currentTarget.getBoundingClientRect().height || 16;
+      const fontPx = Math.max(10, Math.round(height * 0.82));
+      setComposingWidth(Math.ceil(measureCompositionWidth(event.data ?? '', fontPx)) + 4);
     },
     []
   );
@@ -1315,7 +1332,7 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
         ...positionStyle,
         ...(composingVisible
           ? {
-              width: 'auto',
+              width: `${composingWidth}px`,
               minWidth: '2px',
               maxWidth: '60vw',
               opacity: 1,
