@@ -407,6 +407,7 @@ mod tests {
                 col_offsets: vec![0.0, 64.0],
             },
             hyperlinks: Vec::new(),
+            charts: Vec::new(),
         }
     }
 
