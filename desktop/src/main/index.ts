@@ -487,6 +487,9 @@ function registerIpc(): void {
   })
 
   ipcMain.handle(IPC.newDocument, async (_event, kind: DocumentKind): Promise<OpenedDocument> => {
+    if (kind !== 'docx' && kind !== 'xlsx' && kind !== 'pptx') {
+      throw new Error(`Unknown document kind: ${String(kind)}`)
+    }
     const templates = app.isPackaged
       ? join(process.resourcesPath, 'templates')
       : join(app.getAppPath(), 'resources', 'templates')
