@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="sheet" x1="252" y1="178" x2="746" y2="820" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7C3AED"/>
+      <stop offset="1" stop-color="#5B21B6"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="228" fill="#312E81"/>
+  <path d="M274 174H658L786 302V746Q786 822 710 822H274Q198 822 198 746V250Q198 174 274 174Z" fill="url(#sheet)"/>
+  <path d="M646 174H658L786 302V314Z" fill="#C4B5FD"/>
+  <path d="M512 326C536 434 560 464 668 488C560 512 536 540 512 650C488 540 464 512 356 488C464 464 488 434 512 326Z" fill="#FFFFFF"/>
+  <path d="M676 330C687 370 700 383 740 394C700 405 687 418 676 458C665 418 652 405 612 394C652 383 665 370 676 330Z" fill="#FFFFFF"/>
+</svg>

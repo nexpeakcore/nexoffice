@@ -1,10 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="background" x1="132" y1="104" x2="892" y2="920" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#4338CA"/>
-      <stop offset="1" stop-color="#6D28D9"/>
+    <linearGradient id="background" x1="112" y1="106" x2="908" y2="920" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7C3AED"/>
+      <stop offset="1" stop-color="#5B21B6"/>
+    </linearGradient>
+    <linearGradient id="green" x1="450" y1="144" x2="450" y2="750" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#34D399"/>
+      <stop offset="1" stop-color="#10B981"/>
     </linearGradient>
   </defs>
   <rect width="1024" height="1024" rx="228" fill="url(#background)"/>
-  <path fill="#FFFFFF" fill-rule="evenodd" d="M274 174H658L786 302V746Q786 822 710 822H274Q198 822 198 746V250Q198 174 274 174Z M306 724V330H430L594 576V330H718V724H594L430 478V724Z"/>
+  <path d="M304 144H596Q660 144 660 208V686Q660 750 596 750H304Q240 750 240 686V208Q240 144 304 144Z" fill="url(#green)"/>
+  <path d="M520 144H596Q660 144 660 208V284Z" fill="#86EFAC"/>
+  <path d="M544 264H776Q840 264 840 328V752Q840 816 776 816H544Q480 816 480 752V328Q480 264 544 264Z" fill="#F97316"/>
+  <path d="M700 264H776Q840 264 840 328V404Z" fill="#FDBA74"/>
+  <rect x="144" y="414" width="170" height="450" rx="42" fill="#FFFFFF"/>
+  <path d="M314 414H462L688 864H540Z" fill="#FFFFFF"/>
+  <rect x="540" y="414" width="170" height="450" rx="42" fill="#FFFFFF"/>
 </svg>
