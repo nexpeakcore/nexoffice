@@ -14,7 +14,7 @@
   <path d="M520 144H596Q660 144 660 208V284Z" fill="#86EFAC"/>
   <path d="M544 264H776Q840 264 840 328V752Q840 816 776 816H544Q480 816 480 752V328Q480 264 544 264Z" fill="#F97316"/>
   <path d="M700 264H776Q840 264 840 328V404Z" fill="#FDBA74"/>
-  <rect x="144" y="414" width="170" height="450" rx="42" fill="#FFFFFF"/>
-  <path d="M314 414H462L688 864H540Z" fill="#FFFFFF"/>
-  <rect x="540" y="414" width="170" height="450" rx="42" fill="#FFFFFF"/>
+  <rect x="150" y="414" width="170" height="450" rx="42" fill="#FFFFFF"/>
+  <path d="M320 414H510L690 864H500Z" fill="#FFFFFF"/>
+  <rect x="690" y="414" width="170" height="450" rx="42" fill="#FFFFFF"/>
 </svg>
