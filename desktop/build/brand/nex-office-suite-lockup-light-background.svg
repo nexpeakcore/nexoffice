@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="title desc">
-  <title id="title">Nex Office Suite icon</title>
-  <desc id="desc">Nex Office Suite icon — Nex Office Option 1 brand asset</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 680" width="1600" height="680" role="img" aria-labelledby="title desc">
+  <title id="title">Nex Office Suite lockup on light background</title>
+  <desc id="desc">Nex Office Suite lockup on light background — Nex Office Option 1 brand asset</desc>
   
+    <rect width="1600" height="680" rx="52" fill="#FFFFFF"/>
+    <g transform="translate(70 85) scale(.96)"><g transform="translate(0 0) scale(1)">
   
   <defs>
     <linearGradient id="suite-front" x1="55" y1="110" x2="255" y2="390" gradientUnits="userSpaceOnUse"><stop stop-color="#625BFF"/><stop offset="1" stop-color="#3930CE"/></linearGradient>
@@ -28,5 +30,10 @@
       <path fill="url(#suite-front-fold)" d="M190 108v46c0 16.6 13.4 30 30 30h46l-76-76Z"/>
       <g fill="#FFF"><rect x="98" y="240" width="100" height="17" rx="8.5"/><rect x="98" y="278" width="76" height="17" rx="8.5" opacity=".97"/><rect x="98" y="316" width="94" height="17" rx="8.5" opacity=".94"/></g>
     </g>
-  </g>
+  </g></g></g>
+    <text x="625" y="325" fill="#10142F" font-family="Arial, sans-serif" font-size="166" font-weight="700" letter-spacing="-10">Ne</text>
+    <text x="805" y="325" fill="#4F46E5" font-family="Arial, sans-serif" font-size="166" font-weight="700" letter-spacing="-10">x</text>
+    <text x="920" y="325" fill="#10142F" font-family="Arial, sans-serif" font-size="166" font-weight="400" letter-spacing="-9">Office</text>
+    <text x="637" y="415" fill="#667085" font-family="Arial, sans-serif" font-size="37" font-weight="500" letter-spacing="3">CREATE  •  COLLABORATE  •  ACHIEVE</text>
+
 </svg>

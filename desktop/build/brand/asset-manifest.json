@@ -1,0 +1,32 @@
+{
+  "name": "Nex Office Brand Assets",
+  "version": "1.1.0",
+  "direction": "Option 1 — reference-matched dimensional document family",
+  "palette": {
+    "indigo": "#4F46E5",
+    "blue": "#3B82F6",
+    "green": "#22C55E",
+    "orange": "#F59E0B",
+    "purple": "#8B5CF6",
+    "ink": "#10142F",
+    "textMuted": "#667085",
+    "dark": "#10143C",
+    "paper": "#FFFFFF"
+  },
+  "transparentPngSizes": [
+    1024,
+    512,
+    256,
+    128,
+    64,
+    32
+  ],
+  "products": [
+    "nex-office-suite",
+    "nex-docs",
+    "nex-sheets",
+    "nex-slides",
+    "nex-ai"
+  ],
+  "generatedAt": "2026-08-12T02:35:27.598Z"
+}

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="title desc">
+  <title id="title">Nex Slides icon</title>
+  <desc id="desc">Nex Slides icon — Nex Office Option 1 brand asset</desc>
+  
+  
+  <defs>
+    <linearGradient id="slides-body" x1="110" y1="80" x2="407" y2="430" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFB52D"/><stop offset="1" stop-color="#F56D0A"/>
+    </linearGradient>
+    <linearGradient id="slides-fold" x1="320" y1="70" x2="410" y2="184" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity=".76"/><stop offset="1" stop-color="#FFFFFF" stop-opacity=".25"/>
+    </linearGradient>
+    <filter id="slides-shadow" x="-30%" y="-24%" width="170%" height="180%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="12" flood-color="#161B45" flood-opacity=".20"/>
+    </filter>
+  </defs>
+  
+  <g filter="url(#slides-shadow)">
+    <path fill="url(#slides-body)" d="M154 62h172l90 90v205c0 45.3-36.7 82-82 82H176c-45.3 0-82-36.7-82-82V144c0-45.3 14.7-82 60-82Z"/>
+    <path fill="url(#slides-fold)" d="M326 62v57c0 18.2 14.8 33 33 33h57L326 62Z"/>
+    <path fill="#FFF" opacity=".10" d="M123 167c0-42 34-76 76-76h127v28H192c-38.1 0-69 30.9-69 69v145h-29V167h29Z"/>
+  </g>
+  <g filter="url(#slides-shadow)">
+    <circle cx="255" cy="280" r="82" fill="#FFF"/>
+    <path d="M260 188a92 92 0 0 1 87 87h-87v-87Z" fill="url(#slides-body)"/>
+    <path d="M260 275h87a82 82 0 0 1-87 87v-87Z" fill="url(#slides-body)" opacity=".98"/>
+  </g>
+  <filter id="slides-shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#B94A00" flood-opacity=".18"/></filter>
+
+</svg>
