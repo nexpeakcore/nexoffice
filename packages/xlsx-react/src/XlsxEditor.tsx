@@ -1379,6 +1379,9 @@ function XlsxEditorContent({
   const undo = useCallback(() => {
     const handle = handleRef.current;
     if (!handle) return;
+    setSelectedChart(null);
+    setChartGhost(null);
+    chartGestureRef.current = null;
     try {
       applyResult(handle.undo());
     } catch (e) {
@@ -1389,6 +1392,9 @@ function XlsxEditorContent({
   const redo = useCallback(() => {
     const handle = handleRef.current;
     if (!handle) return;
+    setSelectedChart(null);
+    setChartGhost(null);
+    chartGestureRef.current = null;
     try {
       applyResult(handle.redo());
     } catch (e) {

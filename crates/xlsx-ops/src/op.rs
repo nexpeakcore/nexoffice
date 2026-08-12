@@ -179,8 +179,7 @@ pub enum Op {
     SetChartAnchor {
         sheet: SheetId,
         index: usize,
-        from: DrawingAnchor,
-        to: DrawingAnchor,
+        anchor: DrawingAnchor,
     },
     RemoveSheet {
         index: usize,

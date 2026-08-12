@@ -1558,7 +1558,6 @@ impl Workbook {
                 "only charts created in this session can be moved".to_owned(),
             ));
         }
-        let from = drawing.anchor;
         let to = xlsx_model::DrawingAnchor::Cell {
             from: xlsx_model::AnchorCell {
                 col: anchor.start.col,
@@ -1577,8 +1576,7 @@ impl Workbook {
         self.commit_sidecar(Op::SetChartAnchor {
             sheet,
             index,
-            from,
-            to,
+            anchor: to,
         })
     }
 

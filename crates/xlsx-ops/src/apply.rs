@@ -171,8 +171,7 @@ pub fn apply(wb: &mut Workbook, op: &Op) -> Result<InvertedOp, OpError> {
         Op::SetChartAnchor {
             sheet,
             index,
-            from,
-            to,
+            anchor,
         } => {
             let s = sheet_mut(wb, *sheet)?;
             let Some(drawing) = s.drawings.get_mut(*index) else {
@@ -181,12 +180,12 @@ pub fn apply(wb: &mut Workbook, op: &Op) -> Result<InvertedOp, OpError> {
                     index: *index,
                 });
             };
-            drawing.anchor = *to;
+            let previous = drawing.anchor;
+            drawing.anchor = *anchor;
             Ok(InvertedOp(vec![Op::SetChartAnchor {
                 sheet: *sheet,
                 index: *index,
-                from: *to,
-                to: *from,
+                anchor: previous,
             }]))
         }
         Op::SetFreezePane { sheet, pane } => {
