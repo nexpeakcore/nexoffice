@@ -218,14 +218,19 @@ function chartCornerAt(
   zoom: number
 ): 'nw' | 'ne' | 'sw' | 'se' | null {
   const grab = 10 / zoom;
+  const visible = (cx: number, cy: number) =>
+    cx >= region.clip.x &&
+    cx <= region.clip.x + region.clip.w &&
+    cy >= region.clip.y &&
+    cy <= region.clip.y + region.clip.h;
   const nearLeft = Math.abs(x - region.x) <= grab;
   const nearRight = Math.abs(x - (region.x + region.w)) <= grab;
   const nearTop = Math.abs(y - region.y) <= grab;
   const nearBottom = Math.abs(y - (region.y + region.h)) <= grab;
-  if (nearTop && nearLeft) return 'nw';
-  if (nearTop && nearRight) return 'ne';
-  if (nearBottom && nearLeft) return 'sw';
-  if (nearBottom && nearRight) return 'se';
+  if (nearTop && nearLeft && visible(region.x, region.y)) return 'nw';
+  if (nearTop && nearRight && visible(region.x + region.w, region.y)) return 'ne';
+  if (nearBottom && nearLeft && visible(region.x, region.y + region.h)) return 'sw';
+  if (nearBottom && nearRight && visible(region.x + region.w, region.y + region.h)) return 'se';
   return null;
 }
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';

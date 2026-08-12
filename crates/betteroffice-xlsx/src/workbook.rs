@@ -2627,10 +2627,10 @@ fn validate_op(model: &WorkbookModel, op: &Op) -> Result<()> {
         Op::RenameSheet { sheet, .. } => {
             require_sheet(model, *sheet)?;
         }
-        Op::AddChartDrawing { sheet, .. }
-        | Op::RemoveChartDrawing { sheet, .. }
-        | Op::SetChartAnchor { sheet, .. } => {
-            require_sheet(model, *sheet)?;
+        Op::AddChartDrawing { .. } | Op::RemoveChartDrawing { .. } | Op::SetChartAnchor { .. } => {
+            return Err(Error::InvalidOperation(
+                "chart operations are internal undo primitives; use the chart APIs".to_string(),
+            ));
         }
         Op::RestoreSheet { .. } | Op::SetDefinedNames { .. } => {
             return Err(Error::InvalidOperation(
