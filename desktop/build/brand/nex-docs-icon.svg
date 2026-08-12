@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="title desc">
+  <title id="title">Nex Docs icon</title>
+  <desc id="desc">Nex Docs icon — Nex Office Option 1 brand asset</desc>
+  
+  
+  <defs>
+    <linearGradient id="docs-body" x1="110" y1="80" x2="407" y2="430" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4E9CFF"/><stop offset="1" stop-color="#2464E8"/>
+    </linearGradient>
+    <linearGradient id="docs-fold" x1="320" y1="70" x2="410" y2="184" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity=".76"/><stop offset="1" stop-color="#FFFFFF" stop-opacity=".25"/>
+    </linearGradient>
+    <filter id="docs-shadow" x="-30%" y="-24%" width="170%" height="180%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="12" flood-color="#161B45" flood-opacity=".20"/>
+    </filter>
+  </defs>
+  <filter id="docs-symbol-shadow" x="-20%" y="-50%" width="150%" height="220%"><feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#1748B5" flood-opacity=".20"/></filter>
+  
+  <g filter="url(#docs-shadow)">
+    <path fill="url(#docs-body)" d="M154 62h172l90 90v205c0 45.3-36.7 82-82 82H176c-45.3 0-82-36.7-82-82V144c0-45.3 14.7-82 60-82Z"/>
+    <path fill="url(#docs-fold)" d="M326 62v57c0 18.2 14.8 33 33 33h57L326 62Z"/>
+    <path fill="#FFF" opacity=".10" d="M123 167c0-42 34-76 76-76h127v28H192c-38.1 0-69 30.9-69 69v145h-29V167h29Z"/>
+  </g>
+  <g fill="#FFF" filter="url(#docs-symbol-shadow)">
+  <rect x="157" y="211" width="175" height="27" rx="13.5"/>
+  <rect x="157" y="267" width="145" height="27" rx="13.5" opacity=".96"/>
+  <rect x="157" y="323" width="164" height="27" rx="13.5" opacity=".93"/>
+</g>
+
+</svg>

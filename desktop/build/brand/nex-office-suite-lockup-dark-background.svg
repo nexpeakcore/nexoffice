@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 680" width="1600" height="680" role="img" aria-labelledby="title desc">
+  <title id="title">Nex Office Suite lockup on dark background</title>
+  <desc id="desc">Nex Office Suite lockup on dark background — Nex Office Option 1 brand asset</desc>
+  
+    <rect width="1600" height="680" rx="52" fill="#10143C"/>
+    <g transform="translate(70 85) scale(.96)"><g transform="translate(0 0) scale(1)">
+  
+  <defs>
+    <linearGradient id="suite-front" x1="55" y1="110" x2="255" y2="390" gradientUnits="userSpaceOnUse"><stop stop-color="#625BFF"/><stop offset="1" stop-color="#3930CE"/></linearGradient>
+    <linearGradient id="suite-middle" x1="154" y1="55" x2="325" y2="345" gradientUnits="userSpaceOnUse"><stop stop-color="#3DD878"/><stop offset="1" stop-color="#16A34A"/></linearGradient>
+    <linearGradient id="suite-back" x1="252" y1="10" x2="416" y2="300" gradientUnits="userSpaceOnUse"><stop stop-color="#FFB733"/><stop offset="1" stop-color="#F56C0A"/></linearGradient>
+    <linearGradient id="suite-front-fold" x1="188" y1="110" x2="266" y2="192" gradientUnits="userSpaceOnUse"><stop stop-color="#F7F5FF"/><stop offset="1" stop-color="#D7D2FF"/></linearGradient>
+    <linearGradient id="suite-middle-fold" x1="275" y1="55" x2="344" y2="130" gradientUnits="userSpaceOnUse"><stop stop-color="#F0FFF6"/><stop offset="1" stop-color="#A8EAC0"/></linearGradient>
+    <linearGradient id="suite-back-fold" x1="345" y1="10" x2="412" y2="84" gradientUnits="userSpaceOnUse"><stop stop-color="#FFF9EB"/><stop offset="1" stop-color="#FFD187"/></linearGradient>
+    <filter id="suite-shadow" x="-35%" y="-30%" width="190%" height="190%"><feDropShadow dx="0" dy="11" stdDeviation="10" flood-color="#11153E" flood-opacity=".18"/></filter>
+  </defs>
+  <g transform="skewY(10)" filter="url(#suite-shadow)">
+    <g>
+      <path fill="url(#suite-back)" d="M260 8h86l65 65v189c0 26.5-21.5 48-48 48H266c-26.5 0-48-21.5-48-48V56c0-26.5 15.5-48 42-48Z"/>
+      <path fill="url(#suite-back-fold)" d="M346 8v40c0 13.8 11.2 25 25 25h40l-65-65Z"/>
+      <g fill="#FFF" opacity=".70"><rect x="323" y="166" width="39" height="13" rx="6.5"/><rect x="323" y="193" width="55" height="13" rx="6.5"/></g>
+    </g>
+    <g>
+      <path fill="url(#suite-middle)" d="M164 53h111l70 70v204c0 30.4-24.6 55-55 55H173c-30.4 0-55-24.6-55-55V108c0-30.4 15.6-55 46-55Z"/>
+      <path fill="url(#suite-middle-fold)" d="M275 53v44c0 14.4 11.6 26 26 26h44l-70-70Z"/>
+    </g>
+    <g>
+      <path fill="url(#suite-front)" d="M72 108h118l76 76v204c0 32-26 58-58 58H117c-32 0-58-26-58-58V166c0-32 13-58 13-58Z"/>
+      <path fill="url(#suite-front-fold)" d="M190 108v46c0 16.6 13.4 30 30 30h46l-76-76Z"/>
+      <g fill="#FFF"><rect x="98" y="240" width="100" height="17" rx="8.5"/><rect x="98" y="278" width="76" height="17" rx="8.5" opacity=".97"/><rect x="98" y="316" width="94" height="17" rx="8.5" opacity=".94"/></g>
+    </g>
+  </g></g></g>
+    <text x="625" y="325" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="166" font-weight="700" letter-spacing="-10">Ne</text>
+    <text x="805" y="325" fill="#9B8CFF" font-family="Arial, sans-serif" font-size="166" font-weight="700" letter-spacing="-10">x</text>
+    <text x="920" y="325" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="166" font-weight="400" letter-spacing="-9">Office</text>
+    <text x="637" y="415" fill="#C8CDF4" font-family="Arial, sans-serif" font-size="37" font-weight="500" letter-spacing="3">CREATE  •  COLLABORATE  •  ACHIEVE</text>
+
+</svg>
