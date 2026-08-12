@@ -10,6 +10,7 @@ import {
   type EditCapabilities,
   type ExportPdfResult,
   type PrintResult,
+  type RecentFile,
   type MenuAction,
   type OpenedDocument,
   type PrintJob,
@@ -36,6 +37,16 @@ const api = {
   openFile: (): Promise<OpenedDocument | null> => ipcRenderer.invoke(IPC.openFile),
 
   readFile: (path: string): Promise<OpenedDocument> => ipcRenderer.invoke(IPC.readFile, path),
+
+  newDocument: (kind: DocumentKind): Promise<OpenedDocument> =>
+    ipcRenderer.invoke(IPC.newDocument, kind),
+
+  recentsList: (): Promise<RecentFile[]> => ipcRenderer.invoke(IPC.recentsList),
+
+  recentsRemove: (path: string): Promise<RecentFile[]> =>
+    ipcRenderer.invoke(IPC.recentsRemove, path),
+
+  openRecent: (path: string): Promise<void> => ipcRenderer.invoke(IPC.openRecent, path),
 
   saveFile: (path: string | null, kind: DocumentKind, data: Uint8Array): Promise<SaveResult> =>
     ipcRenderer.invoke(IPC.saveFile, { path, kind, data }),

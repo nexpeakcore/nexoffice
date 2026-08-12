@@ -10,6 +10,7 @@ import {
 } from '../shared/ipc.js'
 import { SpellCheckPanel } from './components/SpellCheckPanel.js'
 import { AgentPanel } from './components/AgentPanel.js'
+import { StartScreen } from './components/StartScreen.js'
 import { UpdateChip } from './components/UpdateChip.js'
 import { DocxEditorView, type DocxEditorViewRef } from './editors/DocxEditorView.js'
 import { PptxEditorView, type PptxEditorViewRef } from './editors/PptxEditorView.js'
@@ -275,7 +276,7 @@ export function App() {
           data = serialized.bytes
         }
         const save = forceDialog ? window.nexoffice.saveFileAs : window.nexoffice.saveFile
-        const result = await save(current.path, current.kind, data)
+        const result = await save(current.path || null, current.kind, data)
         if (result.canceled || !result.path) return finish({ status: 'canceled' })
         const savedPath = result.path
         const savedName = savedPath.split(/[\\/]/).pop() ?? current.name
@@ -415,6 +416,35 @@ export function App() {
       })
     })
   }, [ensureSaved, applyOpenedDocument])
+
+  const newFromTemplate = useCallback(
+    async (kind: DocumentKind) => {
+      try {
+        const proceed = await ensureSaved()
+        if (!proceed) return
+        const created = await window.nexoffice.newDocument(kind)
+        applyOpenedDocument(created)
+      } catch (error) {
+        setStatus({
+          key: 'status.openFailed',
+          vars: { message: error instanceof Error ? error.message : String(error) },
+        })
+      }
+    },
+    [ensureSaved, applyOpenedDocument],
+  )
+
+  const openRecentFromStart = useCallback(async (path: string) => {
+    try {
+      await window.nexoffice.openRecent(path)
+    } catch (error) {
+      setStatus({
+        key: 'status.openFailed',
+        vars: { message: error instanceof Error ? error.message : String(error) },
+      })
+    }
+  }, [])
+
 
   useEffect(() => {
     return window.nexoffice.onCloseRequest(() => {
@@ -786,19 +816,11 @@ export function App() {
               />
             )
           ) : (
-            <section className="flex w-full items-center justify-center">
-              <div className="text-center">
-                <h1 className="text-2xl font-semibold text-neutral-900">NexOffice</h1>
-                <p className="mt-2 text-sm text-neutral-500">{t('app.empty.subtitle')}</p>
-                <button
-                  type="button"
-                  onClick={() => void openDocument()}
-                  className="no-drag mt-6 rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-700"
-                >
-                  {t('app.empty.openFile')}
-                </button>
-              </div>
-            </section>
+            <StartScreen
+              onNew={(kind) => void newFromTemplate(kind)}
+              onOpen={() => void openDocument()}
+              onOpenRecent={(path) => void openRecentFromStart(path)}
+            />
           )}
         </main>
 

@@ -204,5 +204,13 @@
   "editor": {
     "loading": "Ładowanie {name}…",
     "couldNotOpen": "Nie można otworzyć {name}"
+  },
+  "start": {
+    "newDocument": "Nowy dokument",
+    "newWorkbook": "Nowy skoroszyt",
+    "newPresentation": "Nowa prezentacja",
+    "recent": "Ostatnie pliki",
+    "noRecent": "Otwarte pliki pojawią się tutaj.",
+    "remove": "Usuń z listy"
   }
 }

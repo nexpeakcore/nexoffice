@@ -204,5 +204,13 @@
   "editor": {
     "loading": "Chargement de {name}…",
     "couldNotOpen": "Impossible d'ouvrir {name}"
+  },
+  "start": {
+    "newDocument": "Nouveau document",
+    "newWorkbook": "Nouveau classeur",
+    "newPresentation": "Nouvelle présentation",
+    "recent": "Fichiers récents",
+    "noRecent": "Les fichiers ouverts apparaîtront ici.",
+    "remove": "Retirer de la liste"
   }
 }

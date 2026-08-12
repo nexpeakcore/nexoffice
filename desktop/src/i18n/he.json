@@ -204,5 +204,13 @@
   "editor": {
     "loading": "טוען את {name}…",
     "couldNotOpen": "לא ניתן לפתוח את {name}"
+  },
+  "start": {
+    "newDocument": "מסמך חדש",
+    "newWorkbook": "חוברת עבודה חדשה",
+    "newPresentation": "מצגת חדשה",
+    "recent": "קבצים אחרונים",
+    "noRecent": "קבצים שתפתחו יופיעו כאן.",
+    "remove": "הסר מהרשימה"
   }
 }

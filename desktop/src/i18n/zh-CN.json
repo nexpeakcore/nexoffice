@@ -204,5 +204,13 @@
   "editor": {
     "loading": "正在加载 {name}…",
     "couldNotOpen": "无法打开 {name}"
+  },
+  "start": {
+    "newDocument": "新建文档",
+    "newWorkbook": "新建工作簿",
+    "newPresentation": "新建演示文稿",
+    "recent": "最近的文件",
+    "noRecent": "打开过的文件会显示在这里。",
+    "remove": "从列表中移除"
   }
 }

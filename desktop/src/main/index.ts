@@ -1,5 +1,6 @@
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { access, readFile, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { app, BrowserWindow, dialog, ipcMain, protocol, screen, shell, type Rectangle } from 'electron'
 import { closeDecision } from './closePolicy.js'
 import { buildMenu } from './menu.js'
@@ -45,6 +46,7 @@ import {
   type SaveResult,
   type UnsavedChoice,
   type WebEditAction,
+  type RecentFile,
 } from '../shared/ipc.js'
 
 const isDev = !app.isPackaged
@@ -318,6 +320,16 @@ function noteRecent(filePath: string): void {
   rebuildMenu()
 }
 
+function listRecentFiles(): RecentFile[] {
+  return getRecents().map((filePath) => {
+    const name = basename(filePath)
+    const extension = name.split('.').pop()?.toLowerCase()
+    const kind: DocumentKind | null =
+      extension === 'docx' || extension === 'xlsx' || extension === 'pptx' ? extension : null
+    return { path: filePath, name, kind, exists: existsSync(filePath) }
+  })
+}
+
 async function openRecentPath(filePath: string): Promise<void> {
   try {
     await access(filePath)
@@ -472,6 +484,27 @@ function registerIpc(): void {
   ipcMain.handle(IPC.readFile, (_event, filePath: string) => {
     if (!grantedPaths.has(filePath)) throw new Error(`Access denied: ${filePath}`)
     return readDocument(filePath)
+  })
+
+  ipcMain.handle(IPC.newDocument, async (_event, kind: DocumentKind): Promise<OpenedDocument> => {
+    const templates = app.isPackaged
+      ? join(process.resourcesPath, 'templates')
+      : join(app.getAppPath(), 'resources', 'templates')
+    const data = await readFile(join(templates, `blank.${kind}`))
+    return { path: '', name: `Untitled.${kind}`, kind, data: new Uint8Array(data) }
+  })
+
+  ipcMain.handle(IPC.recentsList, (): RecentFile[] => listRecentFiles())
+
+  ipcMain.handle(IPC.recentsRemove, (_event, filePath: string): RecentFile[] => {
+    removeRecent(filePath)
+    rebuildMenu()
+    return listRecentFiles()
+  })
+
+  ipcMain.handle(IPC.openRecent, async (_event, filePath: string) => {
+    if (!getRecents().includes(filePath)) throw new Error(`Not a recent file: ${filePath}`)
+    await openRecentPath(filePath)
   })
 
   ipcMain.handle(IPC.platform, () => process.platform)

@@ -204,5 +204,13 @@
   "editor": {
     "loading": "Đang tải {name}…",
     "couldNotOpen": "Không thể mở {name}"
+  },
+  "start": {
+    "newDocument": "Tài liệu mới",
+    "newWorkbook": "Bảng tính mới",
+    "newPresentation": "Trình chiếu mới",
+    "recent": "Tệp gần đây",
+    "noRecent": "Các tệp bạn mở sẽ hiện ở đây.",
+    "remove": "Xoá khỏi danh sách"
   }
 }

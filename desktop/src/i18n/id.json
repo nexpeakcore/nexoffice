@@ -204,5 +204,13 @@
   "editor": {
     "loading": "Memuat {name}…",
     "couldNotOpen": "Tidak dapat membuka {name}"
+  },
+  "start": {
+    "newDocument": "Dokumen baru",
+    "newWorkbook": "Buku kerja baru",
+    "newPresentation": "Presentasi baru",
+    "recent": "File terbaru",
+    "noRecent": "File yang dibuka akan tampil di sini.",
+    "remove": "Hapus dari daftar"
   }
 }
