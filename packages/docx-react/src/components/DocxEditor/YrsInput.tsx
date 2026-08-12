@@ -247,6 +247,7 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
   displayListFrameEpochRef.current = displayListFrameEpoch;
   resolveDisplayListQueriesRef.current = resolveDisplayListQueries;
   const [positionStyle, setPositionStyle] = useState<CSSProperties>({ left: 0, top: 0, height: 1 });
+  const [composingVisible, setComposingVisible] = useState(false);
   const [selectionEpoch, setSelectionEpoch] = useState(0);
 
   const enqueueInputOperation = useCallback((operation: () => void | Promise<void>): void => {
@@ -1062,6 +1063,7 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
       compositionPendingRef.current = false;
       compositionCommitRef.current = '';
       event.currentTarget.value = '';
+      setComposingVisible(true);
       onCaretInterrupt?.();
     },
     [onCaretInterrupt]
@@ -1080,6 +1082,7 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
       compositionPendingRef.current = true;
       compositionCommitRef.current =
         event.currentTarget.value || event.data || compositionCommitRef.current;
+      setComposingVisible(false);
       queueMicrotask(() => {
         const text = textareaRef.current?.value || compositionCommitRef.current;
         // Reset the browser model before applying the document op. A trailing
@@ -1307,7 +1310,29 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
       spellCheck
       readOnly={readOnly || !session}
       rows={1}
-      style={{ ...BASE_STYLE, ...positionStyle }}
+      style={{
+        ...BASE_STYLE,
+        ...positionStyle,
+        ...(composingVisible
+          ? {
+              width: 'auto',
+              minWidth: '2px',
+              maxWidth: '60vw',
+              opacity: 1,
+              zIndex: 40,
+              background: '#ffffff',
+              color: '#111111',
+              caretColor: '#111111',
+              fontSize:
+                typeof positionStyle.height === 'number'
+                  ? `${Math.max(10, Math.round(positionStyle.height * 0.82))}px`
+                  : undefined,
+              lineHeight:
+                typeof positionStyle.height === 'number' ? `${positionStyle.height}px` : undefined,
+              whiteSpace: 'pre',
+            }
+          : null),
+      }}
       onBeforeInput={handleBeforeInput}
       onInput={handleInput}
       onKeyDown={handleKeyDown}
