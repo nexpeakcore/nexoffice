@@ -2178,6 +2178,7 @@ function XlsxEditorContent({
         />
         <div
           data-testid="xlsx-col-headers"
+          aria-hidden="true"
           style={{
             position: 'relative',
             overflow: 'hidden',
@@ -2211,6 +2212,7 @@ function XlsxEditorContent({
         </div>
         <div
           data-testid="xlsx-row-headers"
+          aria-hidden="true"
           style={{
             position: 'relative',
             overflow: 'hidden',
