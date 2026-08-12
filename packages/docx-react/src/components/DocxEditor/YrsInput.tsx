@@ -142,13 +142,15 @@ const BASE_STYLE: CSSProperties = {
 
 let compositionMeasureContext: CanvasRenderingContext2D | null = null;
 
+const COMPOSITION_FONT_FAMILY = 'sans-serif';
+
 /** Pixel width of `text` at `fontPx`, for sizing the visible composition box. */
 function measureCompositionWidth(text: string, fontPx: number): number {
   if (!compositionMeasureContext) {
     compositionMeasureContext = document.createElement('canvas').getContext('2d');
   }
   if (!compositionMeasureContext) return text.length * fontPx * 0.6;
-  compositionMeasureContext.font = `${fontPx}px sans-serif`;
+  compositionMeasureContext.font = `${fontPx}px ${COMPOSITION_FONT_FAMILY}`;
   return compositionMeasureContext.measureText(text).width;
 }
 
@@ -1335,6 +1337,7 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
               width: `${composingWidth}px`,
               minWidth: '2px',
               maxWidth: '60vw',
+              fontFamily: COMPOSITION_FONT_FAMILY,
               opacity: 1,
               zIndex: 40,
               background: '#ffffff',
