@@ -2021,6 +2021,8 @@ function XlsxEditorContent({
   const onDoubleClick = useCallback(
     (e: React.MouseEvent) => {
       if (editing) return;
+      const logical = pointToLogical(e.clientX, e.clientY);
+      if (logical && chartAtPoint(logical.x, logical.y)) return;
       const addr = pointToCell(e.clientX, e.clientY);
       if (
         addr &&
@@ -2031,7 +2033,7 @@ function XlsxEditorContent({
       }
       if (selection) openEditor();
     },
-    [editing, openEditor, pointToCell, selection]
+    [editing, openEditor, pointToCell, selection, pointToLogical, chartAtPoint]
   );
 
   const onMouseLeave = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
