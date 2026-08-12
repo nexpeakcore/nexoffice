@@ -1046,7 +1046,11 @@ function XlsxEditorContent({
     if (!charts) return null;
     for (let i = charts.length - 1; i >= 0; i--) {
       const c = charts[i]!;
-      if (x >= c.x && x <= c.x + c.w && y >= c.y && y <= c.y + c.h) return c;
+      const left = Math.max(c.x, c.clip.x);
+      const top = Math.max(c.y, c.clip.y);
+      const right = Math.min(c.x + c.w, c.clip.x + c.clip.w);
+      const bottom = Math.min(c.y + c.h, c.clip.y + c.clip.h);
+      if (x >= left && x <= right && y >= top && y <= bottom) return c;
     }
     return null;
   }, []);

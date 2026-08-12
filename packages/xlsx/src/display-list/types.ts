@@ -161,10 +161,13 @@ export interface GridMeta {
  */
 export interface ChartRegion {
   index: number;
+  /** the chart's full unclipped rect in viewport pixels. */
   x: number;
   y: number;
   w: number;
   h: number;
+  /** pane clip; only the intersection with the rect is visible/clickable. */
+  clip: Rect;
   created: boolean;
 }
 

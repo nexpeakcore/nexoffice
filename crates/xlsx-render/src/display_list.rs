@@ -152,10 +152,13 @@ pub struct GridMeta {
 pub struct ChartRegion {
     /// position in `Sheet::drawings`.
     pub index: usize,
+    /// the chart's full unclipped rect in viewport pixels.
     pub x: f32,
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    /// the pane clip: only the intersection with the rect is visible/clickable.
+    pub clip: Rect,
     /// authored this session (movable) vs preserved from the source file.
     pub created: bool,
 }
@@ -344,6 +347,12 @@ pub fn scaled(dl: DisplayList, factor: f32) -> DisplayList {
                 y: chart.y * factor,
                 w: chart.w * factor,
                 h: chart.h * factor,
+                clip: Rect {
+                    x: chart.clip.x * factor,
+                    y: chart.clip.y * factor,
+                    w: chart.clip.w * factor,
+                    h: chart.clip.h * factor,
+                },
                 ..chart
             })
             .collect(),
