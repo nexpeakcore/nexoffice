@@ -110,6 +110,7 @@ export function useFileIO({
   onOpen,
   onError,
   onPrint,
+  printOverride,
   onDocumentNameChange,
   loadBuffer,
   focusActiveEditor,
@@ -123,6 +124,7 @@ export function useFileIO({
   onOpen: ((file: File) => void | Promise<void>) | undefined;
   onError: ((error: Error) => void) | undefined;
   onPrint: (() => void) | undefined;
+  printOverride: (() => void) | undefined;
   onDocumentNameChange: ((name: string) => void) | undefined;
   loadBuffer: (buffer: DocxInput) => Promise<void>;
   focusActiveEditor: () => void;
@@ -161,13 +163,17 @@ export function useFileIO({
   );
 
   const handleDirectPrint = useCallback(() => {
+    if (printOverride) {
+      printOverride();
+      return;
+    }
     if (!displayList) {
       window.print();
       onPrint?.();
       return;
     }
     printDisplayListPages(displayList, resolveImage, onPrint);
-  }, [displayList, resolveImage, onPrint]);
+  }, [displayList, resolveImage, onPrint, printOverride]);
 
   const handleDownloadDocument = useCallback(async () => {
     const buffer = await handleSave();

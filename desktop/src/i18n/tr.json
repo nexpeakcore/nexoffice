@@ -19,7 +19,8 @@
       "saveAs": "Farklı Kaydet…",
       "exportPdf": "PDF Olarak Dışa Aktar…",
       "closeWindow": "Pencereyi Kapat",
-      "exit": "Çıkış"
+      "exit": "Çıkış",
+      "print": "Yazdır…"
     },
     "edit": {
       "label": "Dü&zen",
@@ -104,6 +105,9 @@
     },
     "openFailed": {
       "title": "Dosya Açılamadı"
+    },
+    "printFailed": {
+      "title": "Yazdırma başarısız"
     }
   },
   "app": {
@@ -145,7 +149,10 @@
     "wordCountSlides": "Sözcük: {words} · Karakter: {characters} · Slayt {slide}/{slides}",
     "frozeTopRow": "Üst satır donduruldu",
     "frozeFirstColumn": "İlk sütun donduruldu",
-    "unfroze": "Bölmeler çözüldü"
+    "unfroze": "Bölmeler çözüldü",
+    "printing": "Yazdırma hazırlanıyor…",
+    "printDone": "Yazıcıya gönderildi",
+    "printCanceled": "Yazdırma iptal edildi"
   },
   "footer": {
     "stats": "{words} sözcük · {characters} karakter · Sayfa {page}/{pages}",

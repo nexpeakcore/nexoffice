@@ -38,6 +38,7 @@ import {
   type MenuAction,
   type OpenedDocument,
   type PrintJob,
+  type PrintResult,
   type PrintRenderResult,
   type RefusedChoice,
   type SaveRequest,
@@ -601,6 +602,37 @@ function registerIpc(): void {
       const message = error instanceof Error ? error.message : String(error)
       dialog.showErrorBox(t('dialog.pdfFailed.title'), message)
       return { path: null, canceled: true }
+    } finally {
+      if (!printWindow.isDestroyed()) printWindow.destroy()
+    }
+  })
+
+  ipcMain.handle(IPC.printDocument, async (_event, request: ExportPdfRequest): Promise<PrintResult> => {
+    const owner = mainWindow
+    if (!owner || owner.isDestroyed()) return { printed: false }
+
+    const printWindow = createPrintWindow()
+    try {
+      const { pages, truncated, skippedPages } = await renderPrintJob(printWindow, {
+        kind: request.kind,
+        data: request.data,
+      })
+      const printed = await new Promise<boolean>((resolve) => {
+        printWindow.webContents.print(
+          { printBackground: true },
+          (success) => resolve(success),
+        )
+      })
+      return {
+        printed,
+        pages,
+        truncated,
+        skipped: skippedPages.length,
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      dialog.showErrorBox(t('dialog.printFailed.title'), message)
+      return { printed: false }
     } finally {
       if (!printWindow.isDestroyed()) printWindow.destroy()
     }

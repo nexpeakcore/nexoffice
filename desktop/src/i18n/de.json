@@ -19,7 +19,8 @@
       "saveAs": "Speichern unter…",
       "exportPdf": "Als PDF exportieren…",
       "closeWindow": "Fenster schließen",
-      "exit": "Beenden"
+      "exit": "Beenden",
+      "print": "Drucken…"
     },
     "edit": {
       "label": "&Bearbeiten",
@@ -104,6 +105,9 @@
     },
     "openFailed": {
       "title": "Datei konnte nicht geöffnet werden"
+    },
+    "printFailed": {
+      "title": "Drucken fehlgeschlagen"
     }
   },
   "app": {
@@ -145,7 +149,10 @@
     "wordCountSlides": "Wörter: {words} · Zeichen: {characters} · Folie {slide}/{slides}",
     "frozeTopRow": "Oberste Zeile fixiert",
     "frozeFirstColumn": "Erste Spalte fixiert",
-    "unfroze": "Fixierung aufgehoben"
+    "unfroze": "Fixierung aufgehoben",
+    "printing": "Druck wird vorbereitet…",
+    "printDone": "An Drucker gesendet",
+    "printCanceled": "Druck abgebrochen"
   },
   "footer": {
     "stats": "{words} Wörter · {characters} Zeichen · Seite {page}/{pages}",

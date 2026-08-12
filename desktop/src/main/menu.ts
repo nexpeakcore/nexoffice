@@ -111,6 +111,12 @@ export function buildMenu(context: MenuContext): Menu {
           enabled: canExportPdf,
           click: send('file:exportPdf'),
         },
+        {
+          label: t('menu.file.print'),
+          accelerator: 'CmdOrCtrl+P',
+          enabled: canExportPdf,
+          click: send('file:print'),
+        },
         { type: 'separator' },
         isMac
           ? { role: 'close', label: t('menu.file.closeWindow') }

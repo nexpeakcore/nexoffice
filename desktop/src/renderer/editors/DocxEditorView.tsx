@@ -41,6 +41,8 @@ interface EditorDocument {
 interface DocxEditorViewProps {
   document: EditorDocument
   onChange?: () => void
+  /** Route File > Print inside the editor to the host's native print flow. */
+  onPrintRequest?: () => void
 }
 
 function extractText(blocks: unknown[]): string {
@@ -67,7 +69,7 @@ function extractText(blocks: unknown[]): string {
 const TEXT_REFRESH_DELAY_MS = 500
 
 export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>(
-  function DocxEditorView({ document, onChange }, ref) {
+  function DocxEditorView({ document, onChange, onPrintRequest }, ref) {
     const { locale, t } = useI18n()
     const editorRef = useRef<DocxEditorRef>(null)
     const measurementFontProvider = useMemo<BundledFontProvider>(
@@ -202,6 +204,7 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
     return (
       <DocxEditor
         ref={editorRef}
+        {...(onPrintRequest ? { printOverride: onPrintRequest } : {})}
         documentBuffer={document.seed}
         measurementFontProvider={measurementFontProvider}
         i18n={editorLocales[locale] ?? docxEn}

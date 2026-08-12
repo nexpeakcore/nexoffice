@@ -565,6 +565,32 @@ export function App() {
     [enqueue, runPdfExport, serializeDocument],
   )
 
+  const printDocument = useCallback(
+    (target: DocumentState) => {
+      setStatus({ key: 'status.printing' })
+      void enqueue(() => serializeDocument(target))
+        .then((serialized) => {
+          if (documentRef.current?.id !== target.id) return
+          if (!serialized.ok) {
+            setStatus(saveOutcomeStatus({ status: 'refused', message: serialized.refusal }))
+            return
+          }
+          return window.nexoffice
+            .printDocument(target.name, target.kind, serialized.bytes)
+            .then((result) => {
+              setStatus({ key: result.printed ? 'status.printDone' : 'status.printCanceled' })
+            })
+        })
+        .catch((error: unknown) => {
+          setStatus({
+            key: 'status.printCanceled',
+          })
+          console.error('print failed:', error)
+        })
+    },
+    [enqueue, serializeDocument]
+  )
+
   const cancelStaleExport = useCallback(() => {
     setStaleExportTarget(null)
     setStatus({ key: 'status.pdfCanceled' })
@@ -609,6 +635,15 @@ export function App() {
             break
           }
           exportPdf(current)
+          break
+        }
+        case 'file:print': {
+          const current = documentRef.current
+          if (!current) {
+            setStatus({ key: 'status.openFirst' })
+            break
+          }
+          printDocument(current)
           break
         }
         case 'edit:undo':
@@ -726,7 +761,15 @@ export function App() {
         <main className="flex flex-1 overflow-hidden">
           {document ? (
             document.kind === 'docx' ? (
-              <DocxEditorView ref={docxRef} document={document} onChange={markEdited} />
+              <DocxEditorView
+                ref={docxRef}
+                document={document}
+                onChange={markEdited}
+                onPrintRequest={() => {
+                  const current = documentRef.current
+                  if (current) printDocument(current)
+                }}
+              />
             ) : document.kind === 'xlsx' ? (
               <XlsxEditorView
                 ref={xlsxRef}

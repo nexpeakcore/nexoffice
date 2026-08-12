@@ -19,7 +19,8 @@
       "saveAs": "另存为…",
       "exportPdf": "导出为 PDF…",
       "closeWindow": "关闭窗口",
-      "exit": "退出"
+      "exit": "退出",
+      "print": "打印…"
     },
     "edit": {
       "label": "编辑(&E)",
@@ -104,6 +105,9 @@
     },
     "openFailed": {
       "title": "无法打开文件"
+    },
+    "printFailed": {
+      "title": "打印失败"
     }
   },
   "app": {
@@ -145,7 +149,10 @@
     "wordCountSlides": "字数：{words} · 字符：{characters} · 第 {slide}/{slides} 张幻灯片",
     "frozeTopRow": "已冻结首行",
     "frozeFirstColumn": "已冻结首列",
-    "unfroze": "已取消冻结"
+    "unfroze": "已取消冻结",
+    "printing": "正在准备打印…",
+    "printDone": "已发送到打印机",
+    "printCanceled": "已取消打印"
   },
   "footer": {
     "stats": "{words} 字 · {characters} 字符 · 第 {page}/{pages} 页",

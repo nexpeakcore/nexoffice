@@ -19,7 +19,8 @@
       "saveAs": "Simpan Sebagai…",
       "exportPdf": "Ekspor sebagai PDF…",
       "closeWindow": "Tutup Jendela",
-      "exit": "Keluar"
+      "exit": "Keluar",
+      "print": "Cetak…"
     },
     "edit": {
       "label": "&Sunting",
@@ -104,6 +105,9 @@
     },
     "openFailed": {
       "title": "Tidak Dapat Membuka Berkas"
+    },
+    "printFailed": {
+      "title": "Gagal mencetak"
     }
   },
   "app": {
@@ -145,7 +149,10 @@
     "wordCountSlides": "Kata: {words} · Karakter: {characters} · Slide {slide}/{slides}",
     "frozeTopRow": "Baris atas dibekukan",
     "frozeFirstColumn": "Kolom pertama dibekukan",
-    "unfroze": "Pembekuan dilepas"
+    "unfroze": "Pembekuan dilepas",
+    "printing": "Menyiapkan cetakan…",
+    "printDone": "Dikirim ke printer",
+    "printCanceled": "Cetak dibatalkan"
   },
   "footer": {
     "stats": "{words} kata · {characters} karakter · Halaman {page}/{pages}",
