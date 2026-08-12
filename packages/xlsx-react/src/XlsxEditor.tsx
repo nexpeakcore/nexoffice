@@ -200,6 +200,14 @@ const MAX_ZOOM = 4;
 const BRAND = '#217346';
 const DEFAULT_XLSX_TOOLBAR_HEIGHT = 87;
 const MAX_OVERLAY_MERGED_RANGES = 1024;
+const HEADER_H = 24;
+const GUTTER_W = 48;
+
+interface HeaderTrack {
+  index: number;
+  start: number;
+  size: number;
+}
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 // a placeholder grid frame so the shell paints something real when no file is
@@ -485,6 +493,29 @@ function XlsxEditorContent({
   const [formulaDraft, setFormulaDraft] = useState<string | null>(null);
   const [toolbarHeight, setToolbarHeight] = useState(DEFAULT_XLSX_TOOLBAR_HEIGHT);
   const [zoom, setZoom] = useState(1);
+  const headerTracks = useMemo(() => {
+    const grid = frame?.grid;
+    if (!grid) return { cols: [] as HeaderTrack[], rows: [] as HeaderTrack[] };
+    const tracks = (
+      offsets: readonly number[],
+      indices: readonly number[] | undefined,
+      first: number
+    ): HeaderTrack[] => {
+      const out: HeaderTrack[] = [];
+      for (let i = 0; i + 1 < offsets.length; i++) {
+        out.push({
+          index: indices?.[i] ?? first + i,
+          start: offsets[i]! * zoom,
+          size: (offsets[i + 1]! - offsets[i]!) * zoom,
+        });
+      }
+      return out;
+    };
+    return {
+      cols: tracks(grid.colOffsets, grid.colIndices, grid.startCol),
+      rows: tracks(grid.rowOffsets, grid.rowIndices, grid.startRow),
+    };
+  }, [frame, zoom]);
   const [revision, setRevision] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [selectionFormatting, setSelectionFormatting] = useState<SelectionFormatting>({});
@@ -2130,6 +2161,90 @@ function XlsxEditorContent({
       )}
 
       <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: 'grid',
+          gridTemplateColumns: `${GUTTER_W}px 1fr`,
+          gridTemplateRows: `${HEADER_H}px 1fr`,
+        }}
+      >
+        <div
+          style={{
+            borderBottom: '1px solid #d4d4d4',
+            borderRight: '1px solid #d4d4d4',
+            background: '#f5f5f5',
+          }}
+        />
+        <div
+          data-testid="xlsx-col-headers"
+          aria-hidden="true"
+          style={{
+            position: 'relative',
+            overflow: 'hidden',
+            borderBottom: '1px solid #d4d4d4',
+            background: '#f5f5f5',
+            userSelect: 'none',
+          }}
+        >
+          {headerTracks.cols.map((track) => (
+            <span
+              key={track.index}
+              style={{
+                position: 'absolute',
+                left: track.start,
+                width: track.size,
+                top: 0,
+                height: '100%',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                overflow: 'hidden',
+                fontSize: 11,
+                color: '#555',
+                borderRight: '1px solid #e0e0e0',
+                boxSizing: 'border-box',
+              }}
+            >
+              {columnLabel(track.index)}
+            </span>
+          ))}
+        </div>
+        <div
+          data-testid="xlsx-row-headers"
+          aria-hidden="true"
+          style={{
+            position: 'relative',
+            overflow: 'hidden',
+            borderRight: '1px solid #d4d4d4',
+            background: '#f5f5f5',
+            userSelect: 'none',
+          }}
+        >
+          {headerTracks.rows.map((track) => (
+            <span
+              key={track.index}
+              style={{
+                position: 'absolute',
+                top: track.start,
+                height: track.size,
+                left: 0,
+                width: '100%',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                overflow: 'hidden',
+                fontSize: 11,
+                color: '#555',
+                borderBottom: '1px solid #e0e0e0',
+                boxSizing: 'border-box',
+              }}
+            >
+              {track.index + 1}
+            </span>
+          ))}
+        </div>
+      <div
         ref={scrollRef}
         data-testid="xlsx-scroll"
         tabIndex={0}
@@ -2139,7 +2254,7 @@ function XlsxEditorContent({
         onMouseLeave={onMouseLeave}
         onClick={onClick}
         onDoubleClick={onDoubleClick}
-        style={{ position: 'relative', flex: 1, overflow: 'auto', minHeight: 0, outline: 'none' }}
+        style={{ position: 'relative', overflow: 'auto', minHeight: 0, minWidth: 0, outline: 'none' }}
       >
         <div
           style={{
@@ -2371,6 +2486,7 @@ function XlsxEditorContent({
             )}
           </div>
         </div>
+      </div>
       </div>
 
       {a11yGrid && (
