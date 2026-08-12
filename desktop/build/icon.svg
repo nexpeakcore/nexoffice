@@ -1,20 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="background" x1="112" y1="106" x2="908" y2="920" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#7C3AED"/>
-      <stop offset="1" stop-color="#5B21B6"/>
-    </linearGradient>
-    <linearGradient id="green" x1="450" y1="144" x2="450" y2="750" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#34D399"/>
-      <stop offset="1" stop-color="#10B981"/>
+    <linearGradient id="front" x1="404" y1="348" x2="404" y2="868" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#3B82F6"/>
     </linearGradient>
   </defs>
-  <rect width="1024" height="1024" rx="228" fill="url(#background)"/>
-  <path d="M304 144H596Q660 144 660 208V686Q660 750 596 750H304Q240 750 240 686V208Q240 144 304 144Z" fill="url(#green)"/>
-  <path d="M520 144H596Q660 144 660 208V284Z" fill="#86EFAC"/>
-  <path d="M544 264H776Q840 264 840 328V752Q840 816 776 816H544Q480 816 480 752V328Q480 264 544 264Z" fill="#F97316"/>
-  <path d="M700 264H776Q840 264 840 328V404Z" fill="#FDBA74"/>
-  <rect x="150" y="414" width="170" height="450" rx="42" fill="#FFFFFF"/>
-  <path d="M320 414H510L690 864H500Z" fill="#FFFFFF"/>
-  <rect x="690" y="414" width="170" height="450" rx="42" fill="#FFFFFF"/>
+  <rect width="1024" height="1024" rx="228" fill="#FFFFFF"/>
+  <rect x="410" y="158" width="420" height="520" rx="56" fill="#F59E0B"/>
+  <path d="M710 158H774Q830 158 830 214V278Z" fill="#FDE68A"/>
+  <rect x="302" y="250" width="420" height="520" rx="56" fill="#22C55E"/>
+  <path d="M602 250H666Q722 250 722 306V370Z" fill="#86EFAC"/>
+  <rect x="194" y="348" width="420" height="520" rx="56" fill="url(#front)"/>
+  <path d="M494 348H558Q614 348 614 404V468Z" fill="#93C5FD"/>
+  <rect x="254" y="544" width="268" height="36" rx="18" fill="#FFFFFF"/>
+  <rect x="254" y="616" width="208" height="36" rx="18" fill="#FFFFFF"/>
+  <rect x="254" y="688" width="236" height="36" rx="18" fill="#FFFFFF"/>
 </svg>
