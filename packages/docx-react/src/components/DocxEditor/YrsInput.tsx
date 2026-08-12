@@ -140,6 +140,20 @@ const BASE_STYLE: CSSProperties = {
   caretColor: 'transparent',
 };
 
+let compositionMeasureContext: CanvasRenderingContext2D | null = null;
+
+const COMPOSITION_FONT_FAMILY = 'sans-serif';
+
+/** Pixel width of `text` at `fontPx`, for sizing the visible composition box. */
+function measureCompositionWidth(text: string, fontPx: number): number {
+  if (!compositionMeasureContext) {
+    compositionMeasureContext = document.createElement('canvas').getContext('2d');
+  }
+  if (!compositionMeasureContext) return text.length * fontPx * 0.6;
+  compositionMeasureContext.font = `${fontPx}px ${COMPOSITION_FONT_FAMILY}`;
+  return compositionMeasureContext.measureText(text).width;
+}
+
 function previousCodePointOffset(text: string, offset: number): number {
   if (offset <= 0) return 0;
   const last = text.charCodeAt(offset - 1);
@@ -247,6 +261,8 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
   displayListFrameEpochRef.current = displayListFrameEpoch;
   resolveDisplayListQueriesRef.current = resolveDisplayListQueries;
   const [positionStyle, setPositionStyle] = useState<CSSProperties>({ left: 0, top: 0, height: 1 });
+  const [composingVisible, setComposingVisible] = useState(false);
+  const [composingWidth, setComposingWidth] = useState(2);
   const [selectionEpoch, setSelectionEpoch] = useState(0);
 
   const enqueueInputOperation = useCallback((operation: () => void | Promise<void>): void => {
@@ -1062,6 +1078,8 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
       compositionPendingRef.current = false;
       compositionCommitRef.current = '';
       event.currentTarget.value = '';
+      setComposingVisible(true);
+      setComposingWidth(2);
       onCaretInterrupt?.();
     },
     [onCaretInterrupt]
@@ -1070,6 +1088,9 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
   const handleCompositionUpdate = useCallback(
     (event: React.CompositionEvent<HTMLTextAreaElement>) => {
       compositionCommitRef.current = event.data;
+      const height = event.currentTarget.getBoundingClientRect().height || 16;
+      const fontPx = Math.max(10, Math.round(height * 0.82));
+      setComposingWidth(Math.ceil(measureCompositionWidth(event.data ?? '', fontPx)) + 4);
     },
     []
   );
@@ -1080,6 +1101,7 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
       compositionPendingRef.current = true;
       compositionCommitRef.current =
         event.currentTarget.value || event.data || compositionCommitRef.current;
+      setComposingVisible(false);
       queueMicrotask(() => {
         const text = textareaRef.current?.value || compositionCommitRef.current;
         // Reset the browser model before applying the document op. A trailing
@@ -1307,7 +1329,30 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
       spellCheck
       readOnly={readOnly || !session}
       rows={1}
-      style={{ ...BASE_STYLE, ...positionStyle }}
+      style={{
+        ...BASE_STYLE,
+        ...positionStyle,
+        ...(composingVisible
+          ? {
+              width: `${composingWidth}px`,
+              minWidth: '2px',
+              maxWidth: '60vw',
+              fontFamily: COMPOSITION_FONT_FAMILY,
+              opacity: 1,
+              zIndex: 40,
+              background: '#ffffff',
+              color: '#111111',
+              caretColor: '#111111',
+              fontSize:
+                typeof positionStyle.height === 'number'
+                  ? `${Math.max(10, Math.round(positionStyle.height * 0.82))}px`
+                  : undefined,
+              lineHeight:
+                typeof positionStyle.height === 'number' ? `${positionStyle.height}px` : undefined,
+              whiteSpace: 'pre',
+            }
+          : null),
+      }}
       onBeforeInput={handleBeforeInput}
       onInput={handleInput}
       onKeyDown={handleKeyDown}
