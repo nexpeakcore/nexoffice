@@ -268,6 +268,7 @@ pub fn build_display_list_with_ghosts(
             commands,
             grid: GridMeta::default(),
             hyperlinks: Vec::new(),
+            charts: Vec::new(),
         };
     };
 
@@ -511,7 +512,7 @@ pub fn build_display_list_with_ghosts(
         emit_ghost(&mut commands, ghost, bx, font, align);
     }
 
-    emit_charts(
+    let chart_regions = emit_charts(
         &mut commands,
         wb,
         sheet_ref,
@@ -550,6 +551,7 @@ pub fn build_display_list_with_ghosts(
         commands,
         grid,
         hyperlinks,
+        charts: chart_regions,
     }
 }
 
@@ -565,15 +567,16 @@ fn emit_charts(
     viewport: &Viewport,
     frozen_rows: u32,
     frozen_cols: u32,
-) {
+) -> Vec<display_list::ChartRegion> {
     use ooxml_drawingml::chart::{PlotChart, PlotRect, plot_chart_into};
 
+    let mut regions = Vec::new();
     if sheet.drawings.is_empty() {
-        return;
+        return regions;
     }
     let frozen_x = geom.col_x(frozen_cols);
     let frozen_y = geom.row_y(frozen_rows);
-    for drawing in &sheet.drawings {
+    for (drawing_index, drawing) in sheet.drawings.iter().enumerate() {
         let (x0, y0, x1, y1, anchor_col, anchor_row) = match &drawing.anchor {
             xlsx_model::DrawingAnchor::Cell {
                 from,
@@ -666,6 +669,15 @@ fn emit_charts(
             w: clip.w,
             h: clip.h,
         });
+        regions.push(display_list::ChartRegion {
+            index: drawing_index,
+            x: vx as f32,
+            y: vy as f32,
+            w: w as f32,
+            h: h as f32,
+            clip,
+            created: drawing.created,
+        });
         let chart = refreshed_chart(wb, sheet, &drawing.chart);
         plot_chart_into(
             &PlotChart::from(&chart),
@@ -674,6 +686,7 @@ fn emit_charts(
         );
         commands.push(DrawCmd::PopClip {});
     }
+    regions
 }
 
 /// The most cells one chart series reads back, bounding the per-frame cost of

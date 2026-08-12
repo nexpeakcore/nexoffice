@@ -43,6 +43,10 @@ pub enum OpError {
         sheet: SheetId,
         hyperlink: CellRange,
     },
+    ChartIndexOutOfRange {
+        sheet: SheetId,
+        index: usize,
+    },
 }
 
 impl fmt::Display for OpError {
@@ -74,6 +78,9 @@ impl fmt::Display for OpError {
                 hyperlink.to_a1(),
                 sheet.0
             ),
+            OpError::ChartIndexOutOfRange { sheet, index } => {
+                write!(f, "sheet {} has no chart at index {index}", sheet.0)
+            }
         }
     }
 }
@@ -125,6 +132,60 @@ pub fn apply(wb: &mut Workbook, op: &Op) -> Result<InvertedOp, OpError> {
                 sheet: *sheet,
                 row: *row,
                 height: old,
+            }]))
+        }
+        Op::AddChartDrawing {
+            sheet,
+            index,
+            drawing,
+        } => {
+            let s = sheet_mut(wb, *sheet)?;
+            if *index > s.drawings.len() {
+                return Err(OpError::ChartIndexOutOfRange {
+                    sheet: *sheet,
+                    index: *index,
+                });
+            }
+            s.drawings.insert(*index, (**drawing).clone());
+            Ok(InvertedOp(vec![Op::RemoveChartDrawing {
+                sheet: *sheet,
+                index: *index,
+                drawing: drawing.clone(),
+            }]))
+        }
+        Op::RemoveChartDrawing { sheet, index, .. } => {
+            let s = sheet_mut(wb, *sheet)?;
+            if *index >= s.drawings.len() {
+                return Err(OpError::ChartIndexOutOfRange {
+                    sheet: *sheet,
+                    index: *index,
+                });
+            }
+            let removed = s.drawings.remove(*index);
+            Ok(InvertedOp(vec![Op::AddChartDrawing {
+                sheet: *sheet,
+                index: *index,
+                drawing: Box::new(removed),
+            }]))
+        }
+        Op::SetChartAnchor {
+            sheet,
+            index,
+            anchor,
+        } => {
+            let s = sheet_mut(wb, *sheet)?;
+            let Some(drawing) = s.drawings.get_mut(*index) else {
+                return Err(OpError::ChartIndexOutOfRange {
+                    sheet: *sheet,
+                    index: *index,
+                });
+            };
+            let previous = drawing.anchor;
+            drawing.anchor = *anchor;
+            Ok(InvertedOp(vec![Op::SetChartAnchor {
+                sheet: *sheet,
+                index: *index,
+                anchor: previous,
             }]))
         }
         Op::SetFreezePane { sheet, pane } => {

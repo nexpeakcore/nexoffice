@@ -104,6 +104,7 @@ fn dl(width: f32, height: f32, commands: Vec<DrawCmd>) -> DisplayList {
         commands,
         grid: GridMeta::default(),
         hyperlinks: Vec::new(),
+        charts: Vec::new(),
     }
 }
 

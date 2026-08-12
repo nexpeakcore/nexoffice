@@ -146,6 +146,23 @@ pub struct GridMeta {
     pub col_offsets: Vec<f32>,
 }
 
+/// where a chart paints this frame, for selection and drag gestures.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartRegion {
+    /// position in `Sheet::drawings`.
+    pub index: usize,
+    /// the chart's full unclipped rect in viewport pixels.
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// the pane clip: only the intersection with the rect is visible/clickable.
+    pub clip: Rect,
+    /// authored this session (movable) vs preserved from the source file.
+    pub created: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HyperlinkRegion {
@@ -171,6 +188,8 @@ pub struct DisplayList {
     pub grid: GridMeta,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hyperlinks: Vec<HyperlinkRegion>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub charts: Vec<ChartRegion>,
 }
 
 /// scale every coordinate, size, stroke width, and font size by `factor`,
@@ -320,6 +339,23 @@ pub fn scaled(dl: DisplayList, factor: f32) -> DisplayList {
                 .collect(),
         },
         hyperlinks: dl.hyperlinks,
+        charts: dl
+            .charts
+            .into_iter()
+            .map(|chart| ChartRegion {
+                x: chart.x * factor,
+                y: chart.y * factor,
+                w: chart.w * factor,
+                h: chart.h * factor,
+                clip: Rect {
+                    x: chart.clip.x * factor,
+                    y: chart.clip.y * factor,
+                    w: chart.clip.w * factor,
+                    h: chart.clip.h * factor,
+                },
+                ..chart
+            })
+            .collect(),
     }
 }
 
@@ -380,6 +416,7 @@ mod tests {
                 col_offsets: vec![0.0, 64.0],
             },
             hyperlinks: Vec::new(),
+            charts: Vec::new(),
         }
     }
 

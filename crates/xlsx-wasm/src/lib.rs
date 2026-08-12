@@ -261,6 +261,14 @@ impl XlsxDocument {
             .map_err(|e| JsValue::from_str(&e))
     }
 
+    /// re-anchor a created chart; returns updated `SheetInfo` json.
+    #[wasm_bindgen(js_name = setChartAnchorJson)]
+    pub fn set_chart_anchor_json(&mut self, args: &str) -> Result<String, JsValue> {
+        self.session
+            .set_chart_anchor_json(args)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
     /// remove a created chart; returns updated `SheetInfo` json.
     #[wasm_bindgen(js_name = removeChartJson)]
     pub fn remove_chart_json(&mut self, args: &str) -> Result<String, JsValue> {

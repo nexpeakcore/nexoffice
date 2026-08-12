@@ -330,9 +330,17 @@ impl WorkbookAuthority {
         ops: &[Op],
         origin: SyncOrigin,
     ) -> Result<Option<Vec<u8>>, AuthorityError> {
+        let ops = ops
+            .iter()
+            .filter(|op| !xlsx_ops::is_sidecar_op(op))
+            .cloned()
+            .collect::<Vec<_>>();
+        if ops.is_empty() {
+            return Ok(None);
+        }
         let state_vector = self.doc.transact().state_vector();
         let mut model = self.materialize()?;
-        for op in ops {
+        for op in &ops {
             xlsx_ops::apply(&mut model, op).map_err(|error| {
                 AuthorityError::InvalidState(format!(
                     "cannot apply local operation to authored state: {error}"
@@ -340,7 +348,7 @@ impl WorkbookAuthority {
             })?;
         }
         self.base.defined_names = model.defined_names.clone();
-        self.sync_model(&model, ops, origin)
+        self.sync_model(&model, &ops, origin)
             .map_err(AuthorityError::InvalidState)?;
         let update = self.doc.transact().encode_diff_v1(&state_vector);
         Ok((update.as_slice() != Update::EMPTY_V1).then_some(update))
@@ -2003,6 +2011,9 @@ fn targeted_sheet_keys(
 fn op_sheet(op: &Op) -> Option<SheetId> {
     match op {
         Op::SetCell { sheet, .. }
+        | Op::AddChartDrawing { sheet, .. }
+        | Op::RemoveChartDrawing { sheet, .. }
+        | Op::SetChartAnchor { sheet, .. }
         | Op::InsertRows { sheet, .. }
         | Op::DeleteRows { sheet, .. }
         | Op::InsertCols { sheet, .. }

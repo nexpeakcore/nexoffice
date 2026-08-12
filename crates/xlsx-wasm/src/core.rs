@@ -74,6 +74,13 @@ struct RemoveChartArgs {
 }
 
 #[derive(Deserialize)]
+struct MoveChartArgs {
+    sheet: u32,
+    index: usize,
+    anchor: String,
+}
+
+#[derive(Deserialize)]
 struct OpsArgs {
     ops: Vec<Op>,
 }
@@ -461,6 +468,18 @@ impl Session {
         };
         self.workbook
             .add_chart(SheetId(args.sheet), &spec)
+            .map_err(|error| error.to_string())?;
+        self.sheet_info_json()
+    }
+
+    /// Re-anchor a created chart; returns updated `SheetInfo` json.
+    pub fn set_chart_anchor_json(&mut self, args: &str) -> Result<String, String> {
+        let args: MoveChartArgs =
+            serde_json::from_str(args).map_err(|error| format!("bad chart args: {error}"))?;
+        let anchor = CellRange::parse_a1(&args.anchor)
+            .map_err(|error| format!("bad chart anchor {:?}: {error:?}", args.anchor))?;
+        self.workbook
+            .set_chart_anchor(SheetId(args.sheet), args.index, anchor)
             .map_err(|error| error.to_string())?;
         self.sheet_info_json()
     }

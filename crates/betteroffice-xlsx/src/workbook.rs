@@ -901,7 +901,11 @@ impl Workbook {
         if ops.is_empty() {
             return Ok(MutationResult::default());
         }
-        if self.is_collaborative() && ops.iter().any(is_structural_op) {
+        if self.is_collaborative()
+            && ops
+                .iter()
+                .any(|op| is_structural_op(op) || xlsx_ops::is_sidecar_op(op))
+        {
             return Err(Error::CollaborativeStructureOperation);
         }
         let invalidates_proposals = ops.iter().any(invalidates_proposals);
@@ -1510,17 +1514,74 @@ impl Workbook {
             }),
             extent_emu: None,
         };
+        let index = self
+            .model
+            .sheet(sheet)
+            .ok_or(Error::SheetOutOfRange(sheet))?
+            .drawings
+            .len();
+        self.commit_sidecar(Op::AddChartDrawing {
+            sheet,
+            index,
+            drawing: Box::new(xlsx_model::SheetDrawing {
+                anchor,
+                chart,
+                created: true,
+            }),
+        })
+    }
+
+    /// Re-anchors a created chart over a new grid rectangle.
+    pub fn set_chart_anchor(
+        &mut self,
+        sheet: SheetId,
+        index: usize,
+        anchor: CellRange,
+    ) -> Result<()> {
+        self.ensure_chart_authoring_allowed()?;
+        self.ensure_worksheet_sheet(sheet)?;
+        validate_range(anchor)?;
+        if anchor.end.col <= anchor.start.col.saturating_add(1)
+            || anchor.end.row <= anchor.start.row.saturating_add(1)
+        {
+            return Err(Error::InvalidOperation(
+                "the chart anchor range is too small".to_owned(),
+            ));
+        }
         let target = self
             .model
-            .sheet_mut(sheet)
+            .sheet(sheet)
             .ok_or(Error::SheetOutOfRange(sheet))?;
-        target.drawings.push(xlsx_model::SheetDrawing {
-            anchor,
-            chart,
-            created: true,
-        });
-        self.edited_since_open = true;
-        Ok(())
+        let Some(drawing) = target.drawings.get(index) else {
+            return Err(Error::InvalidOperation(format!(
+                "no chart at index {index}"
+            )));
+        };
+        if !drawing.created {
+            return Err(Error::InvalidOperation(
+                "only charts created in this session can be moved".to_owned(),
+            ));
+        }
+        let to = xlsx_model::DrawingAnchor::Cell {
+            from: xlsx_model::AnchorCell {
+                col: anchor.start.col,
+                col_offset_emu: 0,
+                row: anchor.start.row,
+                row_offset_emu: 0,
+            },
+            to: Some(xlsx_model::AnchorCell {
+                col: anchor.end.col,
+                col_offset_emu: 0,
+                row: anchor.end.row,
+                row_offset_emu: 0,
+            }),
+            extent_emu: None,
+        };
+        self.commit_sidecar(Op::SetChartAnchor {
+            sheet,
+            index,
+            anchor: to,
+        })
     }
 
     /// Removes a created chart by its position in `Sheet::drawings`.
@@ -1529,7 +1590,7 @@ impl Workbook {
         self.ensure_worksheet_sheet(sheet)?;
         let target = self
             .model
-            .sheet_mut(sheet)
+            .sheet(sheet)
             .ok_or(Error::SheetOutOfRange(sheet))?;
         let Some(drawing) = target.drawings.get(index) else {
             return Err(Error::InvalidOperation(format!(
@@ -1541,9 +1602,12 @@ impl Workbook {
                 "only charts created in this session can be removed".to_owned(),
             ));
         }
-        target.drawings.remove(index);
-        self.edited_since_open = true;
-        Ok(())
+        let drawing = Box::new(drawing.clone());
+        self.commit_sidecar(Op::RemoveChartDrawing {
+            sheet,
+            index,
+            drawing,
+        })
     }
 
     /// Drawings are sidecar state the authority never carries, so authoring
@@ -1555,6 +1619,21 @@ impl Workbook {
                     .to_owned(),
             ));
         }
+        Ok(())
+    }
+
+    /// Commits a sidecar (chart) op: full undo/redo through the op stack,
+    /// never touching the collaboration authority.
+    fn commit_sidecar(&mut self, op: Op) -> Result<()> {
+        let before = self.preserved.clone();
+        let transaction = Transaction::new(vec![op], Provenance::User);
+        self.undo.commit(&mut self.model, &transaction)?;
+        self.preserved_undo.push(PreservedStateHistory {
+            before,
+            after: self.preserved.clone(),
+        });
+        self.preserved_redo.clear();
+        self.edited_since_open = true;
         Ok(())
     }
 
@@ -2378,7 +2457,10 @@ fn worksheet_edit_target(op: &Op) -> Option<SheetId> {
         | Op::UnmergeCells { sheet, .. }
         | Op::PatchRangeStyle { sheet, .. }
         | Op::SetRangeNumberFormat { sheet, .. }
-        | Op::ApplyRangeFormat { sheet, .. } => Some(*sheet),
+        | Op::ApplyRangeFormat { sheet, .. }
+        | Op::AddChartDrawing { sheet, .. }
+        | Op::RemoveChartDrawing { sheet, .. }
+        | Op::SetChartAnchor { sheet, .. } => Some(*sheet),
         Op::AddSheet { .. }
         | Op::RemoveSheet { .. }
         | Op::RenameSheet { .. }
@@ -2544,6 +2626,11 @@ fn validate_op(model: &WorkbookModel, op: &Op) -> Result<()> {
         }
         Op::RenameSheet { sheet, .. } => {
             require_sheet(model, *sheet)?;
+        }
+        Op::AddChartDrawing { .. } | Op::RemoveChartDrawing { .. } | Op::SetChartAnchor { .. } => {
+            return Err(Error::InvalidOperation(
+                "chart operations are internal undo primitives; use the chart APIs".to_string(),
+            ));
         }
         Op::RestoreSheet { .. } | Op::SetDefinedNames { .. } => {
             return Err(Error::InvalidOperation(

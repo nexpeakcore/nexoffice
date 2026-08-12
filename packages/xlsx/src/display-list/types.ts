@@ -154,6 +154,23 @@ export interface GridMeta {
   colOffsets: number[];
 }
 
+/**
+ * Where a chart painted this frame — selection/drag hit target. `index` is
+ * the chart's position in the sheet's drawing list; `created` marks charts
+ * authored this session (the only ones that can be moved or removed).
+ */
+export interface ChartRegion {
+  index: number;
+  /** the chart's full unclipped rect in viewport pixels. */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** pane clip; only the intersection with the rect is visible/clickable. */
+  clip: Rect;
+  created: boolean;
+}
+
 export interface HyperlinkRegion {
   top: number;
   left: number;
@@ -175,4 +192,5 @@ export interface DisplayList {
   commands: DrawCmd[];
   grid?: GridMeta;
   hyperlinks?: HyperlinkRegion[];
+  charts?: ChartRegion[];
 }
