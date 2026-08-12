@@ -17,17 +17,13 @@ This is the **reference-matched Option 1 system**: three dimensional-feeling doc
 ## Contents
 
 - **svg/** — clean transparent master vectors for Suite, Docs, Sheets, Slides, AI, wordmarks, and light/dark lockups.
-- **png/** — transparent icon PNGs at 1024, 512, 256, 128, 64, and 32 px for every product.
-- **app-icons/** — transparent app icon SVG/PNG sets for every product, plus Suite Android maskable variants.
-- **favicon/** — Suite favicon as SVG, PNG (16/32/48/64), and a multi-resolution ICO.
-- **preview/** — a quick Option 1 reference board for review; open the SVG in a modern browser.
 
 ## Light / dark use
 
 - Use **nex-office-wordmark-dark.svg** and **nex-office-suite-lockup-light-background.svg** on white or pale backgrounds.
 - Use **nex-office-wordmark-light.svg** and **nex-office-suite-lockup-dark-background.svg** on navy or other dark backgrounds.
 - The transparent product icons are built for both backgrounds. Preserve the folds, gradient, and soft shadow; do not add outlines or recolor individual products.
-- Prefer SVG in UI. Use the transparent PNGs where SVG is unavailable. At 16–24 px use the favicon rather than the full Suite stack.
+- Prefer SVG in UI. This directory vendors only the SVG masters; PNG/favicon/app-icon renders live in the full kit at the design archive (~/Documents/Codex/2026-08-12/.../Nex-Office-Brand-Assets).
 
 ## Production note
 
