@@ -5,6 +5,7 @@ export const IPC = {
   saveFile: 'dialog:saveFile',
   saveFileAs: 'dialog:saveFileAs',
   exportPdf: 'dialog:exportPdf',
+  printDocument: 'dialog:printDocument',
   confirmUnsaved: 'dialog:confirmUnsaved',
   confirmSaveRefused: 'dialog:confirmSaveRefused',
   readFile: 'fs:readFile',
@@ -72,6 +73,13 @@ export interface ExportPdfRequest {
 export interface ExportPdfResult {
   path: string | null
   canceled: boolean
+  pages?: number
+  truncated?: boolean
+  skipped?: number
+}
+
+export interface PrintResult {
+  printed: boolean
   pages?: number
   truncated?: boolean
   skipped?: number
@@ -152,6 +160,7 @@ export type MenuAction =
   | 'file:save'
   | 'file:saveAs'
   | 'file:exportPdf'
+  | 'file:print'
   | 'edit:undo'
   | 'edit:redo'
   | 'edit:cut'

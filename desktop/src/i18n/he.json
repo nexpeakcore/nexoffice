@@ -19,7 +19,8 @@
       "saveAs": "שמור בשם…",
       "exportPdf": "ייצא כ-PDF…",
       "closeWindow": "סגור חלון",
-      "exit": "יציאה"
+      "exit": "יציאה",
+      "print": "הדפסה…"
     },
     "edit": {
       "label": "&עריכה",
@@ -104,6 +105,9 @@
     },
     "openFailed": {
       "title": "לא ניתן לפתוח את הקובץ"
+    },
+    "printFailed": {
+      "title": "ההדפסה נכשלה"
     }
   },
   "app": {
@@ -145,7 +149,10 @@
     "wordCountSlides": "מילים: {words} · תווים: {characters} · שקופית {slide}/{slides}",
     "frozeTopRow": "השורה העליונה הוקפאה",
     "frozeFirstColumn": "העמודה הראשונה הוקפאה",
-    "unfroze": "ההקפאה בוטלה"
+    "unfroze": "ההקפאה בוטלה",
+    "printing": "מכין להדפסה…",
+    "printDone": "נשלח למדפסת",
+    "printCanceled": "ההדפסה בוטלה"
   },
   "footer": {
     "stats": "{words} מילים · {characters} תווים · עמוד {page}/{pages}",

@@ -9,6 +9,7 @@ import {
   type DocumentKind,
   type EditCapabilities,
   type ExportPdfResult,
+  type PrintResult,
   type MenuAction,
   type OpenedDocument,
   type PrintJob,
@@ -44,6 +45,8 @@ const api = {
 
   exportPdf: (name: string, kind: DocumentKind, data: Uint8Array): Promise<ExportPdfResult> =>
     ipcRenderer.invoke(IPC.exportPdf, { name, kind, data }),
+  printDocument: (name: string, kind: DocumentKind, data: Uint8Array): Promise<PrintResult> =>
+    ipcRenderer.invoke(IPC.printDocument, { name, kind, data }),
 
   printReady: (): void => ipcRenderer.send(IPC.printReady),
 

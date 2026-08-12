@@ -19,7 +19,8 @@
       "saveAs": "Enregistrer sous…",
       "exportPdf": "Exporter en PDF…",
       "closeWindow": "Fermer la fenêtre",
-      "exit": "Quitter"
+      "exit": "Quitter",
+      "print": "Imprimer…"
     },
     "edit": {
       "label": "&Édition",
@@ -104,6 +105,9 @@
     },
     "openFailed": {
       "title": "Impossible d'ouvrir le fichier"
+    },
+    "printFailed": {
+      "title": "Échec de l'impression"
     }
   },
   "app": {
@@ -145,7 +149,10 @@
     "wordCountSlides": "Mots : {words} · Caractères : {characters} · Diapositive {slide}/{slides}",
     "frozeTopRow": "Première ligne figée",
     "frozeFirstColumn": "Première colonne figée",
-    "unfroze": "Volets libérés"
+    "unfroze": "Volets libérés",
+    "printing": "Préparation de l'impression…",
+    "printDone": "Envoyé à l'imprimante",
+    "printCanceled": "Impression annulée"
   },
   "footer": {
     "stats": "{words} mots · {characters} caractères · Page {page}/{pages}",

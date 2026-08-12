@@ -231,6 +231,8 @@ export interface DocxEditorProps {
    * invokes this callback.
    */
   onPrint?: () => void;
+  /** Replace the built-in print flow (popup + rasterized pages) with a host-provided one. */
+  printOverride?: () => void;
   /** Callback when content is copied */
   onCopy?: () => void;
   /** Callback when content is cut */
@@ -588,6 +590,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     watermarkPresets,
     printOptions: _printOptions,
     onPrint,
+    printOverride,
     onCopy: _onCopy,
     onCut: _onCut,
     onPaste: _onPaste,
@@ -892,6 +895,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     onOpen,
     onError,
     onPrint,
+    printOverride,
     onDocumentNameChange,
     loadBuffer,
     focusActiveEditor,

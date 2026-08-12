@@ -19,7 +19,8 @@
       "saveAs": "Lưu dưới dạng…",
       "exportPdf": "Xuất ra PDF…",
       "closeWindow": "Đóng cửa sổ",
-      "exit": "Thoát"
+      "exit": "Thoát",
+      "print": "In…"
     },
     "edit": {
       "label": "&Chỉnh sửa",
@@ -104,6 +105,9 @@
     },
     "openFailed": {
       "title": "Không thể mở tệp"
+    },
+    "printFailed": {
+      "title": "In thất bại"
     }
   },
   "app": {
@@ -145,7 +149,10 @@
     "wordCountSlides": "Số từ: {words} · Ký tự: {characters} · Trang chiếu {slide}/{slides}",
     "frozeTopRow": "Đã cố định hàng đầu tiên",
     "frozeFirstColumn": "Đã cố định cột đầu tiên",
-    "unfroze": "Đã bỏ cố định"
+    "unfroze": "Đã bỏ cố định",
+    "printing": "Đang chuẩn bị in…",
+    "printDone": "Đã gửi tới máy in",
+    "printCanceled": "Đã huỷ in"
   },
   "footer": {
     "stats": "{words} từ · {characters} ký tự · Trang {page}/{pages}",

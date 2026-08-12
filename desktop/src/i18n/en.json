@@ -19,7 +19,8 @@
       "saveAs": "Save As…",
       "exportPdf": "Export as PDF…",
       "closeWindow": "Close Window",
-      "exit": "Exit"
+      "exit": "Exit",
+      "print": "Print…"
     },
     "edit": {
       "label": "&Edit",
@@ -104,6 +105,9 @@
     },
     "openFailed": {
       "title": "Could Not Open File"
+    },
+    "printFailed": {
+      "title": "Print failed"
     }
   },
   "app": {
@@ -145,7 +149,10 @@
     "wordCountSlides": "Words: {words} · Chars: {characters} · Slide {slide}/{slides}",
     "frozeTopRow": "Frozen top row",
     "frozeFirstColumn": "Frozen first column",
-    "unfroze": "Unfrozen panes"
+    "unfroze": "Unfrozen panes",
+    "printing": "Preparing print…",
+    "printDone": "Sent to printer",
+    "printCanceled": "Print canceled"
   },
   "footer": {
     "stats": "{words} words · {characters} chars · Page {page}/{pages}",

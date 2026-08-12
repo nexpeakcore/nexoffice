@@ -38,6 +38,7 @@ import {
   type MenuAction,
   type OpenedDocument,
   type PrintJob,
+  type PrintResult,
   type PrintRenderResult,
   type RefusedChoice,
   type SaveRequest,
@@ -601,6 +602,64 @@ function registerIpc(): void {
       const message = error instanceof Error ? error.message : String(error)
       dialog.showErrorBox(t('dialog.pdfFailed.title'), message)
       return { path: null, canceled: true }
+    } finally {
+      if (!printWindow.isDestroyed()) printWindow.destroy()
+    }
+  })
+
+  ipcMain.handle(IPC.printDocument, async (_event, request: ExportPdfRequest): Promise<PrintResult> => {
+    const owner = mainWindow
+    if (!owner || owner.isDestroyed()) return { printed: false }
+
+    const printWindow = createPrintWindow()
+    try {
+      const { pages, truncated, skippedPages } = await renderPrintJob(printWindow, {
+        kind: request.kind,
+        data: request.data,
+      })
+      const { printed, failureReason } = await new Promise<{
+        printed: boolean
+        failureReason: string
+      }>((resolve) => {
+        printWindow.webContents.print({ printBackground: true }, (success, reason) =>
+          resolve({ printed: success, failureReason: reason }),
+        )
+      })
+      if (!printed && failureReason && failureReason !== 'cancelled' && !owner.isDestroyed()) {
+        dialog.showErrorBox(t('dialog.printFailed.title'), failureReason)
+      }
+      if (printed && truncated && !owner.isDestroyed()) {
+        void dialog.showMessageBox(owner, {
+          type: 'warning',
+          message: t('dialog.pdfTruncated.message'),
+          detail: t('dialog.pdfTruncated.detail', { cap: PRINT_PAGE_CAP, pages }),
+        })
+      }
+      if (printed && skippedPages.length > 0 && !owner.isDestroyed()) {
+        const slides = formatPageList(skippedPages)
+        void dialog.showMessageBox(owner, {
+          type: 'warning',
+          message: t('dialog.pdfSkipped.message'),
+          detail:
+            skippedPages.length === 1
+              ? t('dialog.pdfSkipped.detailOne', { slides, pages })
+              : t('dialog.pdfSkipped.detailMany', {
+                  count: skippedPages.length,
+                  slides,
+                  pages,
+                }),
+        })
+      }
+      return {
+        printed,
+        pages,
+        truncated,
+        skipped: skippedPages.length,
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      dialog.showErrorBox(t('dialog.printFailed.title'), message)
+      return { printed: false }
     } finally {
       if (!printWindow.isDestroyed()) printWindow.destroy()
     }

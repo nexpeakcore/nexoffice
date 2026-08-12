@@ -19,7 +19,8 @@
       "saveAs": "इस रूप में सहेजें…",
       "exportPdf": "PDF के रूप में निर्यात करें…",
       "closeWindow": "विंडो बंद करें",
-      "exit": "बाहर निकलें"
+      "exit": "बाहर निकलें",
+      "print": "प्रिंट करें…"
     },
     "edit": {
       "label": "&संपादन",
@@ -104,6 +105,9 @@
     },
     "openFailed": {
       "title": "फ़ाइल नहीं खोली जा सकी"
+    },
+    "printFailed": {
+      "title": "प्रिंट विफल"
     }
   },
   "app": {
@@ -145,7 +149,10 @@
     "wordCountSlides": "शब्द: {words} · वर्ण: {characters} · स्लाइड {slide}/{slides}",
     "frozeTopRow": "शीर्ष पंक्ति स्थिर की गई",
     "frozeFirstColumn": "पहला स्तंभ स्थिर किया गया",
-    "unfroze": "स्थिरता हटाई गई"
+    "unfroze": "स्थिरता हटाई गई",
+    "printing": "प्रिंट तैयार हो रहा है…",
+    "printDone": "प्रिंटर को भेजा गया",
+    "printCanceled": "प्रिंट रद्द"
   },
   "footer": {
     "stats": "{words} शब्द · {characters} वर्ण · पृष्ठ {page}/{pages}",
