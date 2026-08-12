@@ -21,7 +21,7 @@
     <path fill="url(#ai-fold)" d="M326 62v57c0 18.2 14.8 33 33 33h57L326 62Z"/>
     <path fill="#FFF" opacity=".10" d="M123 167c0-42 34-76 76-76h127v28H192c-38.1 0-69 30.9-69 69v145h-29V167h29Z"/>
   </g>
-  <path fill="#FFF" filter="url(#ai-shadow)" d="M256 186c8 46 32 70 78 78-46 8-70 32-78 78-8-46-32-70-78-78 46-8 70-32 78-78Z"/>
-  <filter id="ai-shadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#3C117E" flood-opacity=".22"/></filter>
+  <path fill="#FFF" filter="url(#ai-sparkle-shadow)" d="M256 186c8 46 32 70 78 78-46 8-70 32-78 78-8-46-32-70-78-78 46-8 70-32 78-78Z"/>
+  <filter id="ai-sparkle-shadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#3C117E" flood-opacity=".22"/></filter>
 
 </svg>
