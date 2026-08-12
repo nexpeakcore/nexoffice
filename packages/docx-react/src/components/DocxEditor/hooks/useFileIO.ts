@@ -165,6 +165,7 @@ export function useFileIO({
   const handleDirectPrint = useCallback(() => {
     if (printOverride) {
       printOverride();
+      onPrint?.();
       return;
     }
     if (!displayList) {
