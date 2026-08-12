@@ -204,5 +204,13 @@
   "editor": {
     "loading": "{name} लोड हो रहा है…",
     "couldNotOpen": "{name} नहीं खोला जा सका"
+  },
+  "start": {
+    "newDocument": "नया दस्तावेज़",
+    "newWorkbook": "नई वर्कबुक",
+    "newPresentation": "नई प्रस्तुति",
+    "recent": "हाल की फ़ाइलें",
+    "noRecent": "खोली गई फ़ाइलें यहाँ दिखेंगी।",
+    "remove": "सूची से हटाएँ"
   }
 }

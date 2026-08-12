@@ -6,6 +6,10 @@ export const IPC = {
   saveFileAs: 'dialog:saveFileAs',
   exportPdf: 'dialog:exportPdf',
   printDocument: 'dialog:printDocument',
+  newDocument: 'file:newDocument',
+  recentsList: 'file:recentsList',
+  recentsRemove: 'file:recentsRemove',
+  openRecent: 'file:openRecent',
   confirmUnsaved: 'dialog:confirmUnsaved',
   confirmSaveRefused: 'dialog:confirmSaveRefused',
   readFile: 'fs:readFile',
@@ -42,6 +46,13 @@ export type UnsavedChoice = 'save' | 'discard' | 'cancel'
 // change would be refused again, so the only choices are to leave the change
 // behind or to keep the document open and edit it into something writable.
 export type RefusedChoice = 'discard' | 'cancel'
+
+export interface RecentFile {
+  path: string
+  name: string
+  kind: DocumentKind | null
+  exists: boolean
+}
 
 export interface OpenedDocument {
   path: string

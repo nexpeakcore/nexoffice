@@ -204,5 +204,13 @@
   "editor": {
     "loading": "Loading {name}…",
     "couldNotOpen": "Could not open {name}"
+  },
+  "start": {
+    "newDocument": "New document",
+    "newWorkbook": "New workbook",
+    "newPresentation": "New presentation",
+    "recent": "Recent files",
+    "noRecent": "Files you open will appear here.",
+    "remove": "Remove from list"
   }
 }
