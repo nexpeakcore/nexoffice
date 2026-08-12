@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { DocumentKind, RecentFile } from '../../shared/ipc.js'
 import { useI18n } from '../i18n.js'
+import aiIcon from '../assets/brand/nex-ai-icon.svg'
 import docsIcon from '../assets/brand/nex-docs-icon.svg'
 import sheetsIcon from '../assets/brand/nex-sheets-icon.svg'
 import slidesIcon from '../assets/brand/nex-slides-icon.svg'
@@ -44,8 +45,16 @@ export function StartScreen({ onNew, onOpen, onOpenRecent }: StartScreenProps) {
   return (
     <section className="flex w-full justify-center overflow-auto">
       <div className="w-full max-w-2xl px-8 py-12">
-        <h1 className="text-2xl font-semibold text-neutral-900">NexOffice</h1>
-        <p className="mt-1 text-sm text-neutral-500">{t('app.empty.subtitle')}</p>
+        <div className="flex items-center gap-3">
+          <img src={aiIcon} alt="" className="h-10 w-10" />
+          <h1 className="text-3xl font-bold tracking-tight">
+            <span className="bg-gradient-to-r from-violet-600 via-purple-500 to-indigo-600 bg-clip-text text-transparent">
+              Nex
+            </span>
+            <span className="text-neutral-900">Office</span>
+          </h1>
+        </div>
+        <p className="mt-2 text-sm text-neutral-500">{t('app.empty.subtitle')}</p>
 
         <div className="mt-8 grid grid-cols-3 gap-3">
           {newKinds.map(({ kind, label }) => (
