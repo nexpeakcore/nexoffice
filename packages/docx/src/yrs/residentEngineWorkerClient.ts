@@ -47,6 +47,9 @@ const RESIDENT_ENGINE_WORKER_STARTUP_TIMEOUT_MS = 15_000;
 export class ResidentEngineWorkerClient {
   private readonly worker: Worker;
   private readonly pending = new Map<number, PendingRequest>();
+  /** Resolves once the shared wasm module has been offered to the worker;
+   * every request posts behind it so `initWasm` is always the first message. */
+  private readonly wasmReady: Promise<void>;
   private nextId = 1;
   private destroyed = false;
   private ready = false;
@@ -79,6 +82,32 @@ export class ResidentEngineWorkerClient {
       this.failAll(new Error('Resident engine worker returned an unreadable message'));
       this.ready = false;
     };
+    this.wasmReady = this.shareCompiledModule();
+  }
+
+  /**
+   * Hands the worker the editing-core module this agent already compiled, so
+   * the two threads share one compilation instead of fetching and compiling
+   * ~11MB of bytecode each. Best-effort: on any failure the worker loads the
+   * asset itself, exactly as it did before.
+   *
+   * The glue is reached through a dynamic import so it stays out of the static
+   * bundle graph, per the `src/wasm/` external-asset contract.
+   */
+  private async shareCompiledModule(): Promise<void> {
+    try {
+      const { compileEditWasmModule } = await import('./wasm/index');
+      const module = await compileEditWasmModule();
+      if (this.destroyed) return;
+      const message: ResidentEngineWorkerRequest = {
+        id: this.nextId++,
+        type: 'initWasm',
+        module,
+      };
+      this.worker.postMessage(message);
+    } catch {
+      // Optimization only — the worker's own preload path still works.
+    }
   }
 
   isReady(): boolean {
@@ -207,8 +236,7 @@ export class ResidentEngineWorkerClient {
   eraseCaret(): void {
     if (this.destroyed) return;
     const id = this.nextId++;
-    const message: ResidentEngineWorkerRequest = { id, type: 'eraseCaret' };
-    this.worker.postMessage(message);
+    this.post({ id, type: 'eraseCaret' });
   }
 
   invalidate(update: Uint8Array, selection: YrsSelection | null): void {
@@ -216,13 +244,7 @@ export class ResidentEngineWorkerClient {
     this.ready = false;
     const owned = update.slice();
     const id = this.nextId++;
-    const message: ResidentEngineWorkerRequest = {
-      id,
-      type: 'applyUpdate',
-      update: owned,
-      selection,
-    };
-    this.worker.postMessage(message, [owned.buffer]);
+    this.post({ id, type: 'applyUpdate', update: owned, selection }, [owned.buffer]);
   }
 
   async attachCanvases(
@@ -250,6 +272,20 @@ export class ResidentEngineWorkerClient {
     this.ready = false;
   }
 
+  /**
+   * Posts behind the shared-module handshake, so `initWasm` always reaches the
+   * worker first. Every message goes through here — queueing some and posting
+   * others directly would let a fire-and-forget update overtake the bootstrap
+   * that creates the session it applies to. Order is preserved because these
+   * are microtasks on one already-settled promise.
+   */
+  private post(message: ResidentEngineWorkerRequest, transfer: Transferable[] = []): void {
+    void this.wasmReady.then(() => {
+      if (this.destroyed) return;
+      this.worker.postMessage(message, transfer);
+    });
+  }
+
   private request(
     request: ResidentEngineWorkerRequestWithoutId,
     transfer: Transferable[] = [],
@@ -274,7 +310,7 @@ export class ResidentEngineWorkerClient {
           }, timeoutMs)
         : null;
       this.pending.set(id, { resolve, reject, timeout });
-      this.worker.postMessage({ ...request, id } as ResidentEngineWorkerRequest, transfer);
+      this.post({ ...request, id } as ResidentEngineWorkerRequest, transfer);
     });
   }
 

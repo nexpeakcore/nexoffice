@@ -8,6 +8,18 @@ import type { ResidentCaretPaintStyle } from './residentCaret';
 
 export type ResidentEngineWorkerRequest =
   | {
+      /**
+       * Hands over the already-compiled editing-core module so the worker
+       * instantiates it instead of fetching and compiling the binary again.
+       * Always posted before any other request; a worker that never receives
+       * one (structured clone refused, compilation failed) falls back to
+       * loading the asset itself.
+       */
+      id: number;
+      type: 'initWasm';
+      module: WebAssembly.Module;
+    }
+  | {
       id: number;
       type: 'bootstrap';
       snapshot: YrsResidentWorkerSnapshot;

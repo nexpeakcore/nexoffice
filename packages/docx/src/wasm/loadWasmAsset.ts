@@ -57,9 +57,32 @@ export function readWasmSync(url: URL): Uint8Array | undefined {
   }
 }
 
+/**
+ * Compile a wasm asset into a `WebAssembly.Module` that several agents can
+ * instantiate. A `Module` is structured-cloneable to a dedicated worker, so
+ * compiling once here and handing the result to both the main thread and the
+ * worker replaces two independent compilations of the same binary — for
+ * docx-edit that is ~11MB of bytecode, and its machine code, twice over.
+ */
+export async function compileWasmAsset(url: URL): Promise<WebAssembly.Module> {
+  const bytes = readWasmSync(url);
+  if (bytes) return WebAssembly.compile(bytes);
+  if (typeof WebAssembly.compileStreaming === 'function') {
+    try {
+      return await WebAssembly.compileStreaming(fetch(url));
+    } catch {
+      // A response without `application/wasm` cannot stream; buffer instead.
+    }
+  }
+  const response = await fetch(url);
+  return WebAssembly.compile(await response.arrayBuffer());
+}
+
 export interface WasmModuleState {
   /** Async init from the packaged asset URL (or an explicit override). */
   preload(input?: WasmAsyncInput): Promise<void>;
+  /** Whether a module is already instantiated, so callers can skip setup. */
+  initialized(): boolean;
   /** Sync guard used by every call site; disk-inits on Node/Bun, throws in a browser before `preload()`. */
   ensure(): void;
 }
@@ -82,6 +105,9 @@ export function createWasmModuleState(options: {
   let pending: Promise<void> | undefined;
 
   return {
+    initialized(): boolean {
+      return initialized;
+    },
     preload(input?: WasmAsyncInput): Promise<void> {
       if (initialized) return Promise.resolve();
       if (pending) return pending;
