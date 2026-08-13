@@ -120,11 +120,10 @@ export function createWasmModuleState(options: {
       if (initialized) return Promise.resolve();
       if (pending) return pending;
       // Init synchronously whenever the bytes are already at hand (explicit
-      // BufferSource/Module, or the asset on local disk). A pending async
-      // init is a hazard: the glue's re-init guard is checked before its
-      // fetch, so a sync init landing inside that window is later clobbered
-      // by a second, fresh instance while sessions keep pointers into the
-      // first. No async window, no race.
+      // BufferSource, or the asset on local disk). A pending async init is a
+      // hazard: the glue's re-init guard is checked before its fetch, so a
+      // sync init landing inside that window is later clobbered by a second,
+      // fresh instance while sessions keep pointers into the first.
       const bytes = syncInput(input) ?? (input === undefined ? readWasmSync(options.assetUrl()) : undefined);
       if (bytes) {
         try {
