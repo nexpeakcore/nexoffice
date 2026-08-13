@@ -44,7 +44,7 @@ class SpellCheckServiceImpl {
     try {
       return (await this.request({ type: 'check', text })).misspellings ?? []
     } catch {
-      return []
+      return (await this.retryEngine())?.check(text) ?? []
     }
   }
 
@@ -54,8 +54,18 @@ class SpellCheckServiceImpl {
     try {
       return (await this.request({ type: 'suggest', word })).suggestions ?? []
     } catch {
-      return []
+      return (await this.retryEngine())?.suggest(word) ?? []
     }
+  }
+
+  /**
+   * A request killed by a worker crash has to wait for the inline engine the
+   * crash handler is loading; callers do not poll, so an empty result here
+   * would stick until the next document edit.
+   */
+  private async retryEngine(): Promise<SpellCheckEngine | null> {
+    await this.fallback
+    return this.inline
   }
 
   private async start(): Promise<void> {
