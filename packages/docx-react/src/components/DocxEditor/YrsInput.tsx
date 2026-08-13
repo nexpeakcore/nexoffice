@@ -1326,10 +1326,6 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
       aria-label="Document input"
       autoCapitalize="sentences"
       autoCorrect="on"
-      // Outside IME composition this textarea is always empty (it is cleared
-      // on every commit), so a spell checker here has nothing to judge and
-      // only costs a dictionary load per renderer. Document text is checked
-      // against its own dictionary, off the canvas content.
       spellCheck={false}
       readOnly={readOnly || !session}
       rows={1}
