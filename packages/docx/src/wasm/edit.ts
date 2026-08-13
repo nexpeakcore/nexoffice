@@ -39,8 +39,9 @@ export function compileEditWasmModule(): Promise<WebAssembly.Module> {
 export function preloadEditWasm(input?: WasmAsyncInput): Promise<void> {
   if (input !== undefined || state.initialized()) return state.preload(input);
   // Route the default path through the shared module so a later worker can be
-  // handed the very same compilation. A `Module` inits synchronously, which
-  // also closes the async-init window `createWasmModuleState` warns about.
+  // handed the very same compilation. Instantiation stays async — this module
+  // is far past the 8MB ceiling Blink puts on synchronous instantiation on the
+  // main thread (see `syncInput`).
   return compileEditWasmModule().then(
     (module) => state.preload(module),
     () => state.preload()

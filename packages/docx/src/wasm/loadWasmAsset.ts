@@ -87,9 +87,17 @@ export interface WasmModuleState {
   ensure(): void;
 }
 
+/**
+ * Bytes at hand can be instantiated synchronously; an already-compiled
+ * `WebAssembly.Module` deliberately cannot. Blink refuses a synchronous
+ * `new WebAssembly.Instance` on the main thread once the module passes 8MB,
+ * and docx-edit is 11.5MB — so a shared module goes through `initAsync`,
+ * whose glue reaches `await WebAssembly.instantiate(module, imports)`. That
+ * still skips compilation (the module is already compiled); only the
+ * instantiation becomes a promise.
+ */
 function syncInput(input: WasmAsyncInput | undefined): WasmSyncInput | undefined {
   if (input === undefined) return undefined;
-  if (input instanceof WebAssembly.Module) return input;
   if (input instanceof ArrayBuffer || ArrayBuffer.isView(input)) return input;
   return undefined;
 }
