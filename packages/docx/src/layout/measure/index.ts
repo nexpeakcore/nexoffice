@@ -16,4 +16,9 @@ export {
   type ResidentFontRequirement,
   type ResidentMeasurementConfig,
 } from './rustMeasureSource';
-export type { BundledFontProvider, EmbeddedFaceInput, FontScript } from './fontRegistry';
+export type {
+  BundledFaceLoader,
+  BundledFontProvider,
+  EmbeddedFaceInput,
+  FontScript,
+} from './fontRegistry';

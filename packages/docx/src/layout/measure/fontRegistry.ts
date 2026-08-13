@@ -85,9 +85,22 @@ export type FontScript = 'cjk-sc' | 'cjk-tc' | 'cjk-jp' | 'cjk-kr' | 'arabic' | 
  *
  * @public
  */
+/**
+ * Lazy byte loader for one bundled face. `faceKey` identifies the underlying
+ * asset; providers whose byte cache can evict must set it, since a re-fetched
+ * face arrives in a fresh `ArrayBuffer` and buffer identity alone would let
+ * the same face be registered with the engine twice.
+ *
+ * @public
+ */
+export interface BundledFaceLoader {
+  (): Promise<ArrayBuffer>;
+  faceKey?: string;
+}
+
 export interface BundledFontProvider {
   /** Resolve a Word family to bundled metric-compatible face byte loaders, or undefined. */
-  resolve(family: string, bold: boolean, italic: boolean): (() => Promise<ArrayBuffer>) | undefined;
+  resolve(family: string, bold: boolean, italic: boolean): BundledFaceLoader | undefined;
   /**
    * Optional per-script coverage fallback (Noto CJK/RTL faces). Same loader
    * contract as {@link BundledFontProvider.resolve}; providers without
@@ -99,7 +112,7 @@ export interface BundledFontProvider {
     script: FontScript,
     bold: boolean,
     italic: boolean
-  ): (() => Promise<ArrayBuffer>) | undefined;
+  ): BundledFaceLoader | undefined;
   /**
    * The always-available last-resort base face (broad-coverage Latin —
    * Liberation Sans/Serif per serif-ness). Unlike {@link
@@ -120,7 +133,7 @@ export interface BundledFontProvider {
     family: string,
     bold: boolean,
     italic: boolean
-  ): (() => Promise<ArrayBuffer>) | undefined;
+  ): BundledFaceLoader | undefined;
 }
 
 /**
@@ -190,6 +203,13 @@ export class TextMeasureFontRegistry {
    * of a cleared registry can be collected.
    */
   private bufferIds = new WeakMap<ArrayBuffer, Promise<number>>();
+  /**
+   * Registration memo keyed by {@link BundledFaceLoader.faceKey}. Providers
+   * evict their byte caches, so the same face re-fetched under another chain
+   * key arrives in a new buffer that `bufferIds` cannot match — without this
+   * the engine would hold a second copy of its bytes.
+   */
+  private faceKeyIds = new Map<string, Promise<number>>();
   /** Per-script fallback registration memo. `null` = no face / failed. */
   private scriptIds = new Map<FontScript, Promise<number | null>>();
   /** Settled per-script results for the synchronous view. */
@@ -302,6 +322,7 @@ export class TextMeasureFontRegistry {
     this.bundledIds = new Map();
     this.lastResortIds = new Map();
     this.bufferIds = new WeakMap();
+    this.faceKeyIds = new Map();
     this.scriptIds = new Map();
     this.scriptResults = new Map();
     this.chains = new Map();
@@ -366,6 +387,21 @@ export class TextMeasureFontRegistry {
     );
   }
 
+  /** Load and register a face exactly once per asset (see `faceKeyIds`). */
+  private registerLoaded(loader: BundledFaceLoader): Promise<number> {
+    const key = loader.faceKey;
+    if (key === undefined) return loader().then((bytes) => this.registerBuffer(bytes));
+    let pending = this.faceKeyIds.get(key);
+    if (!pending) {
+      pending = loader().then((bytes) => this.registerBuffer(bytes));
+      // Callers report the failure; this only keeps the memo from surfacing as
+      // an unhandled rejection.
+      pending.catch(() => {});
+      this.faceKeyIds.set(key, pending);
+    }
+    return pending;
+  }
+
   /** Register raw bytes exactly once per buffer identity (see `bufferIds`). */
   private registerBuffer(bytes: ArrayBuffer): Promise<number> {
     let pending = this.bufferIds.get(bytes);
@@ -404,15 +440,14 @@ export class TextMeasureFontRegistry {
 
   private registerBundled(
     key: string,
-    loader: () => Promise<ArrayBuffer>,
+    loader: BundledFaceLoader,
     family: string
   ): Promise<number | null> {
     let pending = this.bundledIds.get(key);
     if (!pending) {
       pending = (async () => {
         try {
-          const bytes = await loader();
-          return await this.registerBuffer(bytes);
+          return await this.registerLoaded(loader);
         } catch {
           // Failed fetch or unparseable bundled face: memoized as a miss for
           // this registry's lifetime (clear() resets), so a broken loader is
@@ -435,15 +470,14 @@ export class TextMeasureFontRegistry {
    */
   private registerLastResort(
     key: string,
-    loader: () => Promise<ArrayBuffer>,
+    loader: BundledFaceLoader,
     family: string
   ): Promise<number | null> {
     let pending = this.lastResortIds.get(key);
     if (!pending) {
       pending = (async () => {
         try {
-          const bytes = await loader();
-          return await this.registerBuffer(bytes);
+          return await this.registerLoaded(loader);
         } catch {
           console.warn(
             `[fontRegistry] last-resort base face for "${family}" failed to load or register; ` +
@@ -468,8 +502,7 @@ export class TextMeasureFontRegistry {
         const loader = this.bundled?.resolveScriptFallback?.(script, false, false);
         if (loader) {
           try {
-            const bytes = await loader();
-            id = await this.registerBuffer(bytes);
+            id = await this.registerLoaded(loader);
           } catch {
             console.warn(
               `[fontRegistry] script-fallback face for "${script}" failed to load or register; ` +

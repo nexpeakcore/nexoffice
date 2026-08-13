@@ -442,19 +442,10 @@ function trimBytesCache(keep: string): void {
 /**
  * Lazily fetch the raw sfnt bytes for a face. The fetch is same-origin: the
  * asset URL is derived with `new URL(..., import.meta.url)` so bundlers
- * (Vite) emit the file and serve it alongside the module. Results are cached
- * per face (the same promise is returned for concurrent callers, and the
- * same `ArrayBuffer` instance is handed to every consumer — byte-identity
- * lets registries deduplicate registrations); a failed fetch is evicted so
- * it can be retried.
- *
- * The cache is bounded by {@link BYTES_CACHE_BUDGET} and evicts
- * least-recently-used faces. Eviction is safe because no consumer keeps a
- * face alive through this map: `registerBundledFontFace` memoizes by family
- * key, and the measurement font registry memoizes the registered font *id*
- * per face (`bundledIds`), so an evicted face is re-fetched only when a
- * consumer genuinely needs its bytes again — never to re-register a face that
- * is already in the engine.
+ * (Vite) emit the file and serve it alongside the module. Concurrent callers
+ * share one promise; the cache is bounded by {@link BYTES_CACHE_BUDGET},
+ * evicts least-recently-used faces, and drops a failed fetch so it can be
+ * retried.
  */
 export function loadBundledFontBytes(face: BundledFontFace): Promise<ArrayBuffer> {
   const cached = bytesCache.get(face.file);
@@ -489,6 +480,25 @@ export function loadBundledFontBytes(face: BundledFontFace): Promise<ArrayBuffer
   );
   bytesCache.set(face.file, entry);
   return promise;
+}
+
+/** Byte loader carrying the face's asset identity. */
+export interface BundledFaceLoader {
+  (): Promise<ArrayBuffer>;
+  /** Asset filename — stable across cache eviction, unlike buffer identity. */
+  faceKey: string;
+}
+
+/**
+ * Loader for a face, tagged with its file. Consumers that register bytes with
+ * an engine must key on {@link BundledFaceLoader.faceKey}: eviction re-fetches
+ * a face into a fresh `ArrayBuffer`, so buffer identity would register the
+ * same face twice.
+ */
+export function bundledFaceLoader(face: BundledFontFace): BundledFaceLoader {
+  const load = () => loadBundledFontBytes(face);
+  load.faceKey = face.file;
+  return load;
 }
 
 const registeredFaces = new Map<string, Promise<void>>();
