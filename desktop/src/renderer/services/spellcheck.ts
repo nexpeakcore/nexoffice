@@ -1,56 +1,100 @@
-import Typo from 'typo-js'
+import type { Misspelling, SpellCheckEngine } from './spellcheckEngine.js'
+import type {
+  SpellCheckRequest,
+  SpellCheckRequestWithoutId,
+  SpellCheckResponse,
+} from './spellcheckProtocol.js'
 
-export interface Misspelling {
-  word: string
+export type { Misspelling }
+
+type Settled = SpellCheckResponse & { ok: true }
+
+interface PendingRequest {
+  resolve: (response: Settled) => void
+  reject: (error: Error) => void
 }
 
-const MAX_UNIQUE_WORDS = 2000
-const VERDICT_CACHE_CAP = 20000
-
+/**
+ * Renderer-side proofing client. The dictionary itself lives in a dedicated
+ * worker: expanding en_US costs ~40MB of heap and blocks whichever thread does
+ * it, neither of which belongs on the thread that paints the editor. If the
+ * worker cannot start, the engine is loaded inline so proofing still works.
+ */
 class SpellCheckServiceImpl {
-  private spellchecker: Typo | null = null
-  private verdicts = new Map<string, boolean>()
+  private worker: Worker | null = null
+  private inline: SpellCheckEngine | null = null
+  private starting: Promise<void> | null = null
+  private pending = new Map<number, PendingRequest>()
+  private nextId = 1
   ready = false
 
-  async init(_lang: string): Promise<void> {
-    if (this.ready) return
-    const [dic, aff] = await Promise.all([
-      fetch('/dictionaries/en_US.dic').then((r) => r.text()),
-      fetch('/dictionaries/en_US.aff').then((r) => r.text()),
-    ])
-    this.spellchecker = new Typo('en_US', aff, dic, { platform: 'web' })
+  init(_lang: string): Promise<void> {
+    if (this.ready) return Promise.resolve()
+    this.starting ??= this.start().catch((error: unknown) => {
+      this.starting = null
+      throw error instanceof Error ? error : new Error(String(error))
+    })
+    return this.starting
+  }
+
+  async check(text: string): Promise<Misspelling[]> {
+    if (!this.ready) return []
+    if (this.inline) return this.inline.check(text)
+    return (await this.request({ type: 'check', text })).misspellings ?? []
+  }
+
+  async suggest(word: string): Promise<string[]> {
+    if (!this.ready) return []
+    if (this.inline) return this.inline.suggest(word)
+    return (await this.request({ type: 'suggest', word })).suggestions ?? []
+  }
+
+  private async start(): Promise<void> {
+    try {
+      const worker = new Worker(new URL('./spellcheckWorker.ts', import.meta.url), {
+        type: 'module',
+        name: 'nexoffice-spellcheck',
+      })
+      worker.onmessage = (event: MessageEvent<SpellCheckResponse>) => {
+        const response = event.data
+        const pending = this.pending.get(response.id)
+        if (!pending) return
+        this.pending.delete(response.id)
+        if (response.ok) pending.resolve(response)
+        else pending.reject(new Error(response.error))
+      }
+      worker.onerror = (event) => {
+        this.failAll(new Error(event.message || 'Spell-check worker failed'))
+      }
+      this.worker = worker
+      await this.request({ type: 'init' })
+    } catch {
+      // A renderer that cannot host the worker still gets proofing; it just
+      // pays the dictionary's heap on this thread.
+      this.worker?.terminate()
+      this.worker = null
+      this.failAll(new Error('Spell-check worker unavailable'))
+      const { SpellCheckEngine } = await import('./spellcheckEngine.js')
+      const engine = new SpellCheckEngine()
+      await engine.init()
+      this.inline = engine
+    }
     this.ready = true
   }
 
-  // Whole words only; non-ASCII words are outside the en_US dictionary's
-  // judgment, and suggestions are looked up lazily because Typo.suggest is
-  // orders of magnitude slower than Typo.check.
-  check(text: string): Misspelling[] {
-    if (!this.ready || !this.spellchecker) return []
-    const words = text.match(/\p{L}[\p{L}''-]*/gu) ?? []
-    const unique = new Set<string>()
-    for (const raw of words) {
-      if (unique.size >= MAX_UNIQUE_WORDS) break
-      const word = raw.toLowerCase().replace(/['']/g, "'")
-      if (word.length < 2 || !/^[a-z'-]+$/.test(word)) continue
-      unique.add(word)
-    }
-    if (this.verdicts.size > VERDICT_CACHE_CAP) this.verdicts.clear()
-    const misspelled: Misspelling[] = []
-    for (const word of unique) {
-      let ok = this.verdicts.get(word)
-      if (ok === undefined) {
-        ok = this.spellchecker.check(word)
-        this.verdicts.set(word, ok)
-      }
-      if (!ok) misspelled.push({ word })
-    }
-    return misspelled
+  private request(request: SpellCheckRequestWithoutId): Promise<Settled> {
+    const worker = this.worker
+    if (!worker) return Promise.reject(new Error('Spell-check worker is not running'))
+    const id = this.nextId++
+    return new Promise<Settled>((resolve, reject) => {
+      this.pending.set(id, { resolve, reject })
+      worker.postMessage({ ...request, id } as SpellCheckRequest)
+    })
   }
 
-  suggest(word: string): string[] {
-    if (!this.ready || !this.spellchecker) return []
-    return (this.spellchecker.suggest(word) as string[]) ?? []
+  private failAll(error: Error): void {
+    for (const pending of this.pending.values()) pending.reject(error)
+    this.pending.clear()
   }
 }
 
