@@ -24,6 +24,7 @@ class SpellCheckServiceImpl {
   private worker: Worker | null = null
   private inline: SpellCheckEngine | null = null
   private starting: Promise<void> | null = null
+  private fallback: Promise<void> | null = null
   private pending = new Map<number, PendingRequest>()
   private nextId = 1
   ready = false
@@ -40,13 +41,21 @@ class SpellCheckServiceImpl {
   async check(text: string): Promise<Misspelling[]> {
     if (!this.ready) return []
     if (this.inline) return this.inline.check(text)
-    return (await this.request({ type: 'check', text })).misspellings ?? []
+    try {
+      return (await this.request({ type: 'check', text })).misspellings ?? []
+    } catch {
+      return []
+    }
   }
 
   async suggest(word: string): Promise<string[]> {
     if (!this.ready) return []
     if (this.inline) return this.inline.suggest(word)
-    return (await this.request({ type: 'suggest', word })).suggestions ?? []
+    try {
+      return (await this.request({ type: 'suggest', word })).suggestions ?? []
+    } catch {
+      return []
+    }
   }
 
   private async start(): Promise<void> {
@@ -64,22 +73,41 @@ class SpellCheckServiceImpl {
         else pending.reject(new Error(response.error))
       }
       worker.onerror = (event) => {
-        this.failAll(new Error(event.message || 'Spell-check worker failed'))
+        void this.dropWorker(new Error(event.message || 'Spell-check worker failed'))
       }
       this.worker = worker
       await this.request({ type: 'init' })
+      this.ready = true
     } catch {
-      // A renderer that cannot host the worker still gets proofing; it just
-      // pays the dictionary's heap on this thread.
-      this.worker?.terminate()
-      this.worker = null
-      this.failAll(new Error('Spell-check worker unavailable'))
+      await this.dropWorker(new Error('Spell-check worker unavailable'))
+      if (!this.inline) throw new Error('Spell check is unavailable')
+    }
+  }
+
+  /**
+   * Retires the worker and moves proofing onto this thread. Also covers a
+   * worker that dies after init, which would otherwise leave every later
+   * request pending against a dead thread.
+   */
+  private dropWorker(error: Error): Promise<void> {
+    this.worker?.terminate()
+    this.worker = null
+    this.ready = false
+    this.failAll(error)
+    this.fallback ??= this.loadInline()
+    return this.fallback
+  }
+
+  private async loadInline(): Promise<void> {
+    try {
       const { SpellCheckEngine } = await import('./spellcheckEngine.js')
       const engine = new SpellCheckEngine()
       await engine.init()
       this.inline = engine
+      this.ready = true
+    } catch {
+      this.inline = null
     }
-    this.ready = true
   }
 
   private request(request: SpellCheckRequestWithoutId): Promise<Settled> {
