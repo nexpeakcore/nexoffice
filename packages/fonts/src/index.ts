@@ -408,7 +408,36 @@ const FONT_ASSET_URLS: Record<string, () => URL> = {
   'NotoSerifSC-Regular.otf': () => new URL('../assets/NotoSerifSC-Regular.otf', import.meta.url),
 };
 
-const bytesCache = new Map<string, Promise<ArrayBuffer>>();
+interface FontBytesEntry {
+  promise: Promise<ArrayBuffer>;
+  /** Resolved byte length; 0 while the fetch is still in flight. */
+  size: number;
+}
+
+/**
+ * Byte budget for resolved font bytes held in this cache. The CJK faces alone
+ * are ~35MB (NotoSerifSC is 11.6MB), and every consumer copies out of these
+ * buffers anyway — the browser into its font system via `FontFace`, the Rust
+ * FontStore into wasm linear memory — so holding all of them forever is pure
+ * duplication. One CJK face plus a full Latin set fits comfortably.
+ */
+const BYTES_CACHE_BUDGET = 24 * 1024 * 1024;
+
+const bytesCache = new Map<string, FontBytesEntry>();
+let cachedBytes = 0;
+
+/** Drop least-recently-used resolved entries until the budget is met. */
+function trimBytesCache(keep: string): void {
+  if (cachedBytes <= BYTES_CACHE_BUDGET) return;
+  for (const [file, entry] of bytesCache) {
+    if (cachedBytes <= BYTES_CACHE_BUDGET) return;
+    // In-flight entries have no known size and concurrent callers are already
+    // holding their promise; leave them until they resolve.
+    if (file === keep || entry.size === 0) continue;
+    bytesCache.delete(file);
+    cachedBytes -= entry.size;
+  }
+}
 
 /**
  * Lazily fetch the raw sfnt bytes for a face. The fetch is same-origin: the
@@ -418,10 +447,23 @@ const bytesCache = new Map<string, Promise<ArrayBuffer>>();
  * same `ArrayBuffer` instance is handed to every consumer — byte-identity
  * lets registries deduplicate registrations); a failed fetch is evicted so
  * it can be retried.
+ *
+ * The cache is bounded by {@link BYTES_CACHE_BUDGET} and evicts
+ * least-recently-used faces. Eviction is safe because no consumer keeps a
+ * face alive through this map: `registerBundledFontFace` memoizes by family
+ * key, and the measurement font registry memoizes the registered font *id*
+ * per face (`bundledIds`), so an evicted face is re-fetched only when a
+ * consumer genuinely needs its bytes again — never to re-register a face that
+ * is already in the engine.
  */
 export function loadBundledFontBytes(face: BundledFontFace): Promise<ArrayBuffer> {
   const cached = bytesCache.get(face.file);
-  if (cached) return cached;
+  if (cached) {
+    // Re-insert so Map iteration order stays least-recently-used first.
+    bytesCache.delete(face.file);
+    bytesCache.set(face.file, cached);
+    return cached.promise;
+  }
   const resolveUrl = FONT_ASSET_URLS[face.file];
   if (!resolveUrl) {
     return Promise.reject(new Error(`Unknown bundled font asset: ${face.file}`));
@@ -433,10 +475,19 @@ export function loadBundledFontBytes(face: BundledFontFace): Promise<ArrayBuffer
     }
     return response.arrayBuffer();
   });
-  promise.catch(() => {
-    if (bytesCache.get(face.file) === promise) bytesCache.delete(face.file);
-  });
-  bytesCache.set(face.file, promise);
+  const entry: FontBytesEntry = { promise, size: 0 };
+  promise.then(
+    (bytes) => {
+      if (bytesCache.get(face.file) !== entry) return;
+      entry.size = bytes.byteLength;
+      cachedBytes += entry.size;
+      trimBytesCache(face.file);
+    },
+    () => {
+      if (bytesCache.get(face.file) === entry) bytesCache.delete(face.file);
+    }
+  );
+  bytesCache.set(face.file, entry);
   return promise;
 }
 
