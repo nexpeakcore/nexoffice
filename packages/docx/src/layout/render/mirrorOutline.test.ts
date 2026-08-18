@@ -28,6 +28,26 @@ const richPage = {
   ],
 } as unknown as DisplayPage;
 
+const regionsPage = {
+  pageIndex: 5,
+  width: 816,
+  height: 1056,
+  primitives: [
+    { kind: 'text', blockId: 1, text: 'Body line', x: 10, y: 200, w: 50, h: 12, font: '12px x', docStart: 300, docEnd: 309 },
+  ],
+  header: { kind: 'header', rId: 'rId3', y: 40, height: 40, primitives: [
+    { kind: 'text', blockId: 9, text: 'Chapter heading', x: 10, y: 45, w: 80, h: 12, font: '12px x', docStart: 1, docEnd: 16 },
+  ] },
+  footer: { kind: 'footer', rId: 'rId4', y: 980, height: 40, primitives: [
+    { kind: 'text', blockId: 8, text: 'Page 6', x: 10, y: 985, w: 30, h: 12, font: '12px x', docStart: 1, docEnd: 7 },
+  ] },
+  noteAreas: [
+    { kind: 'footnote', noteIds: [1], primitives: [
+      { kind: 'text', blockId: 7, text: 'A cited footnote', x: 10, y: 900, w: 80, h: 12, font: '12px x', docStart: 1, docEnd: 17 },
+    ] },
+  ],
+} as unknown as DisplayPage;
+
 describe('buildMirrorPageOutline', () => {
   const window = new Window();
   const doc = window.document as unknown as Document;
@@ -77,5 +97,33 @@ describe('buildMirrorPageOutline', () => {
     expect(link?.getAttribute('href')).toBe('https://example.com');
     expect(link?.textContent).toBe('the docs');
     expect(el.querySelector('.layout-paragraph')?.textContent).toBe('see the docs');
+  });
+  test('keeps footnote text in the outline', () => {
+    const el = buildMirrorPageOutline(regionsPage, { document: doc });
+    const notes = el.querySelector('.layout-page-notes');
+
+    expect(notes?.getAttribute('data-note-kind')).toBe('footnote');
+    expect(notes?.textContent).toBe('A cited footnote');
+  });
+
+  test('keeps header and footer content in the outline', () => {
+    const el = buildMirrorPageOutline(regionsPage, {
+      document: doc,
+      labels: { header: 'Header', footer: 'Footer' },
+    });
+    const header = el.querySelector('.layout-page-header');
+    const footer = el.querySelector('.layout-page-footer');
+
+    expect(header?.textContent).toBe('Chapter heading');
+    expect(header?.getAttribute('data-hf-rid')).toBe('rId3');
+    expect(header?.getAttribute('aria-label')).toBe('Header');
+    expect(footer?.textContent).toBe('Page 6');
+  });
+
+  test('omits regions a page does not have', () => {
+    const el = buildMirrorPageOutline(page, { document: doc });
+
+    expect(el.querySelector('.layout-page-header')).toBeNull();
+    expect(el.querySelector('.layout-page-notes')).toBeNull();
   });
 });

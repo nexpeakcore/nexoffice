@@ -169,18 +169,10 @@ export function buildMirrorPage(
 }
 
 /**
- * Semantic outline mirror for a display page: one paragraph wrapper per block
- * holding the block's content in reading order — coalesced text, plus a node
- * per element a screen reader announces in its own right (links keep their
- * href, images and shapes keep role=img and alt text). Orders of magnitude
- * cheaper than {@link buildMirrorPage} (no per-run elements, no geometry, no
- * table/HF structure), so pages outside the bitmap page window can stay in the
- * accessibility tree instead of being emptied — a screen reader's virtual
- * cursor still finds the whole document and scrolling a page into the window
- * upgrades it to the full mirror.
- *
- * Deliberately NOT a geometry surface: nothing here is positioned, so
- * `getBoundingClientRect` consumers must keep using the windowed full mirror.
+ * Cheap semantic mirror for a page outside the bitmap window: content in
+ * reading order with no geometry, so off-window pages stay in the
+ * accessibility tree. See {@link buildMirrorPage} for the positioned mirror
+ * geometry consumers require.
  */
 export function buildMirrorPageOutline(
   page: DisplayPage,
@@ -198,10 +190,43 @@ export function buildMirrorPageOutline(
 
   const contentEl = doc.createElement('div');
   contentEl.className = MIRROR_CLASS_NAMES.content;
+  appendOutlineBlocks(contentEl, page.primitives, doc);
   pageEl.appendChild(contentEl);
 
+  for (const area of page.noteAreas ?? []) {
+    const el = doc.createElement('section');
+    el.className = MIRROR_CLASS_NAMES.notes;
+    el.dataset.noteKind = area.kind ?? 'footnote';
+    if (area.sectionId) el.dataset.sectionId = area.sectionId;
+    appendOutlineBlocks(el, area.primitives ?? [], doc);
+    if (el.childNodes.length > 0) pageEl.appendChild(el);
+  }
+
+  for (const region of [page.header, page.footer]) {
+    if (!region) continue;
+    const el = doc.createElement('div');
+    el.className =
+      region.kind === 'header' ? MIRROR_CLASS_NAMES.header : MIRROR_CLASS_NAMES.footer;
+    el.dataset.hfRid = region.rId;
+    const label = region.kind === 'header' ? options.labels?.header : options.labels?.footer;
+    if (label) el.setAttribute('aria-label', label);
+    appendOutlineBlocks(el, region.primitives, doc);
+    if (el.childNodes.length > 0) pageEl.appendChild(el);
+  }
+
+  return pageEl;
+}
+
+// One `.layout-paragraph` per block, holding the block's content in reading
+// order: consecutive plain runs coalesce into one text node, while anything a
+// screen reader announces in its own right (link, image, shape) keeps a node.
+function appendOutlineBlocks(
+  container: HTMLElement,
+  primitives: DisplayPrimitive[],
+  doc: Document
+): void {
   const blocks = new Map<number | string, BlockGroup['prims']>();
-  for (const p of page.primitives) {
+  for (const p of primitives) {
     const blockId = p.kind === 'line' ? undefined : (p.blockKey ?? p.blockId);
     if (blockId === undefined) continue;
     const table = p.table;
@@ -215,9 +240,6 @@ export function buildMirrorPageOutline(
   for (const prims of blocks.values()) {
     const blockEl = doc.createElement('div');
     blockEl.className = MIRROR_CLASS_NAMES.block;
-    // Runs coalesce into as few nodes as possible: consecutive plain text
-    // becomes one text node, while anything a screen reader announces in its
-    // own right (a link, an image, a shape) keeps a node of its own.
     let pending = '';
     const flushText = (): void => {
       if (pending.length === 0) return;
@@ -242,8 +264,7 @@ export function buildMirrorPageOutline(
       if (p.kind === 'image' || p.kind === 'shape') {
         flushText();
         const el = p.kind === 'image' && p.href ? doc.createElement('a') : doc.createElement('div');
-        el.className =
-          p.kind === 'image' ? MIRROR_CLASS_NAMES.image : MIRROR_CLASS_NAMES.shape;
+        el.className = p.kind === 'image' ? MIRROR_CLASS_NAMES.image : MIRROR_CLASS_NAMES.shape;
         if (p.decorative) {
           el.setAttribute('aria-hidden', 'true');
         } else {
@@ -260,10 +281,8 @@ export function buildMirrorPageOutline(
     flushText();
     if (blockEl.childNodes.length === 0) continue;
     stampDocRange(blockEl, prims);
-    contentEl.appendChild(blockEl);
+    container.appendChild(blockEl);
   }
-
-  return pageEl;
 }
 
 // one HfRegion → its painter-contract wrapper. children are placed with a
