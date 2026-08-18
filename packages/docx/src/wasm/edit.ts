@@ -11,19 +11,41 @@
  */
 
 import wasmInit, { initSync, EditSession } from './generated/edit/docx_edit.js';
-import { createWasmModuleState, type WasmAsyncInput } from './loadWasmAsset';
+import { compileWasmAsset, createWasmModuleState, type WasmAsyncInput } from './loadWasmAsset';
+
+const assetUrl = (): URL => new URL('./generated/edit/docx_edit_bg.wasm', import.meta.url);
 
 const state = createWasmModuleState({
   label: 'docx-edit',
   preloadName: 'preloadEditWasm',
-  assetUrl: () => new URL('./generated/edit/docx_edit_bg.wasm', import.meta.url),
+  assetUrl,
   initAsync: wasmInit,
   initSync,
 });
 
+let compiled: Promise<WebAssembly.Module> | undefined;
+
+/**
+ * The compiled editing-core module, compiled at most once per agent. The
+ * resident engine worker takes this over `postMessage` instead of fetching
+ * and compiling the binary a second time; see `residentEngineWorkerClient`.
+ */
+export function compileEditWasmModule(): Promise<WebAssembly.Module> {
+  compiled ??= compileWasmAsset(assetUrl());
+  return compiled;
+}
+
 /** Load + instantiate the editing-core wasm (browser path). Idempotent. */
 export function preloadEditWasm(input?: WasmAsyncInput): Promise<void> {
-  return state.preload(input);
+  if (input !== undefined || state.initialized()) return state.preload(input);
+  // Route the default path through the shared module so a later worker can be
+  // handed the very same compilation. Instantiation stays async — this module
+  // is far past the 8MB ceiling Blink puts on synchronous instantiation on the
+  // main thread (see `syncInput`).
+  return compileEditWasmModule().then(
+    (module) => state.preload(module),
+    () => state.preload()
+  );
 }
 
 /**

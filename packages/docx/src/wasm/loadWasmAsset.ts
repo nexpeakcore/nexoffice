@@ -57,16 +57,33 @@ export function readWasmSync(url: URL): Uint8Array | undefined {
   }
 }
 
+/** Compile a wasm asset into a `WebAssembly.Module` several agents can instantiate. */
+export async function compileWasmAsset(url: URL): Promise<WebAssembly.Module> {
+  const bytes = readWasmSync(url);
+  if (bytes) return WebAssembly.compile(bytes);
+  if (typeof WebAssembly.compileStreaming === 'function') {
+    try {
+      return await WebAssembly.compileStreaming(fetch(url));
+    } catch {
+      // A response without `application/wasm` cannot stream; buffer instead.
+    }
+  }
+  const response = await fetch(url);
+  return WebAssembly.compile(await response.arrayBuffer());
+}
+
 export interface WasmModuleState {
   /** Async init from the packaged asset URL (or an explicit override). */
   preload(input?: WasmAsyncInput): Promise<void>;
+  /** Whether a module is already instantiated, so callers can skip setup. */
+  initialized(): boolean;
   /** Sync guard used by every call site; disk-inits on Node/Bun, throws in a browser before `preload()`. */
   ensure(): void;
 }
 
+/** Narrows to inputs that can init synchronously; a compiled `Module` must go through `initAsync`. */
 function syncInput(input: WasmAsyncInput | undefined): WasmSyncInput | undefined {
   if (input === undefined) return undefined;
-  if (input instanceof WebAssembly.Module) return input;
   if (input instanceof ArrayBuffer || ArrayBuffer.isView(input)) return input;
   return undefined;
 }
@@ -82,15 +99,17 @@ export function createWasmModuleState(options: {
   let pending: Promise<void> | undefined;
 
   return {
+    initialized(): boolean {
+      return initialized;
+    },
     preload(input?: WasmAsyncInput): Promise<void> {
       if (initialized) return Promise.resolve();
       if (pending) return pending;
       // Init synchronously whenever the bytes are already at hand (explicit
-      // BufferSource/Module, or the asset on local disk). A pending async
-      // init is a hazard: the glue's re-init guard is checked before its
-      // fetch, so a sync init landing inside that window is later clobbered
-      // by a second, fresh instance while sessions keep pointers into the
-      // first. No async window, no race.
+      // BufferSource, or the asset on local disk). A pending async init is a
+      // hazard: the glue's re-init guard is checked before its fetch, so a
+      // sync init landing inside that window is later clobbered by a second,
+      // fresh instance while sessions keep pointers into the first.
       const bytes = syncInput(input) ?? (input === undefined ? readWasmSync(options.assetUrl()) : undefined);
       if (bytes) {
         try {

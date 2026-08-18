@@ -1326,7 +1326,7 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
       aria-label="Document input"
       autoCapitalize="sentences"
       autoCorrect="on"
-      spellCheck
+      spellCheck={false}
       readOnly={readOnly || !session}
       rows={1}
       style={{

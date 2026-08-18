@@ -39,6 +39,14 @@ interface StoryProjection {
     displayStart: number;
     inputStart: number;
     length: number;
+    /**
+     * Block embeds (tables, block SDTs, standalone page breaks) between the
+     * previous pilcrow and this paragraph's text. The Rust segment walk
+     * (`paragraph_spans` / `find_para_span`) counts each as one leading unit
+     * of THIS paragraph's span, so input positions and Loc offsets must be
+     * shifted by this count to agree with the live session.
+     */
+    leadingUnits: number;
   }>;
   tables: YrsProjectedTable[];
 }
@@ -125,12 +133,13 @@ export class YrsPositionProjection {
     const story = this.stories.get(loc.story);
     const paragraph = story?.paragraphs.find((candidate) => candidate.paraId === loc.paraId);
     if (!story || !paragraph) return null;
-    return (
-      story.contentStart +
-      paragraph.displayStart +
-      1 +
-      Math.min(Math.max(0, loc.offset), paragraph.length)
+    // Loc offsets are unit offsets in the session's paragraph span, which
+    // opens with the leading block-embed units; text starts after them.
+    const textOffset = Math.min(
+      Math.max(0, loc.offset - paragraph.leadingUnits),
+      paragraph.length
     );
+    return story.contentStart + paragraph.displayStart + 1 + textOffset;
   }
 
   bookmarkPosition(name: string): number | null {
@@ -178,6 +187,7 @@ export class YrsPositionProjection {
     let inlineLength = 0;
     let paragraphStart = 0;
     let inputStart = 0;
+    let leadingUnits = 0;
     let tableIndex = 0;
     for (const segment of segments) {
       if (segment.kind === 'text') {
@@ -200,11 +210,13 @@ export class YrsPositionProjection {
           displayStart: paragraphStart,
           inputStart,
           length: inlineLength,
+          leadingUnits,
         });
-        inputStart += nodeSize;
+        inputStart += leadingUnits + nodeSize;
         cursor = paragraphStart + nodeSize;
         paragraphStart = cursor;
         inlineLength = 0;
+        leadingUnits = 0;
         continue;
       }
 
@@ -216,6 +228,7 @@ export class YrsPositionProjection {
         tableIndex += 1;
         cursor += table.nodeSize;
         paragraphStart = cursor;
+        leadingUnits += 1;
         continue;
       }
       if (segment.embedKind === 'blockSdt') {
@@ -232,6 +245,7 @@ export class YrsPositionProjection {
         this.nodes.set(start, node);
         cursor += node.nodeSize;
         paragraphStart = cursor;
+        leadingUnits += 1;
         continue;
       }
       if (segment.embedKind === 'pageBreak' && inlineLength === 0) {
@@ -245,6 +259,7 @@ export class YrsPositionProjection {
         this.nodes.set(node.start, node);
         cursor += 1;
         paragraphStart = cursor;
+        leadingUnits += 1;
         continue;
       }
 
@@ -271,10 +286,10 @@ export class YrsPositionProjection {
       paragraph = candidate;
     }
     if (!paragraph) return 0;
-    return (
-      paragraph.inputStart +
-      Math.min(Math.max(0, projected - paragraph.displayStart), paragraph.length + 1)
-    );
+    const rel = Math.min(Math.max(0, projected - paragraph.displayStart), paragraph.length + 1);
+    // The input map's paragraph span starts with the leading block-embed
+    // units, so any position inside the paragraph content sits after them.
+    return paragraph.inputStart + (rel === 0 ? 0 : paragraph.leadingUnits + rel);
   }
 
   private buildTable(

@@ -17,4 +17,4 @@ pub use formatting::{
 pub use input::{ParsedInput, cell_state_for_input, cell_state_for_input_no_eval, parse_input};
 pub use op::{CellState, Op, Provenance, Transaction, is_sidecar_op};
 pub use proposals::{Proposal, ProposalGhost, ProposalSet, ProposedEdit};
-pub use undo::UndoStack;
+pub use undo::{MAX_UNDO_DEPTH, UndoStack};

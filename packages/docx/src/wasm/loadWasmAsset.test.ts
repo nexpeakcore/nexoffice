@@ -43,6 +43,18 @@ describe('createWasmModuleState', () => {
     expect(calls).toEqual({ sync: 1, async: 0 });
   });
 
+  // Blink refuses a synchronous instantiation of a >8MB module on the main
+  // thread, and the module this path exists to share is 11.5MB. A shared
+  // module must therefore reach the async init, never initSync.
+  it('inits asynchronously when preload receives a compiled module', async () => {
+    const { state, calls } = makeState();
+    const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    await state.preload(module);
+    expect(calls).toEqual({ sync: 0, async: 1 });
+    state.ensure();
+    expect(calls).toEqual({ sync: 0, async: 1 });
+  });
+
   it('inits synchronously from a local file asset', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wasm-state-'));
     const asset = join(dir, 'a.wasm');

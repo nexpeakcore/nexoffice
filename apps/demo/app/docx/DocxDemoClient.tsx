@@ -6,7 +6,7 @@ import Link from "next/link";
 import type { BundledFontProvider } from "@betteroffice/docx-react";
 import { CollaborationProvider } from "@betteroffice/docx/collaboration";
 import {
-  loadBundledFontBytes,
+  bundledFaceLoader,
   resolveLastResortFace,
   resolveMetricCompatFace,
   resolveScriptFallbackFace,
@@ -53,14 +53,14 @@ export function DocxDemoClient() {
     () => ({
       resolve(family, bold, italic) {
         const face = resolveMetricCompatFace(family, bold, italic);
-        return face ? () => loadBundledFontBytes(face) : undefined;
+        return face ? bundledFaceLoader(face) : undefined;
       },
       resolveScriptFallback(script, bold, italic) {
         const face = resolveScriptFallbackFace(script, bold, italic);
-        return face ? () => loadBundledFontBytes(face) : undefined;
+        return face ? bundledFaceLoader(face) : undefined;
       },
       resolveLastResort(family, bold, italic) {
-        return () => loadBundledFontBytes(resolveLastResortFace(family, bold, italic));
+        return bundledFaceLoader(resolveLastResortFace(family, bold, italic));
       },
     }),
     []
