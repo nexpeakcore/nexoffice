@@ -353,6 +353,58 @@ mod authoritative_tests {
         assert!(slices.iter().any(|slice| slice.bidi_level % 2 == 1));
     }
 
+    fn measure_authoritative(text: &str, letter_spacing: f64) -> crate::measure::TypesetRowOut {
+        let mut store = FontStore::new();
+        store.register(FIXTURE.to_vec()).unwrap();
+        let input: MeasureInput = serde_json::from_value(serde_json::json!({
+            "block": {
+                "kind": "paragraph",
+                "runs": [{ "kind": "text", "text": text, "letterSpacing": letter_spacing }]
+            },
+            "maxWidth": 10000.0,
+            "fontChains": { "liberation sans|0|0": [0] },
+            "defaults": { "fontSize": 12.0, "fontFamily": "Liberation Sans" },
+            "authoritativeShaping": true
+        }))
+        .unwrap();
+        measure_paragraph(&store, &input).unwrap().lines.remove(0)
+    }
+
+    #[test]
+    fn tracking_free_clusters_coalesce_into_one_slice_per_run() {
+        let line = measure_authoritative("Hello world", 0.0);
+        let clusters = line.cluster_advances.as_ref().unwrap();
+        let slices = line.bidi_slices.as_ref().unwrap();
+        assert!(clusters.len() > 5);
+        assert_eq!(slices.len(), 1);
+        let slice = &slices[0];
+        assert_eq!(slice.start_char, 0);
+        assert_eq!(slice.end_char, 11);
+        let cluster_sum: f32 = clusters.iter().map(|cluster| cluster.advance).sum();
+        assert!((slice.advance - cluster_sum).abs() < 0.001);
+        assert!((slice.advance - line.width).abs() < 0.001);
+    }
+
+    #[test]
+    fn letter_spacing_keeps_one_slice_per_cluster() {
+        let line = measure_authoritative("Hello world", 1.25);
+        let clusters = line.cluster_advances.as_ref().unwrap();
+        let slices = line.bidi_slices.as_ref().unwrap();
+        assert_eq!(slices.len(), clusters.len());
+    }
+
+    #[test]
+    fn rtl_and_ltr_coalesce_separately_and_keep_their_spans() {
+        let line = measure_authoritative("ab \u{5d0}\u{5d1}", 0.0);
+        let slices = line.bidi_slices.as_ref().unwrap();
+        assert!(slices.len() < 5);
+        for slice in slices {
+            assert!(slice.end_char > slice.start_char);
+        }
+        let slice_sum: f32 = slices.iter().map(|slice| slice.advance).sum();
+        assert!((slice_sum - line.width).abs() < 0.001);
+    }
+
     #[test]
     fn rotated_inline_image_uses_transformed_footprint_for_flow() {
         let store = FontStore::new();
