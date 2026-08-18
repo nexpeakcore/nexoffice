@@ -5,16 +5,25 @@
  * painted. The mirror is invisible (opacity 0) and inert to the pointer
  * (pointer-events none) but deliberately NOT aria-hidden — it is the
  * accessible content of the canvas. Rebuilt whenever the page's display list
- * changes — the same trigger that re-rasters the canvas. Windowed alongside
- * the canvas bitmap: an off-window page holds an empty mirror host (a large
- * document's full mirror is hundreds of thousands of DOM nodes) and rebuilds
- * when it re-enters the window.
+ * changes — the same trigger that re-rasters the canvas.
+ *
+ * Windowed alongside the canvas bitmap, but never emptied: a large document's
+ * full mirror is hundreds of thousands of DOM nodes, so an off-window page
+ * falls back to `buildMirrorPageOutline` — paragraph text in reading order,
+ * no geometry — and is promoted back to the positioned mirror on re-entry.
+ * Off-window pages therefore stay in the accessibility tree (a screen reader
+ * still reaches the whole document); only geometry consumers require the
+ * windowed full mirror, and those already read live canvas rects.
  *
  * Focus never lands here: the hidden input remains the editing surface.
  */
 
 import { useEffect, useRef } from 'react';
-import { buildMirrorPage, type DisplayPage } from '@betteroffice/docx/layout/render';
+import {
+  buildMirrorPage,
+  buildMirrorPageOutline,
+  type DisplayPage,
+} from '@betteroffice/docx/layout/render';
 import { useTranslation } from '../../i18n';
 
 /**
@@ -33,9 +42,8 @@ export function CanvasPageMirror({
   page: DisplayPage;
   zoom?: number;
   /**
-   * Whether the page is inside the page window. An off-window mirror releases
-   * its subtree — the same policy the canvas applies to its backing store —
-   * and rebuilds immediately on re-entry.
+   * Whether the page is inside the page window. An off-window page keeps a
+   * text-only outline mirror instead of the positioned one.
    */
   live?: boolean;
 }) {
@@ -46,19 +54,18 @@ export function CanvasPageMirror({
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    const labels = {
+      page: t('a11y.pageLabel', { number: page.pageIndex + 1 }),
+      header: t('a11y.headerLabel'),
+      footer: t('a11y.footerLabel'),
+    };
     if (!live) {
       builtOnceRef.current = false;
-      host.replaceChildren();
+      host.replaceChildren(buildMirrorPageOutline(page, { labels }));
       return;
     }
     const build = (): void => {
-      const mirror = buildMirrorPage(page, {
-        labels: {
-          page: t('a11y.pageLabel', { number: page.pageIndex + 1 }),
-          header: t('a11y.headerLabel'),
-          footer: t('a11y.footerLabel'),
-        },
-      });
+      const mirror = buildMirrorPage(page, { labels });
       // Keep the previous mirror connected until this replacement is ready.
       // Clearing in effect cleanup creates a detached-DOM window on every page
       // update; unmounting already removes the host and its complete subtree.

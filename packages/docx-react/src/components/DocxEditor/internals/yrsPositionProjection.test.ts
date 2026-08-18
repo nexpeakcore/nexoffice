@@ -36,11 +36,10 @@ const session = {
 describe('YrsPositionProjection', () => {
   test('maps post-table positions back to the root story input map', () => {
     const projection = new YrsPositionProjection(session, 'body');
-    // Seeds mirror the live `paragraphSpans` walk: the table embed counts as
-    // one leading unit of p1's span, so its length is 1 + "after".length.
+    const tableEmbedUnit = 1;
     const map = createYrsInputPositionMap('body', [
-      { paraId: 'body:p0', length: 6 },
-      { paraId: 'body:p1', length: 6 },
+      { paraId: 'body:p0', length: 'before'.length },
+      { paraId: 'body:p1', length: tableEmbedUnit + 'after'.length },
     ]);
     const target = projection.targetAt(23);
     const loc = displayPositionToYrsLoc(map, target.displayPosition);

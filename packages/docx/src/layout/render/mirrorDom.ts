@@ -168,6 +168,64 @@ export function buildMirrorPage(
   return pageEl;
 }
 
+/**
+ * Text-only mirror for a display page: one paragraph wrapper per block with the
+ * block's text in reading order, and nothing else. Two orders of magnitude
+ * cheaper than {@link buildMirrorPage} (no per-run elements, no geometry, no
+ * table/HF structure), so pages outside the bitmap page window can stay in the
+ * accessibility tree instead of being emptied — a screen reader's virtual
+ * cursor still finds the whole document and scrolling a page into the window
+ * upgrades it to the full mirror.
+ *
+ * Deliberately NOT a geometry surface: nothing here is positioned, so
+ * `getBoundingClientRect` consumers must keep using the windowed full mirror.
+ */
+export function buildMirrorPageOutline(
+  page: DisplayPage,
+  options: BuildMirrorPageOptions = {}
+): HTMLElement {
+  const doc = options.document ?? document;
+  const pageEl = doc.createElement('div');
+  pageEl.className = MIRROR_CLASS_NAMES.page;
+  pageEl.setAttribute('role', 'document');
+  if (options.labels?.page) pageEl.setAttribute('aria-label', options.labels.page);
+  pageEl.dataset.pageIndex = String(page.pageIndex);
+  pageEl.dataset.mirrorOutline = 'true';
+  pageEl.style.opacity = '0';
+  pageEl.style.pointerEvents = 'none';
+
+  const contentEl = doc.createElement('div');
+  contentEl.className = MIRROR_CLASS_NAMES.content;
+  pageEl.appendChild(contentEl);
+
+  const blocks = new Map<number | string, BlockGroup['prims']>();
+  for (const p of page.primitives) {
+    const blockId = p.kind === 'line' ? undefined : (p.blockKey ?? p.blockId);
+    if (blockId === undefined) continue;
+    const table = p.table;
+    const key =
+      table?.tableId !== undefined ? `table:${table.tableId}#${table.rowStart ?? 0}` : blockId;
+    const prims = blocks.get(key);
+    if (prims) prims.push(p as BlockGroup['prims'][number]);
+    else blocks.set(key, [p as BlockGroup['prims'][number]]);
+  }
+
+  for (const prims of blocks.values()) {
+    let text = '';
+    for (const p of inLogicalOrder(prims)) {
+      if ((p.kind === 'text' || p.kind === 'glyphRun') && !p.listMarker) text += p.text;
+    }
+    if (text.length === 0) continue;
+    const blockEl = doc.createElement('div');
+    blockEl.className = MIRROR_CLASS_NAMES.block;
+    blockEl.textContent = text;
+    stampDocRange(blockEl, prims);
+    contentEl.appendChild(blockEl);
+  }
+
+  return pageEl;
+}
+
 // one HfRegion → its painter-contract wrapper. children are placed with a
 // -region.y offset so the display list's page coordinates land at the same
 // page-local position once the wrapper's own top is added back (the harvest

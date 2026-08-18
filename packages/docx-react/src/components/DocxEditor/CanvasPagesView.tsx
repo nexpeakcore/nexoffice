@@ -82,11 +82,11 @@ export function CanvasPagedArea({
   );
 }
 
-// Pages within this many pages of the viewport keep live bitmaps and a built
-// a11y mirror; everything farther keeps its canvas ELEMENT (stable identity,
-// exact geometry for pointer routing/overlays/scroll math) but releases its
-// backing store and mirror subtree. Page structure is never windowed — every
-// page keeps its wrapper, canvas element, and mirror host.
+// Pages within this many pages of the viewport keep live bitmaps and the
+// positioned a11y mirror; everything farther keeps its canvas ELEMENT (stable
+// identity, exact geometry for pointer routing/overlays/scroll math) but
+// releases its backing store and drops to a text-only outline mirror. Page
+// structure and accessible text are never windowed away.
 const PAGE_WINDOW_BUFFER = 2;
 // Documents at or below this page count never window — zero behavior change
 // for short documents.
@@ -196,13 +196,14 @@ export function CanvasPagesView({
   } | null>(null);
 
   // ===========================================================================
-  // Page windowing: only pages near the viewport hold rastered bitmaps and a
-  // built a11y mirror. Every page keeps its canvas element (stable keys and
-  // CSS-sized boxes, so scroll geometry, pointer routing, and canvas-rect
+  // Page windowing: only pages near the viewport hold rastered bitmaps and the
+  // positioned a11y mirror. Every page keeps its canvas element (stable keys
+  // and CSS-sized boxes, so scroll geometry, pointer routing, and canvas-rect
   // overlays are untouched); an off-window page's backing store is released
   // (attributes zeroed on the DOM path, offscreen buffer zeroed by the worker)
-  // and its mirror subtree emptied, both rebuilt on re-entry. The window moves
-  // only with scrolling/resize/zoom, never with document invalidation.
+  // and its mirror drops to a text-only outline, both restored on re-entry.
+  // The window moves only with scrolling/resize/zoom, never with document
+  // invalidation.
   // ===========================================================================
   const innerHostRef = useRef<HTMLDivElement | null>(null);
   const setHostRef = useMemo(
@@ -521,9 +522,8 @@ export function CanvasPagesView({
           return (
             // per-page wrapper so the mirror positions 1:1 over its canvas.
             // Every page keeps its wrapper and canvas element (stable page
-            // geometry); the page window releases the bitmap backing store AND
-            // the mirror subtree of off-window pages — both rebuild on
-            // re-entry.
+            // geometry); the page window releases the bitmap backing store and
+            // demotes the mirror to a text-only outline off-window.
             <div key={surfaceKey} className="canvas-page" style={{ position: 'relative' }}>
               <canvas
                 ref={(el) => {

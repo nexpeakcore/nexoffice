@@ -209,6 +209,7 @@
     "build:wasm": "bun ../../scripts/build-docx-wasm.ts"
   },
   "devDependencies": {
+    "happy-dom": "^20.11.1",
     "tsup": "^8.0.1",
     "typescript": "^6.0.3",
     "@types/bun": "^1.0.0",

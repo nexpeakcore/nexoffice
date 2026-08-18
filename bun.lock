@@ -120,7 +120,7 @@
     },
     "desktop": {
       "name": "nexoffice-desktop",
-      "version": "0.1.0",
+      "version": "1.0.3",
       "devDependencies": {
         "@betteroffice/docx": "workspace:*",
         "@betteroffice/docx-fonts": "workspace:*",
@@ -157,6 +157,7 @@
       "devDependencies": {
         "@types/bun": "^1.0.0",
         "@types/node": "^26.1.2",
+        "happy-dom": "^20.11.1",
         "tsup": "^8.0.1",
         "typescript": "^6.0.3",
       },
