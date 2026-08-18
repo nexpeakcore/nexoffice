@@ -39,8 +39,8 @@ class SpellCheckServiceImpl {
   }
 
   async check(text: string): Promise<Misspelling[]> {
-    if (!this.ready) return []
     if (this.inline) return this.inline.check(text)
+    if (!this.ready) return (await this.retryEngine())?.check(text) ?? []
     try {
       return (await this.request({ type: 'check', text })).misspellings ?? []
     } catch {
@@ -49,8 +49,8 @@ class SpellCheckServiceImpl {
   }
 
   async suggest(word: string): Promise<string[]> {
-    if (!this.ready) return []
     if (this.inline) return this.inline.suggest(word)
+    if (!this.ready) return (await this.retryEngine())?.suggest(word) ?? []
     try {
       return (await this.request({ type: 'suggest', word })).suggestions ?? []
     } catch {
@@ -59,9 +59,9 @@ class SpellCheckServiceImpl {
   }
 
   /**
-   * A request killed by a worker crash has to wait for the inline engine the
-   * crash handler is loading; callers do not poll, so an empty result here
-   * would stick until the next document edit.
+   * Resolves once any in-flight inline load has settled. A worker crash clears
+   * `ready` while the fallback is still loading, and callers do not poll, so
+   * answering empty during that window would stick until the next edit.
    */
   private async retryEngine(): Promise<SpellCheckEngine | null> {
     await this.fallback

@@ -86,13 +86,9 @@ export class ResidentEngineWorkerClient {
   }
 
   /**
-   * Hands the worker the editing-core module this agent already compiled, so
-   * the two threads share one compilation instead of fetching and compiling
-   * ~11MB of bytecode each. Best-effort: on any failure the worker loads the
-   * asset itself, exactly as it did before.
-   *
-   * The glue is reached through a dynamic import so it stays out of the static
-   * bundle graph, per the `src/wasm/` external-asset contract.
+   * Shares this agent's compiled editing-core module with the worker so the
+   * two threads do not compile ~11MB each. Best-effort: on failure the worker
+   * loads the asset itself.
    */
   private async shareCompiledModule(): Promise<void> {
     try {
