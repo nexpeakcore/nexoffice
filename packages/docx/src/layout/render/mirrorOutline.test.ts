@@ -16,6 +16,18 @@ const page = {
   ],
 } as unknown as DisplayPage;
 
+const richPage = {
+  pageIndex: 4,
+  width: 816,
+  height: 1056,
+  primitives: [
+    { kind: 'text', blockId: 1, text: 'see ', x: 10, y: 10, w: 20, h: 12, font: '12px x', docStart: 200, docEnd: 204, logicalOrder: 0 },
+    { kind: 'text', blockId: 1, text: 'the docs', href: 'https://example.com', x: 30, y: 10, w: 40, h: 12, font: '12px x', docStart: 204, docEnd: 212, logicalOrder: 1 },
+    { kind: 'image', blockId: 2, relId: 'rId7', altText: 'Architecture diagram', x: 10, y: 40, w: 200, h: 100, docStart: 220, docEnd: 221 },
+    { kind: 'image', blockId: 3, relId: 'rId8', decorative: true, x: 10, y: 160, w: 50, h: 20, docStart: 230, docEnd: 231 },
+  ],
+} as unknown as DisplayPage;
+
 describe('buildMirrorPageOutline', () => {
   const window = new Window();
   const doc = window.document as unknown as Document;
@@ -41,5 +53,29 @@ describe('buildMirrorPageOutline', () => {
 
     expect(el.getAttribute('aria-label')).toBe('Page 4');
     expect(el.getAttribute('role')).toBe('document');
+  });
+  test('keeps images announceable on an image-only page', () => {
+    const el = buildMirrorPageOutline(richPage, { document: doc });
+    const img = el.querySelector('[data-rel-id="rId7"]');
+
+    expect(img?.getAttribute('role')).toBe('img');
+    expect(img?.getAttribute('aria-label')).toBe('Architecture diagram');
+  });
+
+  test('hides decorative images from the accessibility tree', () => {
+    const el = buildMirrorPageOutline(richPage, { document: doc });
+    const decorative = el.querySelector('[data-rel-id="rId8"]');
+
+    expect(decorative?.getAttribute('aria-hidden')).toBe('true');
+    expect(decorative?.hasAttribute('role')).toBe(false);
+  });
+
+  test('keeps hyperlinks activatable instead of flattening them to text', () => {
+    const el = buildMirrorPageOutline(richPage, { document: doc });
+    const link = el.querySelector('a');
+
+    expect(link?.getAttribute('href')).toBe('https://example.com');
+    expect(link?.textContent).toBe('the docs');
+    expect(el.querySelector('.layout-paragraph')?.textContent).toBe('see the docs');
   });
 });

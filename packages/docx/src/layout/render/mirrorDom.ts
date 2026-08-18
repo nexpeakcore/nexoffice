@@ -169,8 +169,10 @@ export function buildMirrorPage(
 }
 
 /**
- * Text-only mirror for a display page: one paragraph wrapper per block with the
- * block's text in reading order, and nothing else. Two orders of magnitude
+ * Semantic outline mirror for a display page: one paragraph wrapper per block
+ * holding the block's content in reading order — coalesced text, plus a node
+ * per element a screen reader announces in its own right (links keep their
+ * href, images and shapes keep role=img and alt text). Orders of magnitude
  * cheaper than {@link buildMirrorPage} (no per-run elements, no geometry, no
  * table/HF structure), so pages outside the bitmap page window can stay in the
  * accessibility tree instead of being emptied — a screen reader's virtual
@@ -211,14 +213,52 @@ export function buildMirrorPageOutline(
   }
 
   for (const prims of blocks.values()) {
-    let text = '';
-    for (const p of inLogicalOrder(prims)) {
-      if ((p.kind === 'text' || p.kind === 'glyphRun') && !p.listMarker) text += p.text;
-    }
-    if (text.length === 0) continue;
     const blockEl = doc.createElement('div');
     blockEl.className = MIRROR_CLASS_NAMES.block;
-    blockEl.textContent = text;
+    // Runs coalesce into as few nodes as possible: consecutive plain text
+    // becomes one text node, while anything a screen reader announces in its
+    // own right (a link, an image, a shape) keeps a node of its own.
+    let pending = '';
+    const flushText = (): void => {
+      if (pending.length === 0) return;
+      blockEl.appendChild(doc.createTextNode(pending));
+      pending = '';
+    };
+    for (const p of inLogicalOrder(prims)) {
+      if (p.kind === 'text' || p.kind === 'glyphRun') {
+        if (p.listMarker) continue;
+        if (!p.href) {
+          pending += p.text;
+          continue;
+        }
+        flushText();
+        const linkEl = doc.createElement('a');
+        linkEl.className = MIRROR_CLASS_NAMES.text;
+        linkEl.textContent = p.text;
+        applyHrefAttrs(linkEl, p);
+        blockEl.appendChild(linkEl);
+        continue;
+      }
+      if (p.kind === 'image' || p.kind === 'shape') {
+        flushText();
+        const el = p.kind === 'image' && p.href ? doc.createElement('a') : doc.createElement('div');
+        el.className =
+          p.kind === 'image' ? MIRROR_CLASS_NAMES.image : MIRROR_CLASS_NAMES.shape;
+        if (p.decorative) {
+          el.setAttribute('aria-hidden', 'true');
+        } else {
+          el.setAttribute('role', 'img');
+          if (p.kind === 'image' && p.altText) el.setAttribute('aria-label', p.altText);
+        }
+        if (p.kind === 'image') {
+          applyHrefAttrs(el, p);
+          el.dataset.relId = p.relId;
+        }
+        blockEl.appendChild(el);
+      }
+    }
+    flushText();
+    if (blockEl.childNodes.length === 0) continue;
     stampDocRange(blockEl, prims);
     contentEl.appendChild(blockEl);
   }
