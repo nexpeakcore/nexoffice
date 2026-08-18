@@ -77,15 +77,6 @@ export interface TextEngineFontSink {
 export type FontScript = 'cjk-sc' | 'cjk-tc' | 'cjk-jp' | 'cjk-kr' | 'arabic' | 'hebrew';
 
 /**
- * Resolver for the bundled metric-compatible set (Carlito↔Calibri,
- * Liberation↔Arial/Times/Courier, …). Returns a lazy byte loader so the
- * (lazily fetched, same-origin) binary is only downloaded when a document
- * actually needs the face, or `undefined` when the family has no bundled
- * substitute.
- *
- * @public
- */
-/**
  * Lazy byte loader for one bundled face. `faceKey` identifies the underlying
  * asset; providers whose byte cache can evict must set it, since a re-fetched
  * face arrives in a fresh `ArrayBuffer` and buffer identity alone would let
@@ -98,6 +89,15 @@ export interface BundledFaceLoader {
   faceKey?: string;
 }
 
+/**
+ * Resolver for the bundled metric-compatible set (Carlito↔Calibri,
+ * Liberation↔Arial/Times/Courier, …). Returns a lazy byte loader so the
+ * (lazily fetched, same-origin) binary is only downloaded when a document
+ * actually needs the face, or `undefined` when the family has no bundled
+ * substitute.
+ *
+ * @public
+ */
 export interface BundledFontProvider {
   /** Resolve a Word family to bundled metric-compatible face byte loaders, or undefined. */
   resolve(family: string, bold: boolean, italic: boolean): BundledFaceLoader | undefined;

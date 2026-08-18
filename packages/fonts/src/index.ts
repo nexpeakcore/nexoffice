@@ -414,13 +414,7 @@ interface FontBytesEntry {
   size: number;
 }
 
-/**
- * Byte budget for resolved font bytes held in this cache. The CJK faces alone
- * are ~35MB (NotoSerifSC is 11.6MB), and every consumer copies out of these
- * buffers anyway — the browser into its font system via `FontFace`, the Rust
- * FontStore into wasm linear memory — so holding all of them forever is pure
- * duplication. One CJK face plus a full Latin set fits comfortably.
- */
+/** Byte budget for cached font bytes: one CJK face plus a full Latin set. */
 const BYTES_CACHE_BUDGET = 24 * 1024 * 1024;
 
 const bytesCache = new Map<string, FontBytesEntry>();
