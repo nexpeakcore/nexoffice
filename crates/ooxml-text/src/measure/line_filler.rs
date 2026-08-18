@@ -79,6 +79,9 @@ struct LineContribution {
     level: u8,
     logical_order: u32,
     shaped_cluster: bool,
+    /// Tracking-free shaped clusters fold into one paint slice. Letter-spaced
+    /// text keeps its clusters apart so the gaps survive re-shaping.
+    coalescable: bool,
 }
 
 struct Filler<'a> {
@@ -490,6 +493,7 @@ impl Filler<'_> {
             level,
             logical_order: run_index.saturating_mul(1_000_000),
             shaped_cluster: false,
+            coalescable: false,
         });
     }
 
@@ -515,6 +519,7 @@ impl Filler<'_> {
                     .saturating_mul(1_000_000)
                     .saturating_add(cluster.logical_order),
                 shaped_cluster: true,
+                coalescable: spacing == 0.0,
             });
         }
     }
@@ -696,6 +701,42 @@ impl Filler<'_> {
     }
 }
 
+/// Folds one cluster into the slice it continues, so a run of tracking-free
+/// clusters paints as a single glyph run instead of one per character. The
+/// merged span stays contiguous in logical order, which is what re-shaping the
+/// slice text needs; `logical_order` keeps the lowest of the pair so visual
+/// ordering is unchanged.
+fn extend_slice(
+    last: Option<&mut TypesetBidiSliceOut>,
+    cluster: &LineContribution,
+    last_coalescable: bool,
+) -> bool {
+    let Some(last) = last else { return false };
+    if !last_coalescable
+        || !cluster.coalescable
+        || last.run_index != cluster.run_index
+        || last.bidi_level != cluster.level
+    {
+        return false;
+    }
+    // visual order runs left to right, so an LTR slice grows at its end and an
+    // RTL slice grows at its start
+    if cluster.level.is_multiple_of(2) {
+        if last.end_char != cluster.start_char {
+            return false;
+        }
+        last.end_char = cluster.end_char;
+    } else {
+        if last.start_char != cluster.end_char {
+            return false;
+        }
+        last.start_char = cluster.start_char;
+    }
+    last.advance += cluster.advance;
+    last.logical_order = last.logical_order.min(cluster.logical_order);
+    true
+}
+
 fn advance_metadata(
     contributions: &[LineContribution],
 ) -> (
@@ -710,7 +751,8 @@ fn advance_metadata(
     let visual = crate::bidi::visual_order_for_levels(&levels);
     let mut runs: Vec<TypesetRunAdvanceOut> = Vec::new();
     let mut clusters = Vec::new();
-    let mut slices = Vec::new();
+    let mut slices: Vec<TypesetBidiSliceOut> = Vec::new();
+    let mut last_coalescable = false;
     let mut x = 0.0f32;
 
     for (visual_order, &logical_index) in visual.iter().enumerate() {
@@ -726,15 +768,18 @@ fn advance_metadata(
                 logical_order: c.logical_order,
             });
         }
-        slices.push(TypesetBidiSliceOut {
-            run_index: c.run_index,
-            start_char: c.start_char,
-            end_char: c.end_char,
-            advance: c.advance,
-            bidi_level: c.level,
-            visual_order: visual_order as u32,
-            logical_order: c.logical_order,
-        });
+        if !extend_slice(slices.last_mut(), &c, last_coalescable) {
+            slices.push(TypesetBidiSliceOut {
+                run_index: c.run_index,
+                start_char: c.start_char,
+                end_char: c.end_char,
+                advance: c.advance,
+                bidi_level: c.level,
+                visual_order: visual_order as u32,
+                logical_order: c.logical_order,
+            });
+        }
+        last_coalescable = c.coalescable;
         if let Some(last) = runs.last_mut().filter(|last| last.run_index == c.run_index) {
             last.start_char = last.start_char.min(c.start_char);
             last.end_char = last.end_char.max(c.end_char);

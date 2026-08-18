@@ -724,10 +724,6 @@ pub struct PlacedGlyph {
     /// hit-testing and the a11y mirror read the real run width off the glyphs
     /// instead of estimating a uniform trailing advance.
     pub advance: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub logical_order: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bidi_level: Option<u8>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -5634,10 +5630,15 @@ fn emit_line(
         if slack > 0.0 {
             let mut space_count = 0usize;
             if let Some(items) = &authoritative_items {
+                // a coalesced slice carries its spaces inside one item, so the
+                // pool counts space characters rather than space-only items
                 space_count = items
                     .iter()
-                    .filter(|item| matches!(item, LinePaintItem::Text(text) if text.text == " "))
-                    .count();
+                    .map(|item| match item {
+                        LinePaintItem::Text(text) => space_chars(&text.text),
+                        _ => 0,
+                    })
+                    .sum();
             } else {
                 for seg in &segments {
                     let text = match seg.run {
@@ -5773,8 +5774,8 @@ fn emit_line(
         match item {
             LinePaintItem::Text(item) => {
                 let paint_width = item.width
-                    + if item.exact_advance && item.text == " " {
-                        word_space_extra
+                    + if item.exact_advance {
+                        word_space_extra * space_chars(&item.text) as f64
                     } else {
                         0.0
                     };
@@ -6076,6 +6077,12 @@ fn emit_tab_leader(
 /// one styled text slice: comment tint and highlight paint behind the glyphs,
 /// the text primitive itself, then underline/strike over it
 #[allow(clippy::too_many_arguments)]
+/// Justification stretch applies per space character, wherever it sits inside
+/// a paint item.
+fn space_chars(text: &str) -> usize {
+    text.chars().filter(|&ch| ch == ' ').count()
+}
+
 fn emit_text_segment(
     prims: &mut Vec<Primitive>,
     text: &str,
@@ -6254,7 +6261,6 @@ fn emit_text_segment(
             &word_spacing,
             bidi_level,
             exact_advance.then_some(width),
-            logical_order,
             &attrs,
             &color,
         ),
@@ -6401,7 +6407,6 @@ fn try_emit_glyph_runs(
     word_spacing: &Option<Number>,
     bidi_level: u8,
     exact_width: Option<f64>,
-    logical_order: Option<u64>,
     attrs: &DocAttrs,
     color: &str,
 ) -> bool {
@@ -6553,8 +6558,6 @@ fn try_emit_glyph_runs(
                 y: round3(baseline - g.y_offset as f64),
                 cluster: g.cluster,
                 advance: round3(advance),
-                logical_order,
-                bidi_level: exact_width.map(|_| bidi_level),
             });
             acc += advance;
         }
@@ -9442,6 +9445,86 @@ mod tests {
         assert_eq!(chains["calibri|0|0"], vec![1]);
     }
     use serde_json::json;
+
+    #[test]
+    fn justification_stretches_spaces_inside_a_coalesced_slice() {
+        let input = json!({
+            "contractVersion": 1,
+            "measured": [{
+                "block": {
+                    "kind": "paragraph",
+                    "id": "para",
+                    "runs": [{ "kind": "text", "text": "a b c tail", "pmStart": 1, "pmEnd": 11 }],
+                    "attrs": { "alignment": "justify" },
+                    "pmStart": 0,
+                    "pmEnd": 11
+                },
+                "measure": {
+                    "kind": "paragraph",
+                    "totalHeight": 40,
+                    "lines": [{
+                        "headRun": 0,
+                        "headChar": 0,
+                        "tailRun": 0,
+                        "tailChar": 6,
+                        "width": 50,
+                        "ascent": 14,
+                        "descent": 4,
+                        "lineHeight": 20,
+                        "bidiSlices": [
+                            { "runIndex": 0, "startChar": 0, "endChar": 5, "advance": 50,
+                              "bidiLevel": 0, "visualOrder": 0, "logicalOrder": 0 }
+                        ]
+                    }, {
+                        "headRun": 0,
+                        "headChar": 6,
+                        "tailRun": 0,
+                        "tailChar": 10,
+                        "width": 40,
+                        "ascent": 14,
+                        "descent": 4,
+                        "lineHeight": 20,
+                        "bidiSlices": [
+                            { "runIndex": 0, "startChar": 6, "endChar": 10, "advance": 40,
+                              "bidiLevel": 0, "visualOrder": 0, "logicalOrder": 6 }
+                        ]
+                    }]
+                }
+            }],
+            "options": {},
+            "layout": {
+                "pages": [{
+                    "number": 1,
+                    "size": { "w": 300, "h": 400 },
+                    "margins": { "top": 20, "right": 20, "bottom": 20, "left": 20 },
+                    "fragments": [{
+                        "kind": "paragraph",
+                        "blockId": "para",
+                        "x": 20,
+                        "y": 20,
+                        "width": 260,
+                        "height": 40,
+                        "fromLine": 0,
+                        "toLine": 2,
+                        "pmStart": 0,
+                        "pmEnd": 11
+                    }]
+                }]
+            }
+        });
+        let output: Value = serde_json::from_str(
+            &build_display_list_json(&input.to_string()).expect("display list builds"),
+        )
+        .expect("valid display JSON");
+        let text = output["pages"][0]["primitives"]
+            .as_array()
+            .expect("primitive array")
+            .iter()
+            .find(|primitive| primitive["text"] == "a b c")
+            .expect("the coalesced slice paints as one primitive");
+        // 260 usable - 50 measured = 210 of slack over the slice's two spaces
+        assert_eq!(text["wordSpacing"].as_f64(), Some(105.0));
+    }
 
     #[test]
     fn list_marker_emits_as_a_tracked_first_line_primitive() {
