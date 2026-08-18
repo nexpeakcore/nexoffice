@@ -434,12 +434,9 @@ function trimBytesCache(keep: string): void {
 }
 
 /**
- * Lazily fetch the raw sfnt bytes for a face. The fetch is same-origin: the
- * asset URL is derived with `new URL(..., import.meta.url)` so bundlers
- * (Vite) emit the file and serve it alongside the module. Concurrent callers
- * share one promise; the cache is bounded by {@link BYTES_CACHE_BUDGET},
- * evicts least-recently-used faces, and drops a failed fetch so it can be
- * retried.
+ * Lazily fetch a face's raw sfnt bytes, same-origin via
+ * `new URL(..., import.meta.url)` so bundlers emit the asset. Concurrent
+ * callers share one promise; the cache is bounded by {@link BYTES_CACHE_BUDGET}.
  */
 export function loadBundledFontBytes(face: BundledFontFace): Promise<ArrayBuffer> {
   const cached = bytesCache.get(face.file);
@@ -483,12 +480,7 @@ export interface BundledFaceLoader {
   faceKey: string;
 }
 
-/**
- * Loader for a face, tagged with its file. Consumers that register bytes with
- * an engine must key on {@link BundledFaceLoader.faceKey}: eviction re-fetches
- * a face into a fresh `ArrayBuffer`, so buffer identity would register the
- * same face twice.
- */
+/** Loader for a face, tagged with {@link BundledFaceLoader.faceKey} so registries can dedupe across eviction. */
 export function bundledFaceLoader(face: BundledFontFace): BundledFaceLoader {
   const load = () => loadBundledFontBytes(face);
   load.faceKey = face.file;

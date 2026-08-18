@@ -77,10 +77,8 @@ export interface TextEngineFontSink {
 export type FontScript = 'cjk-sc' | 'cjk-tc' | 'cjk-jp' | 'cjk-kr' | 'arabic' | 'hebrew';
 
 /**
- * Lazy byte loader for one bundled face. `faceKey` identifies the underlying
- * asset; providers whose byte cache can evict must set it, since a re-fetched
- * face arrives in a fresh `ArrayBuffer` and buffer identity alone would let
- * the same face be registered with the engine twice.
+ * Lazy byte loader for one bundled face. `faceKey` is the asset's stable
+ * identity; providers whose byte cache can evict must set it.
  *
  * @public
  */
@@ -203,12 +201,7 @@ export class TextMeasureFontRegistry {
    * of a cleared registry can be collected.
    */
   private bufferIds = new WeakMap<ArrayBuffer, Promise<number>>();
-  /**
-   * Registration memo keyed by {@link BundledFaceLoader.faceKey}. Providers
-   * evict their byte caches, so the same face re-fetched under another chain
-   * key arrives in a new buffer that `bufferIds` cannot match — without this
-   * the engine would hold a second copy of its bytes.
-   */
+  /** Registration memo keyed by stable asset identity, so an evicted-then-refetched face keeps one engine id. */
   private faceKeyIds = new Map<string, Promise<number>>();
   /** Per-script fallback registration memo. `null` = no face / failed. */
   private scriptIds = new Map<FontScript, Promise<number | null>>();

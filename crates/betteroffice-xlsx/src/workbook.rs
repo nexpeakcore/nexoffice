@@ -135,11 +135,7 @@ impl PreservedSheetState {
 /// committed transaction. Only replaying history restores a sheet's package
 /// identity; a fresh add never inherits one.
 ///
-/// Both sides are shared handles, not copies. The state carries a
-/// shared-string entry per cell, and only structural ops (sheet add/remove,
-/// row/column insert/delete) can change it — so a plain cell edit records two
-/// pointers to the state it did not touch, and a structural op deep-copies it
-/// exactly once, through `Arc::make_mut`.
+/// Shared handles: only structural ops clone the state, via `Arc::make_mut`.
 #[derive(Clone)]
 struct PreservedStateHistory {
     before: Arc<PreservedSheetState>,

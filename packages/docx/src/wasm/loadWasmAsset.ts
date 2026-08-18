@@ -57,13 +57,7 @@ export function readWasmSync(url: URL): Uint8Array | undefined {
   }
 }
 
-/**
- * Compile a wasm asset into a `WebAssembly.Module` that several agents can
- * instantiate. A `Module` is structured-cloneable to a dedicated worker, so
- * compiling once here and handing the result to both the main thread and the
- * worker replaces two independent compilations of the same binary — for
- * docx-edit that is ~11MB of bytecode, and its machine code, twice over.
- */
+/** Compile a wasm asset into a `WebAssembly.Module` several agents can instantiate. */
 export async function compileWasmAsset(url: URL): Promise<WebAssembly.Module> {
   const bytes = readWasmSync(url);
   if (bytes) return WebAssembly.compile(bytes);
@@ -87,15 +81,7 @@ export interface WasmModuleState {
   ensure(): void;
 }
 
-/**
- * Bytes at hand can be instantiated synchronously; an already-compiled
- * `WebAssembly.Module` deliberately cannot. Blink refuses a synchronous
- * `new WebAssembly.Instance` on the main thread once the module passes 8MB,
- * and docx-edit is 11.5MB — so a shared module goes through `initAsync`,
- * whose glue reaches `await WebAssembly.instantiate(module, imports)`. That
- * still skips compilation (the module is already compiled); only the
- * instantiation becomes a promise.
- */
+/** Narrows to inputs that can init synchronously; a compiled `Module` must go through `initAsync`. */
 function syncInput(input: WasmAsyncInput | undefined): WasmSyncInput | undefined {
   if (input === undefined) return undefined;
   if (input instanceof ArrayBuffer || ArrayBuffer.isView(input)) return input;

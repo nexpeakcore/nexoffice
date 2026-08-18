@@ -268,13 +268,7 @@ export class ResidentEngineWorkerClient {
     this.ready = false;
   }
 
-  /**
-   * Posts behind the shared-module handshake, so `initWasm` always reaches the
-   * worker first. Every message goes through here — queueing some and posting
-   * others directly would let a fire-and-forget update overtake the bootstrap
-   * that creates the session it applies to. Order is preserved because these
-   * are microtasks on one already-settled promise.
-   */
+  /** Queues every message behind the shared-module handshake, preserving order. */
   private post(message: ResidentEngineWorkerRequest, transfer: Transferable[] = []): void {
     void this.wasmReady.then(() => {
       if (this.destroyed) return;
