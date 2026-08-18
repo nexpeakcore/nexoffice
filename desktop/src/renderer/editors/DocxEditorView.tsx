@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { DocxEditor, type BundledFontProvider, type DocxEditorRef } from '@betteroffice/docx-react'
 import '@betteroffice/docx-react/styles.css'
 import {
-  loadBundledFontBytes,
+  bundledFaceLoader,
   resolveLastResortFace,
   resolveMetricCompatFace,
   resolveScriptFallbackFace,
@@ -76,14 +76,14 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
       () => ({
         resolve(family, bold, italic) {
           const face = resolveMetricCompatFace(family, bold, italic)
-          return face ? () => loadBundledFontBytes(face) : undefined
+          return face ? bundledFaceLoader(face) : undefined
         },
         resolveScriptFallback(script, bold, italic) {
           const face = resolveScriptFallbackFace(script, bold, italic)
-          return face ? () => loadBundledFontBytes(face) : undefined
+          return face ? bundledFaceLoader(face) : undefined
         },
         resolveLastResort(family, bold, italic) {
-          return () => loadBundledFontBytes(resolveLastResortFace(family, bold, italic))
+          return bundledFaceLoader(resolveLastResortFace(family, bold, italic))
         },
       }),
       [],

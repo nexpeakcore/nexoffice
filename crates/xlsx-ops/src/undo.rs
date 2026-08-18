@@ -6,6 +6,12 @@ use xlsx_model::Workbook;
 use crate::apply::{OpError, apply_ops};
 use crate::op::{Op, Transaction};
 
+/// Deepest history retained. Every entry holds the inverse ops of one
+/// transaction, so an uncapped stack grows for as long as the session lives —
+/// a bulk edit's inverse carries a cell state per touched cell. Excel and Word
+/// cap at 100 for the same reason.
+pub const MAX_UNDO_DEPTH: usize = 200;
+
 #[derive(Debug, Clone, Default)]
 pub struct UndoStack {
     undo: Vec<Vec<Op>>,
@@ -42,9 +48,17 @@ impl UndoStack {
     /// redo stack.
     pub fn commit(&mut self, wb: &mut Workbook, tx: &Transaction) -> Result<(), OpError> {
         let inverse = apply_ops(wb, &tx.ops)?;
-        self.undo.push(inverse);
+        self.push_undo(inverse);
         self.redo.clear();
         Ok(())
+    }
+
+    /// Records one undo entry, dropping the oldest beyond [`MAX_UNDO_DEPTH`].
+    fn push_undo(&mut self, ops: Vec<Op>) {
+        self.undo.push(ops);
+        if self.undo.len() > MAX_UNDO_DEPTH {
+            self.undo.drain(..self.undo.len() - MAX_UNDO_DEPTH);
+        }
     }
 
     /// reverse the most recent transaction, returning the ops applied.
@@ -65,7 +79,7 @@ impl UndoStack {
         };
         let undo_inverse = apply_ops(wb, &ops)?;
         self.redo.pop();
-        self.undo.push(undo_inverse);
+        self.push_undo(undo_inverse);
         Ok(Some(ops))
     }
 }

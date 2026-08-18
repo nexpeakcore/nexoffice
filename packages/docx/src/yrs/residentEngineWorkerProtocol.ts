@@ -8,6 +8,12 @@ import type { ResidentCaretPaintStyle } from './residentCaret';
 
 export type ResidentEngineWorkerRequest =
   | {
+      /** Hands over the compiled editing-core module; posted before any other request. */
+      id: number;
+      type: 'initWasm';
+      module: WebAssembly.Module;
+    }
+  | {
       id: number;
       type: 'bootstrap';
       snapshot: YrsResidentWorkerSnapshot;

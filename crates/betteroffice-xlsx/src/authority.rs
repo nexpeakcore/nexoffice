@@ -8,7 +8,7 @@ use xlsx_model::{
     DateSystem, DefinedName, ErrorValue, FreezePane, Hyperlink, MAX_COLS, MAX_ROWS, RowId, Sheet,
     SheetId, Stylesheet, Workbook as WorkbookModel,
 };
-use xlsx_ops::Op;
+use xlsx_ops::{MAX_UNDO_DEPTH, Op};
 use yrs::block::{
     BLOCK_GC_REF_NUMBER, BLOCK_ITEM_ANY_REF_NUMBER, BLOCK_ITEM_DELETED_REF_NUMBER,
     BLOCK_ITEM_TYPE_REF_NUMBER, BLOCK_SKIP_REF_NUMBER, ClientID,
@@ -532,6 +532,8 @@ impl WorkbookAuthority {
                 .map_err(|error| AuthorityError::InvalidUpdate(error.to_string()))?;
             self.undo_stack = undo.undo_stack().to_vec();
             self.redo_stack = undo.redo_stack().to_vec();
+            cap_history(&mut self.undo_stack);
+            cap_history(&mut self.redo_stack);
             Ok(())
         } else {
             self.doc
@@ -588,6 +590,8 @@ impl WorkbookAuthority {
         };
         self.undo_stack = undo.undo_stack().to_vec();
         self.redo_stack = undo.redo_stack().to_vec();
+        cap_history(&mut self.undo_stack);
+        cap_history(&mut self.redo_stack);
         drop(undo);
         if !applied {
             return Ok(None);
@@ -1125,6 +1129,8 @@ impl WorkbookAuthority {
                 self.history.undo.push(entry);
             }
         }
+        cap_history(&mut self.history.undo);
+        cap_history(&mut self.history.redo);
     }
 
     fn allocate_sheet_key(&mut self) -> String {
@@ -1186,6 +1192,15 @@ fn hydrate_doc(doc: &Doc, update: &[u8]) -> Result<(), String> {
     doc.transact_mut_with(HYDRATE_ORIGIN)
         .apply_update(update)
         .map_err(|error| error.to_string())
+}
+
+/// Drops the oldest entries beyond [`MAX_UNDO_DEPTH`]. The collaborative path
+/// keeps its history in the Yrs stacks rather than [`xlsx_ops::UndoStack`], so
+/// it needs the same cap or a long session retains every edit it ever made.
+fn cap_history<T>(stack: &mut Vec<T>) {
+    if stack.len() > MAX_UNDO_DEPTH {
+        stack.drain(..stack.len() - MAX_UNDO_DEPTH);
+    }
 }
 
 fn build_undo_manager(

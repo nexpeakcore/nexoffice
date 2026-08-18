@@ -5,6 +5,7 @@ import {
   createResidentEngineSession,
   type ResidentEngineSession,
 } from './residentEngineSession';
+import { preloadEditWasm } from './wasm/index';
 import {
   presentOffscreenPageBackBuffer,
   presentOffscreenPageBackBufferWithCaret,
@@ -67,6 +68,11 @@ scope.onmessage = (event: MessageEvent<ResidentEngineWorkerRequest>) => {
 };
 
 async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
+  if (request.type === 'initWasm') {
+    await preloadEditWasm(request.module);
+    reply({ id: request.id, ok: true });
+    return;
+  }
   if (request.type === 'destroy') {
     destroySession();
     return;
