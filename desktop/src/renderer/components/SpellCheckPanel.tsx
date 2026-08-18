@@ -16,23 +16,27 @@ export function SpellCheckPanel({ visible, getText, onClose }: SpellCheckPanelPr
 
   useEffect(() => {
     if (!visible) return
+    let canceled = false
     const refresh = () => {
       if (!spellCheckService.ready) return
-      const results = spellCheckService.check(getText())
-      setMisspelled(results.map((m) => m.word))
+      void spellCheckService.check(getText()).then((results) => {
+        if (!canceled) setMisspelled(results.map((m) => m.word))
+      })
     }
     refresh()
     const interval = setInterval(refresh, 2000)
-    return () => clearInterval(interval)
+    return () => {
+      canceled = true
+      clearInterval(interval)
+    }
   }, [visible, getText])
 
   const handleWordClick = (word: string) => {
     setSelectedWord((prev) => (prev === word ? null : word))
     if (!suggestions[word]) {
-      setSuggestions((prev) => ({
-        ...prev,
-        [word]: spellCheckService.suggest(word),
-      }))
+      void spellCheckService.suggest(word).then((words) => {
+        setSuggestions((prev) => (prev[word] ? prev : { ...prev, [word]: words }))
+      })
     }
   }
 

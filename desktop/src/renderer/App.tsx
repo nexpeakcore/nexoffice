@@ -169,11 +169,17 @@ export function App() {
       setMisspellings([])
       return
     }
+    let canceled = false
     const timer = setTimeout(() => {
       const text = proofingEditor()?.getText() ?? ''
-      setMisspellings(spellCheckService.check(text))
+      void spellCheckService.check(text).then((results) => {
+        if (!canceled) setMisspellings(results)
+      })
     }, 800)
-    return () => clearTimeout(timer)
+    return () => {
+      canceled = true
+      clearTimeout(timer)
+    }
   }, [spellLoading, spellError, hasProofing, proofingEditor, document?.path, editRevision, docStats?.words])
 
   const getEditorText = useCallback(() => proofingEditor()?.getText() ?? '', [proofingEditor])

@@ -134,10 +134,12 @@ impl PreservedSheetState {
 /// Undo-issued identity token: the preserved sheet state on both sides of one
 /// committed transaction. Only replaying history restores a sheet's package
 /// identity; a fresh add never inherits one.
+///
+/// Shared handles: only structural ops clone the state, via `Arc::make_mut`.
 #[derive(Clone)]
 struct PreservedStateHistory {
-    before: PreservedSheetState,
-    after: PreservedSheetState,
+    before: Arc<PreservedSheetState>,
+    after: Arc<PreservedSheetState>,
 }
 
 pub struct Workbook {
@@ -146,7 +148,7 @@ pub struct Workbook {
     pending_remote_updates: Vec<Vec<u8>>,
     model: WorkbookModel,
     source_package: Option<xlsx_parse::PreservedPackage>,
-    preserved: PreservedSheetState,
+    preserved: Arc<PreservedSheetState>,
     preserved_undo: Vec<PreservedStateHistory>,
     preserved_redo: Vec<PreservedStateHistory>,
     edited_since_open: bool,
@@ -271,7 +273,7 @@ impl Workbook {
             pending_remote_updates: Vec::new(),
             model,
             source_package,
-            preserved,
+            preserved: Arc::new(preserved),
             preserved_undo: Vec::new(),
             preserved_redo: Vec::new(),
             edited_since_open: false,
@@ -442,7 +444,7 @@ impl Workbook {
         self.undo.clear();
         self.preserved_undo.clear();
         self.preserved_redo.clear();
-        self.preserved.forget_shared_strings();
+        Arc::make_mut(&mut self.preserved).forget_shared_strings();
         self.authority.clear_history();
         self.proposals.clear();
         self.edited_since_open = true;
@@ -1085,7 +1087,7 @@ impl Workbook {
         retain_drawings(&before, &mut self.model);
         self.edited_since_open = true;
         self.restore_active_sheet(active_name.as_deref());
-        self.preserved.forget_shared_strings();
+        Arc::make_mut(&mut self.preserved).forget_shared_strings();
         self.proposals.clear();
         let result = self.rebuild_and_recalculate(options);
         let changed = changed_cells_between(&before, &self.model);
@@ -1628,11 +1630,7 @@ impl Workbook {
         let before = self.preserved.clone();
         let transaction = Transaction::new(vec![op], Provenance::User);
         self.undo.commit(&mut self.model, &transaction)?;
-        self.preserved_undo.push(PreservedStateHistory {
-            before,
-            after: self.preserved.clone(),
-        });
-        self.preserved_redo.clear();
+        self.push_preserved_history(before);
         self.edited_since_open = true;
         Ok(())
     }
@@ -1853,11 +1851,7 @@ impl Workbook {
         }
         self.apply_preserved_state_ops(ops);
         if let Some(before) = preserved_before {
-            self.preserved_undo.push(PreservedStateHistory {
-                before,
-                after: self.preserved.clone(),
-            });
-            self.preserved_redo.clear();
+            self.push_preserved_history(before);
         }
         self.edited_since_open = true;
         Ok(())
@@ -1894,11 +1888,7 @@ impl Workbook {
         }
         self.apply_preserved_state_ops(ops);
         if let Some(before) = preserved_before {
-            self.preserved_undo.push(PreservedStateHistory {
-                before,
-                after: self.preserved.clone(),
-            });
-            self.preserved_redo.clear();
+            self.push_preserved_history(before);
         }
         self.edited_since_open = true;
         Ok(())
@@ -1990,17 +1980,38 @@ impl Workbook {
     }
 
     fn apply_preserved_state_ops(&mut self, ops: &[Op]) {
+        // Cell edits — the overwhelming majority of committed ops — leave the
+        // preserved state untouched, so they must not trigger the copy that
+        // `Arc::make_mut` would perform while history still shares it.
+        if !ops.iter().any(affects_preserved_state) {
+            return;
+        }
+        let preserved = Arc::make_mut(&mut self.preserved);
         for op in ops {
             match *op {
-                Op::AddSheet { index, .. } => self.preserved.insert(index),
-                Op::RemoveSheet { index } => self.preserved.remove(index),
+                Op::AddSheet { index, .. } => preserved.insert(index),
+                Op::RemoveSheet { index } => preserved.remove(index),
                 Op::InsertRows { sheet, .. }
                 | Op::DeleteRows { sheet, .. }
                 | Op::InsertCols { sheet, .. }
-                | Op::DeleteCols { sheet, .. } => self.preserved.shift(sheet, op),
+                | Op::DeleteCols { sheet, .. } => preserved.shift(sheet, op),
                 _ => {}
             }
         }
+    }
+
+    /// Records one preserved-state history entry, dropping the oldest beyond
+    /// the op stack's depth so the two stay index-aligned.
+    fn push_preserved_history(&mut self, before: Arc<PreservedSheetState>) {
+        self.preserved_undo.push(PreservedStateHistory {
+            before,
+            after: Arc::clone(&self.preserved),
+        });
+        if self.preserved_undo.len() > xlsx_ops::MAX_UNDO_DEPTH {
+            self.preserved_undo
+                .drain(..self.preserved_undo.len() - xlsx_ops::MAX_UNDO_DEPTH);
+        }
+        self.preserved_redo.clear();
     }
 
     fn restore_active_sheet(&mut self, previous_name: Option<&str>) {
@@ -3110,6 +3121,19 @@ fn validate_axis(axis: &str, at: u32, count: u32, limit: u32) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Whether an op can move or renumber the per-cell shared-string provenance.
+fn affects_preserved_state(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::AddSheet { .. }
+            | Op::RemoveSheet { .. }
+            | Op::InsertRows { .. }
+            | Op::DeleteRows { .. }
+            | Op::InsertCols { .. }
+            | Op::DeleteCols { .. }
+    )
 }
 
 fn invalidates_proposals(op: &Op) -> bool {

@@ -408,20 +408,44 @@ const FONT_ASSET_URLS: Record<string, () => URL> = {
   'NotoSerifSC-Regular.otf': () => new URL('../assets/NotoSerifSC-Regular.otf', import.meta.url),
 };
 
-const bytesCache = new Map<string, Promise<ArrayBuffer>>();
+interface FontBytesEntry {
+  promise: Promise<ArrayBuffer>;
+  /** Resolved byte length; 0 while the fetch is still in flight. */
+  size: number;
+}
+
+/** Byte budget for cached font bytes: one CJK face plus a full Latin set. */
+const BYTES_CACHE_BUDGET = 24 * 1024 * 1024;
+
+const bytesCache = new Map<string, FontBytesEntry>();
+let cachedBytes = 0;
+
+/** Drop least-recently-used resolved entries until the budget is met. */
+function trimBytesCache(keep: string): void {
+  if (cachedBytes <= BYTES_CACHE_BUDGET) return;
+  for (const [file, entry] of bytesCache) {
+    if (cachedBytes <= BYTES_CACHE_BUDGET) return;
+    // In-flight entries have no known size and concurrent callers are already
+    // holding their promise; leave them until they resolve.
+    if (file === keep || entry.size === 0) continue;
+    bytesCache.delete(file);
+    cachedBytes -= entry.size;
+  }
+}
 
 /**
- * Lazily fetch the raw sfnt bytes for a face. The fetch is same-origin: the
- * asset URL is derived with `new URL(..., import.meta.url)` so bundlers
- * (Vite) emit the file and serve it alongside the module. Results are cached
- * per face (the same promise is returned for concurrent callers, and the
- * same `ArrayBuffer` instance is handed to every consumer — byte-identity
- * lets registries deduplicate registrations); a failed fetch is evicted so
- * it can be retried.
+ * Lazily fetch a face's raw sfnt bytes, same-origin via
+ * `new URL(..., import.meta.url)` so bundlers emit the asset. Concurrent
+ * callers share one promise; the cache is bounded by {@link BYTES_CACHE_BUDGET}.
  */
 export function loadBundledFontBytes(face: BundledFontFace): Promise<ArrayBuffer> {
   const cached = bytesCache.get(face.file);
-  if (cached) return cached;
+  if (cached) {
+    // Re-insert so Map iteration order stays least-recently-used first.
+    bytesCache.delete(face.file);
+    bytesCache.set(face.file, cached);
+    return cached.promise;
+  }
   const resolveUrl = FONT_ASSET_URLS[face.file];
   if (!resolveUrl) {
     return Promise.reject(new Error(`Unknown bundled font asset: ${face.file}`));
@@ -433,11 +457,34 @@ export function loadBundledFontBytes(face: BundledFontFace): Promise<ArrayBuffer
     }
     return response.arrayBuffer();
   });
-  promise.catch(() => {
-    if (bytesCache.get(face.file) === promise) bytesCache.delete(face.file);
-  });
-  bytesCache.set(face.file, promise);
+  const entry: FontBytesEntry = { promise, size: 0 };
+  promise.then(
+    (bytes) => {
+      if (bytesCache.get(face.file) !== entry) return;
+      entry.size = bytes.byteLength;
+      cachedBytes += entry.size;
+      trimBytesCache(face.file);
+    },
+    () => {
+      if (bytesCache.get(face.file) === entry) bytesCache.delete(face.file);
+    }
+  );
+  bytesCache.set(face.file, entry);
   return promise;
+}
+
+/** Byte loader carrying the face's asset identity. */
+export interface BundledFaceLoader {
+  (): Promise<ArrayBuffer>;
+  /** Asset filename — stable across cache eviction, unlike buffer identity. */
+  faceKey: string;
+}
+
+/** Loader for a face, tagged with {@link BundledFaceLoader.faceKey} so registries can dedupe across eviction. */
+export function bundledFaceLoader(face: BundledFontFace): BundledFaceLoader {
+  const load = () => loadBundledFontBytes(face);
+  load.faceKey = face.file;
+  return load;
 }
 
 const registeredFaces = new Map<string, Promise<void>>();

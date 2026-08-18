@@ -168,6 +168,123 @@ export function buildMirrorPage(
   return pageEl;
 }
 
+/**
+ * Cheap semantic mirror for a page outside the bitmap window: content in
+ * reading order with no geometry, so off-window pages stay in the
+ * accessibility tree. See {@link buildMirrorPage} for the positioned mirror
+ * geometry consumers require.
+ */
+export function buildMirrorPageOutline(
+  page: DisplayPage,
+  options: BuildMirrorPageOptions = {}
+): HTMLElement {
+  const doc = options.document ?? document;
+  const pageEl = doc.createElement('div');
+  pageEl.className = MIRROR_CLASS_NAMES.page;
+  pageEl.setAttribute('role', 'document');
+  if (options.labels?.page) pageEl.setAttribute('aria-label', options.labels.page);
+  pageEl.dataset.pageIndex = String(page.pageIndex);
+  pageEl.dataset.mirrorOutline = 'true';
+  pageEl.style.opacity = '0';
+  pageEl.style.pointerEvents = 'none';
+
+  const contentEl = doc.createElement('div');
+  contentEl.className = MIRROR_CLASS_NAMES.content;
+  appendOutlineBlocks(contentEl, page.primitives, doc);
+  pageEl.appendChild(contentEl);
+
+  for (const area of page.noteAreas ?? []) {
+    const el = doc.createElement('section');
+    el.className = MIRROR_CLASS_NAMES.notes;
+    el.dataset.noteKind = area.kind ?? 'footnote';
+    if (area.sectionId) el.dataset.sectionId = area.sectionId;
+    appendOutlineBlocks(el, area.primitives ?? [], doc);
+    if (el.childNodes.length > 0) pageEl.appendChild(el);
+  }
+
+  for (const region of [page.header, page.footer]) {
+    if (!region) continue;
+    const el = doc.createElement('div');
+    el.className =
+      region.kind === 'header' ? MIRROR_CLASS_NAMES.header : MIRROR_CLASS_NAMES.footer;
+    el.dataset.hfRid = region.rId;
+    const label = region.kind === 'header' ? options.labels?.header : options.labels?.footer;
+    if (label) el.setAttribute('aria-label', label);
+    appendOutlineBlocks(el, region.primitives, doc);
+    if (el.childNodes.length > 0) pageEl.appendChild(el);
+  }
+
+  return pageEl;
+}
+
+// One `.layout-paragraph` per block, holding the block's content in reading
+// order: consecutive plain runs coalesce into one text node, while anything a
+// screen reader announces in its own right (link, image, shape) keeps a node.
+function appendOutlineBlocks(
+  container: HTMLElement,
+  primitives: DisplayPrimitive[],
+  doc: Document
+): void {
+  const blocks = new Map<number | string, BlockGroup['prims']>();
+  for (const p of primitives) {
+    const blockId = p.kind === 'line' ? undefined : (p.blockKey ?? p.blockId);
+    if (blockId === undefined) continue;
+    const table = p.table;
+    const key =
+      table?.tableId !== undefined ? `table:${table.tableId}#${table.rowStart ?? 0}` : blockId;
+    const prims = blocks.get(key);
+    if (prims) prims.push(p as BlockGroup['prims'][number]);
+    else blocks.set(key, [p as BlockGroup['prims'][number]]);
+  }
+
+  for (const prims of blocks.values()) {
+    const blockEl = doc.createElement('div');
+    blockEl.className = MIRROR_CLASS_NAMES.block;
+    let pending = '';
+    const flushText = (): void => {
+      if (pending.length === 0) return;
+      blockEl.appendChild(doc.createTextNode(pending));
+      pending = '';
+    };
+    for (const p of inLogicalOrder(prims)) {
+      if (p.kind === 'text' || p.kind === 'glyphRun') {
+        if (p.listMarker) continue;
+        if (!p.href) {
+          pending += p.text;
+          continue;
+        }
+        flushText();
+        const linkEl = doc.createElement('a');
+        linkEl.className = MIRROR_CLASS_NAMES.text;
+        linkEl.textContent = p.text;
+        applyHrefAttrs(linkEl, p);
+        blockEl.appendChild(linkEl);
+        continue;
+      }
+      if (p.kind === 'image' || p.kind === 'shape') {
+        flushText();
+        const el = p.kind === 'image' && p.href ? doc.createElement('a') : doc.createElement('div');
+        el.className = p.kind === 'image' ? MIRROR_CLASS_NAMES.image : MIRROR_CLASS_NAMES.shape;
+        if (p.decorative) {
+          el.setAttribute('aria-hidden', 'true');
+        } else {
+          el.setAttribute('role', 'img');
+          if (p.kind === 'image' && p.altText) el.setAttribute('aria-label', p.altText);
+        }
+        if (p.kind === 'image') {
+          applyHrefAttrs(el, p);
+          el.dataset.relId = p.relId;
+        }
+        blockEl.appendChild(el);
+      }
+    }
+    flushText();
+    if (blockEl.childNodes.length === 0) continue;
+    stampDocRange(blockEl, prims);
+    container.appendChild(blockEl);
+  }
+}
+
 // one HfRegion → its painter-contract wrapper. children are placed with a
 // -region.y offset so the display list's page coordinates land at the same
 // page-local position once the wrapper's own top is added back (the harvest

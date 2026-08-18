@@ -82,14 +82,15 @@ export function CanvasPagedArea({
   );
 }
 
-// Pages within this many pages of the viewport keep live bitmaps; everything
-// farther keeps its canvas ELEMENT (stable identity, exact geometry for
-// pointer routing/overlays/scroll math) but releases its backing store. Only
-// pixels are windowed — never DOM structure.
+// Pages within this many pages of the viewport keep live bitmaps and the
+// positioned a11y mirror; everything farther keeps its canvas ELEMENT (stable
+// identity, exact geometry for pointer routing/overlays/scroll math) but
+// releases its backing store and drops to a text-only outline mirror. Page
+// structure and accessible text are never windowed away.
 const PAGE_WINDOW_BUFFER = 2;
 // Documents at or below this page count never window — zero behavior change
-// for ordinary documents.
-const PAGE_WINDOW_MIN_PAGES = 12;
+// for short documents.
+const PAGE_WINDOW_MIN_PAGES = 4;
 // A page already mounted stays mounted until it drifts one page beyond the
 // mount band, so slow scrolling at a boundary cannot thrash mount/unmount.
 const PAGE_WINDOW_HYSTERESIS = 1;
@@ -195,11 +196,12 @@ export function CanvasPagesView({
   } | null>(null);
 
   // ===========================================================================
-  // Page windowing: only pages near the viewport hold rastered bitmaps. Every
-  // page keeps its canvas element (stable keys and CSS-sized boxes, so scroll
-  // geometry, pointer routing, and canvas-rect overlays are untouched); an
-  // off-window page's backing store is released (attributes zeroed on the DOM
-  // path, offscreen buffer zeroed by the worker) and repainted on re-entry.
+  // Page windowing: only pages near the viewport hold rastered bitmaps and the
+  // positioned a11y mirror. Every page keeps its canvas element (stable keys
+  // and CSS-sized boxes, so scroll geometry, pointer routing, and canvas-rect
+  // overlays are untouched); an off-window page's backing store is released
+  // (attributes zeroed on the DOM path, offscreen buffer zeroed by the worker)
+  // and its mirror drops to a text-only outline, both restored on re-entry.
   // The window moves only with scrolling/resize/zoom, never with document
   // invalidation.
   // ===========================================================================
@@ -240,16 +242,11 @@ export function CanvasPagesView({
     }
     const host = innerHostRef.current;
     if (!host) return;
-    const scrollParent = findVerticalScrollParentOrRoot(host);
-    const scrollTarget: EventTarget =
-      scrollParent === document.scrollingElement || scrollParent === document.documentElement
-        ? window
-        : scrollParent;
     let rafId: number | null = null;
     const recompute = (): void => {
       rafId = null;
       const column = host.firstElementChild as HTMLElement | null;
-      if (!column || !scrollParent.isConnected) {
+      if (!column || !host.isConnected) {
         // unmeasurable — fail open (all pages live) so replay is never
         // deferred forever
         setPageWindow(
@@ -257,11 +254,17 @@ export function CanvasPagesView({
         );
         return;
       }
+      // Resolved per-recompute: at first mount the editor's scroll container
+      // is not yet scrollable (the walk requires overflow height), so a
+      // one-time resolution here permanently falls back to the root and the
+      // window never follows the real scroller.
+      const scrollParent = findVerticalScrollParentOrRoot(host);
+      const isRoot =
+        scrollParent === document.scrollingElement || scrollParent === document.documentElement;
       // client rects are viewport-relative: the visible band starts at the
       // scroller's client top for an element scroller, at 0 for the root
-      const viewportTop = scrollTarget === window ? 0 : scrollParent.getBoundingClientRect().top;
-      const viewportHeight =
-        scrollTarget === window ? window.innerHeight : scrollParent.clientHeight;
+      const viewportTop = isRoot ? 0 : scrollParent.getBoundingClientRect().top;
+      const viewportHeight = isRoot ? window.innerHeight : scrollParent.clientHeight;
       const columnRect = column.getBoundingClientRect();
       const viewTop = viewportTop - columnRect.top;
       const viewBottom = viewTop + viewportHeight;
@@ -286,11 +289,13 @@ export function CanvasPagesView({
       if (rafId === null) rafId = requestAnimationFrame(recompute);
     };
     recompute();
-    scrollTarget.addEventListener('scroll', schedule, { passive: true });
+    // Capture-phase on window: scroll events do not bubble off an element
+    // scroller, and which element scrolls the editor can change after mount.
+    window.addEventListener('scroll', schedule, { capture: true, passive: true });
     window.addEventListener('resize', schedule);
     return () => {
       if (rafId !== null) cancelAnimationFrame(rafId);
-      scrollTarget.removeEventListener('scroll', schedule);
+      window.removeEventListener('scroll', schedule, { capture: true });
       window.removeEventListener('resize', schedule);
     };
   }, [windowingEnabled, pageOffsets]);
@@ -516,9 +521,9 @@ export function CanvasPagesView({
           const surfaceKey = `${pageKey}:${offscreenEligible && !offscreenFailed ? 'offscreen' : 'dom'}`;
           return (
             // per-page wrapper so the mirror positions 1:1 over its canvas.
-            // Every page keeps its full DOM (canvas element, a11y mirror, SDT
-            // overlay) — the page window releases only bitmap backing stores,
-            // so the accessible document and page geometry never shrink.
+            // Every page keeps its wrapper and canvas element (stable page
+            // geometry); the page window releases the bitmap backing store and
+            // demotes the mirror to a text-only outline off-window.
             <div key={surfaceKey} className="canvas-page" style={{ position: 'relative' }}>
               <canvas
                 ref={(el) => {
@@ -534,7 +539,7 @@ export function CanvasPagesView({
                   boxShadow: '0 1px 3px var(--doc-shadow)',
                 }}
               />
-              <CanvasPageMirror page={page} zoom={zoom} />
+              <CanvasPageMirror page={page} zoom={zoom} live={!windowPending && pageInWindow(i)} />
               {interactive ? <CanvasInteractiveOverlay page={page} zoom={zoom} /> : null}
             </div>
           );
