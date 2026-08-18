@@ -5,7 +5,10 @@
  * painted. The mirror is invisible (opacity 0) and inert to the pointer
  * (pointer-events none) but deliberately NOT aria-hidden — it is the
  * accessible content of the canvas. Rebuilt whenever the page's display list
- * changes — the same trigger that re-rasters the canvas.
+ * changes — the same trigger that re-rasters the canvas. Windowed alongside
+ * the canvas bitmap: an off-window page holds an empty mirror host (a large
+ * document's full mirror is hundreds of thousands of DOM nodes) and rebuilds
+ * when it re-enters the window.
  *
  * Focus never lands here: the hidden input remains the editing surface.
  */
@@ -22,7 +25,20 @@ import { useTranslation } from '../../i18n';
  */
 const MIRROR_REBUILD_DELAY_MS = 200;
 
-export function CanvasPageMirror({ page, zoom = 1 }: { page: DisplayPage; zoom?: number }) {
+export function CanvasPageMirror({
+  page,
+  zoom = 1,
+  live = true,
+}: {
+  page: DisplayPage;
+  zoom?: number;
+  /**
+   * Whether the page is inside the page window. An off-window mirror releases
+   * its subtree — the same policy the canvas applies to its backing store —
+   * and rebuilds immediately on re-entry.
+   */
+  live?: boolean;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
   const builtOnceRef = useRef(false);
@@ -30,6 +46,11 @@ export function CanvasPageMirror({ page, zoom = 1 }: { page: DisplayPage; zoom?:
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    if (!live) {
+      builtOnceRef.current = false;
+      host.replaceChildren();
+      return;
+    }
     const build = (): void => {
       const mirror = buildMirrorPage(page, {
         labels: {
@@ -50,7 +71,7 @@ export function CanvasPageMirror({ page, zoom = 1 }: { page: DisplayPage; zoom?:
     }
     const timer = setTimeout(build, MIRROR_REBUILD_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [page, t]);
+  }, [page, t, live]);
 
   return (
     <div
