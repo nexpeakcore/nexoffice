@@ -9,4 +9,6 @@ Authoritative text measurement now reports one paint slice per run instead of on
 
 Justification counts its space pool in characters now rather than in space-only paint items, which is the same number before coalescing and the right one after.
 
-On a 250-page document of plain prose the display list drops from 229MB to 56MB, the renderer's wasm memory from 2.2GB to 0.5GB, its JS heap from 690MB to 230MB, and the layout pass runs in 2.3s instead of 3.9s.
+Each placed glyph also carried a `logicalOrder` and a `bidiLevel` that only ever repeated the values on its own glyph run, and nothing read them. They are gone from the glyph contract.
+
+On a 250-page document of plain prose the display list drops from 229MB to 39MB, the renderer's wasm memory from 2174MB to 440-556MB, its JS heap from 690MB to 154-196MB, and the layout pass runs in 2.3s instead of 3.9s.

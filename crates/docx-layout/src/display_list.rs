@@ -724,10 +724,6 @@ pub struct PlacedGlyph {
     /// hit-testing and the a11y mirror read the real run width off the glyphs
     /// instead of estimating a uniform trailing advance.
     pub advance: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub logical_order: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bidi_level: Option<u8>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -6265,7 +6261,6 @@ fn emit_text_segment(
             &word_spacing,
             bidi_level,
             exact_advance.then_some(width),
-            logical_order,
             &attrs,
             &color,
         ),
@@ -6412,7 +6407,6 @@ fn try_emit_glyph_runs(
     word_spacing: &Option<Number>,
     bidi_level: u8,
     exact_width: Option<f64>,
-    logical_order: Option<u64>,
     attrs: &DocAttrs,
     color: &str,
 ) -> bool {
@@ -6564,8 +6558,6 @@ fn try_emit_glyph_runs(
                 y: round3(baseline - g.y_offset as f64),
                 cluster: g.cluster,
                 advance: round3(advance),
-                logical_order,
-                bidi_level: exact_width.map(|_| bidi_level),
             });
             acc += advance;
         }
