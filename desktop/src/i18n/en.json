@@ -56,7 +56,7 @@
     },
     "help": {
       "label": "Help",
-      "documentation": "NexOffice Documentation",
+      "website": "NexOffice on the Web",
       "checkForUpdates": "Check for Updates…",
       "about": "About NexOffice"
     }

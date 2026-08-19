@@ -56,7 +56,7 @@
     },
     "help": {
       "label": "帮助",
-      "documentation": "NexOffice 文档",
+      "website": "网上的 NexOffice",
       "checkForUpdates": "检查更新…",
       "about": "关于 NexOffice"
     }

@@ -56,7 +56,7 @@
     },
     "help": {
       "label": "Trợ giúp",
-      "documentation": "Tài liệu hướng dẫn NexOffice",
+      "website": "NexOffice trên web",
       "checkForUpdates": "Kiểm tra bản cập nhật…",
       "about": "Giới thiệu NexOffice"
     }
