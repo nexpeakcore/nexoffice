@@ -26,6 +26,8 @@ import type { LocaleCode } from '../i18n/index.js'
 const api = {
   platform: (): Promise<NodeJS.Platform> => ipcRenderer.invoke(IPC.platform),
 
+  version: (): Promise<string> => ipcRenderer.invoke(IPC.version),
+
   getLocale: (): Promise<LocaleCode> => ipcRenderer.invoke(IPC.locale),
 
   onLocaleChanged: (handler: (locale: LocaleCode) => void): (() => void) => {

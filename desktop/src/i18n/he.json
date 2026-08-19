@@ -56,7 +56,7 @@
     },
     "help": {
       "label": "עזרה",
-      "documentation": "תיעוד NexOffice",
+      "website": "NexOffice באינטרנט",
       "checkForUpdates": "בדוק עדכונים…",
       "about": "אודות NexOffice"
     }

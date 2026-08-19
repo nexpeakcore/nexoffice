@@ -511,6 +511,7 @@ function registerIpc(): void {
   })
 
   ipcMain.handle(IPC.platform, () => process.platform)
+  ipcMain.handle(IPC.version, () => app.getVersion())
 
   ipcMain.handle(IPC.locale, () => activeLocale)
 

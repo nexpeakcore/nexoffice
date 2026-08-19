@@ -272,9 +272,9 @@ export function buildMenu(context: MenuContext): Menu {
       label: t('menu.help.label'),
       submenu: [
         {
-          label: t('menu.help.documentation'),
+          label: t('menu.help.website'),
           click: () => {
-            void shell.openExternal('https://betteroffice.dev')
+            void shell.openExternal('https://nexpeak.net')
           },
         },
         ...(isMac

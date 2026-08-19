@@ -56,7 +56,7 @@
     },
     "help": {
       "label": "Bantuan",
-      "documentation": "Dokumentasi NexOffice",
+      "website": "NexOffice di web",
       "checkForUpdates": "Periksa Pembaruan…",
       "about": "Tentang NexOffice"
     }
