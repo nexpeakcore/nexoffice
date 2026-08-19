@@ -14,6 +14,7 @@ export const IPC = {
   confirmSaveRefused: 'dialog:confirmSaveRefused',
   readFile: 'fs:readFile',
   platform: 'app:platform',
+  version: 'app:version',
   menuAction: 'menu:action',
   webEditAction: 'edit:webAction',
   documentKind: 'app:documentKind',

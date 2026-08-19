@@ -21,6 +21,7 @@ interface StartScreenProps {
 export function StartScreen({ onNew, onOpen, onOpenRecent }: StartScreenProps) {
   const { t } = useI18n()
   const [recents, setRecents] = useState<RecentFile[]>([])
+  const [version, setVersion] = useState('')
 
   const refresh = useCallback(() => {
     void window.nexoffice.recentsList().then(setRecents)
@@ -31,6 +32,10 @@ export function StartScreen({ onNew, onOpen, onOpenRecent }: StartScreenProps) {
     window.addEventListener('focus', refresh)
     return () => window.removeEventListener('focus', refresh)
   }, [refresh])
+
+  useEffect(() => {
+    void window.nexoffice.version().then(setVersion)
+  }, [])
 
   const remove = useCallback((path: string) => {
     void window.nexoffice.recentsRemove(path).then(setRecents)
@@ -54,7 +59,19 @@ export function StartScreen({ onNew, onOpen, onOpenRecent }: StartScreenProps) {
             <span className="text-neutral-900">Office</span>
           </h1>
         </div>
-        <p className="mt-2 text-sm text-neutral-500">{t('app.empty.subtitle')}</p>
+        <p className="mt-2 flex items-center gap-2 text-sm text-neutral-500">
+          <span>{t('app.empty.subtitle')}</span>
+          {version && (
+            <button
+              type="button"
+              onClick={() => void window.nexoffice.checkForUpdates()}
+              title={t('menu.app.checkForUpdates')}
+              className="no-drag text-xs text-neutral-400 transition hover:text-neutral-600"
+            >
+              v{version}
+            </button>
+          )}
+        </p>
 
         <div className="mt-8 grid grid-cols-3 gap-3">
           {newKinds.map(({ kind, label }) => (
