@@ -21,6 +21,23 @@ const loadingFonts = new Map<string, Promise<boolean>>();
 const loadedFaces = new Set<string>();
 const loadingFaces = new Map<string, Promise<boolean>>();
 
+// What a buffer-registered face (a DOCX-embedded font) holds onto: an object
+// URL over the font bytes and the <style> element naming it. Neither is
+// reachable from the face key alone, so releasing one needs this record —
+// see releaseBufferFontFaces. URL-registered faces (the `fonts` prop) are
+// deliberately absent: they belong to the consumer, not to a document.
+interface BufferFaceResources {
+  family: string;
+  styleEl: HTMLStyleElement;
+  objectUrl: string;
+}
+const bufferFaces = new Map<string, BufferFaceResources>();
+
+function disposeBufferFace(resources: BufferFaceResources): void {
+  resources.styleEl.remove();
+  URL.revokeObjectURL(resources.objectUrl);
+}
+
 // Callbacks to notify when fonts are loaded
 const loadCallbacks = new Set<(fonts: string[]) => void>();
 
@@ -599,6 +616,7 @@ export async function loadFontFromBuffer(
 
   const loadPromise = (async (): Promise<boolean> => {
     isLoadingAny = true;
+    let resources: BufferFaceResources | null = null;
     try {
       const blob = new Blob([buffer], { type: 'font/ttf' });
       const url = URL.createObjectURL(blob);
@@ -614,13 +632,19 @@ export async function loadFontFromBuffer(
       }
     `;
       document.head.appendChild(styleEl);
+      resources = { family: normalizedFamily, styleEl, objectUrl: url };
 
       await waitForFontAvailable(normalizedFamily, 3000);
 
+      // Only a face that is now reachable gets recorded; a failed one is
+      // torn down below rather than left holding its bytes for the session.
+      bufferFaces.set(key, resources);
+      resources = null;
       markFaceLoaded(key, normalizedFamily);
 
       return true;
     } catch (error) {
+      if (resources) disposeBufferFace(resources);
       reportFontError(error, `failed to load "${normalizedFamily}" from buffer`);
       return false;
     } finally {
@@ -633,6 +657,54 @@ export async function loadFontFromBuffer(
 
   loadingFaces.set(key, loadPromise);
   return loadPromise;
+}
+
+/**
+ * Release every buffer-registered face of the named families — the fonts a
+ * DOCX embedded in itself. Removes each `@font-face` rule and revokes the
+ * object URL over the font bytes, so closing a document gives back what its
+ * embedded fonts held instead of keeping them for the session.
+ *
+ * Only faces registered through {@link loadFontFromBuffer} are touched:
+ * consumer-hosted faces (the `fonts` prop, `loadFontFromUrl`) outlive any one
+ * document and are left alone, as are Google-fetched families.
+ *
+ * A family whose last buffer face is released also loses its "loaded" and
+ * "registered here" markers, so re-opening a document that embeds it
+ * registers the bytes again rather than trusting a face that is gone.
+ *
+ * @param families - Family names to release, e.g. the set `loadEmbeddedFonts` returned
+ *
+ * @public
+ */
+export function releaseBufferFontFaces(families: Iterable<string>): void {
+  const targets = new Set<string>();
+  for (const family of families) targets.add(family.trim());
+  if (targets.size === 0) return;
+
+  for (const [key, resources] of [...bufferFaces]) {
+    if (!targets.has(resources.family)) continue;
+    disposeBufferFace(resources);
+    bufferFaces.delete(key);
+    loadedFaces.delete(key);
+  }
+
+  // Family-wide markers only drop once no face of that family survives —
+  // a family can also carry URL-registered faces, whose provenance must not
+  // be discarded along with the document's.
+  for (const family of targets) {
+    const prefix = `${family}|`;
+    let survives = false;
+    for (const key of loadedFaces) {
+      if (key.startsWith(prefix)) {
+        survives = true;
+        break;
+      }
+    }
+    if (survives) continue;
+    loadedFonts.delete(family);
+    registeredFamilies.delete(family);
+  }
 }
 
 function guessFontFormat(src: string): string {

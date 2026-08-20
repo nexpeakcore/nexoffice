@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Document } from '@betteroffice/docx/types/document';
 import type { Comment } from '@betteroffice/docx/types/content';
 import type { YrsDocxHost } from '@betteroffice/docx/yrs';
 import {
   loadEmbeddedFonts,
+  releaseBufferFontFaces,
   loadDocumentFonts,
   loadFontsWithMapping,
   getRenderableDocumentFonts,
@@ -74,6 +75,19 @@ export function useDocumentLoader({
   const [yrsSeedBytes, setYrsSeedBytes] = useState<Uint8Array | null>(null);
   const [yrsSeedGeneration, setYrsSeedGeneration] = useState(0);
   const [loadGeneration] = useState(() => new DocumentLoadGeneration());
+  // Families the open document embedded in itself. Each holds an object URL
+  // over its font bytes plus an `@font-face` rule, neither of which the
+  // browser reclaims on its own — so the editor hands them back when the
+  // document is replaced or the editor goes away.
+  const embeddedFacesRef = useRef<Set<string> | null>(null);
+  useEffect(
+    () => () => {
+      const families = embeddedFacesRef.current;
+      embeddedFacesRef.current = null;
+      if (families) releaseBufferFontFaces(families);
+    },
+    []
+  );
 
   const loadParsedDocument = useCallback(
     (doc: Document, seedBytes?: Uint8Array) => {
@@ -136,11 +150,24 @@ export function useDocumentLoader({
       setDocumentFonts(
         [...new Map(documentFonts.map((font) => [font.name.toLowerCase(), font])).values()]
       );
+      // Give back the previous document's embedded faces before registering
+      // this one's. Released first, not after: the two documents may embed
+      // the same family, and a face already registered under that name would
+      // make this load a no-op — then the release would take it away.
+      const previousEmbedded = embeddedFacesRef.current;
+      embeddedFacesRef.current = null;
+      if (previousEmbedded) releaseBufferFontFaces(previousEmbedded);
       void loadEmbeddedFonts(
         doc.package.fontTable,
         host.embeddedFonts,
         host.fontTableRelationshipsXml
       )
+        .then((families) => {
+          // A load that was superseded mid-flight owns faces nothing will
+          // ever draw; release them rather than record them.
+          if (loadGeneration.isCurrent(generation)) embeddedFacesRef.current = families;
+          else releaseBufferFontFaces(families);
+        })
         .catch((error) => {
           console.warn('Failed to load embedded document fonts:', error);
         })

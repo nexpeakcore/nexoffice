@@ -60,6 +60,7 @@ export {
   loadFont,
   loadFonts,
   loadFontFromBuffer,
+  releaseBufferFontFaces,
   loadFontFromUrl,
   loadFontDefinitions,
   loadFontWithMapping,

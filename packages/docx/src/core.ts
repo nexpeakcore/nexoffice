@@ -79,6 +79,7 @@ export {
   loadFont,
   loadFonts,
   loadFontFromBuffer,
+  releaseBufferFontFaces,
   isFontLoaded,
   isLoading as isFontsLoading,
   getLoadedFonts,
