@@ -22,6 +22,7 @@ export interface MenuContext {
   onSelectLocale: (locale: LocaleCode) => void
   onCheckForUpdates: () => void
   onShowAbout: () => void
+  onShowProcesses: () => void
 }
 
 const isMac = process.platform === 'darwin'
@@ -277,6 +278,8 @@ export function buildMenu(context: MenuContext): Menu {
             void shell.openExternal('https://nexpeak.net')
           },
         },
+        { type: 'separator' },
+        { label: t('menu.help.processes'), click: context.onShowProcesses },
         ...(isMac
           ? []
           : ([

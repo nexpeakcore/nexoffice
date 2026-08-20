@@ -57,6 +57,7 @@
     "help": {
       "label": "Hilfe",
       "website": "NexOffice im Web",
+      "processes": "Prozessmonitor",
       "checkForUpdates": "Nach Updates suchen…",
       "about": "Über NexOffice"
     }
@@ -77,6 +78,13 @@
     "about": {
       "title": "Über NexOffice",
       "version": "Version {version}"
+    },
+    "processes": {
+      "title": "Prozessmonitor",
+      "message": "Speicher nach Prozess",
+      "refresh": "Aktualisieren",
+      "copy": "Kopieren",
+      "close": "Schließen"
     },
     "unsaved": {
       "message": "Möchten Sie die Änderungen an {name} speichern?",

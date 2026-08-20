@@ -12,8 +12,12 @@ const service = spellCheckService as unknown as {
   ready: boolean
   inline: Engine | null
   fallback: Promise<void> | null
+  starting: Promise<void> | null
+  epoch: number
+  dispose(): void
   check(text: string): Promise<Misspelling[]>
   suggest(word: string): Promise<string[]>
+  loadInline(): Promise<void>
 }
 
 const engine: Engine = {
@@ -61,5 +65,50 @@ describe('spellCheckService', () => {
     service.fallback = Promise.resolve()
 
     expect(await service.check('teh')).toEqual([])
+  })
+
+  test('dispose retires the dictionary and later checks answer empty', async () => {
+    service.ready = true
+    service.inline = engine
+    service.starting = Promise.resolve()
+
+    service.dispose()
+
+    expect(service.ready).toBe(false)
+    expect(service.inline).toBeNull()
+    expect(service.starting).toBeNull()
+    expect(service.fallback).toBeNull()
+    expect(await service.check('teh')).toEqual([])
+  })
+
+  test('an inline load in flight at dispose cannot resurrect the engine', async () => {
+    const savedFetch = globalThis.fetch
+    globalThis.fetch = (() =>
+      Promise.resolve(new Response('SET UTF-8\n'))) as unknown as typeof globalThis.fetch
+    try {
+      const load = service.loadInline()
+      service.dispose()
+      await load
+
+      expect(service.inline).toBeNull()
+      expect(service.ready).toBe(false)
+    } finally {
+      globalThis.fetch = savedFetch
+    }
+  })
+
+  test('an undisturbed inline load installs the engine', async () => {
+    const savedFetch = globalThis.fetch
+    globalThis.fetch = (() =>
+      Promise.resolve(new Response('SET UTF-8\n'))) as unknown as typeof globalThis.fetch
+    try {
+      await service.loadInline()
+
+      expect(service.inline).not.toBeNull()
+      expect(service.ready).toBe(true)
+    } finally {
+      globalThis.fetch = savedFetch
+      service.dispose()
+    }
   })
 })

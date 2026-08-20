@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 import {
   ALL_EDIT_CAPABILITIES,
   sameEditCapabilities,
@@ -12,9 +12,9 @@ import { SpellCheckPanel } from './components/SpellCheckPanel.js'
 import { AgentPanel } from './components/AgentPanel.js'
 import { StartScreen } from './components/StartScreen.js'
 import { UpdateChip } from './components/UpdateChip.js'
-import { DocxEditorView, type DocxEditorViewRef } from './editors/DocxEditorView.js'
-import { PptxEditorView, type PptxEditorViewRef } from './editors/PptxEditorView.js'
-import { XlsxEditorView, type XlsxEditorViewRef } from './editors/XlsxEditorView.js'
+import type { DocxEditorViewRef } from './editors/DocxEditorView.js'
+import type { PptxEditorViewRef } from './editors/PptxEditorView.js'
+import type { XlsxEditorViewRef } from './editors/XlsxEditorView.js'
 import {
   editCapabilities,
   exportSuffixes,
@@ -57,6 +57,19 @@ interface StaleExport {
   document: DocumentState
   refusal: string
 }
+
+// Each editor pulls in its whole format stack (React components + WASM glue),
+// so they load on demand: an xlsx session never parses the DOCX editor's
+// bundle, and the start screen loads none of them.
+const DocxEditorView = lazy(() =>
+  import('./editors/DocxEditorView.js').then((m) => ({ default: m.DocxEditorView })),
+)
+const XlsxEditorView = lazy(() =>
+  import('./editors/XlsxEditorView.js').then((m) => ({ default: m.XlsxEditorView })),
+)
+const PptxEditorView = lazy(() =>
+  import('./editors/PptxEditorView.js').then((m) => ({ default: m.PptxEditorView })),
+)
 
 const ZOOM_MIN = 0.5
 const ZOOM_MAX = 2
@@ -155,14 +168,23 @@ export function App() {
     return () => clearInterval(timer)
   }, [hasProofing, proofingEditor])
 
+  // The dictionary costs ~40MB of worker heap, so it exists only while a
+  // document that gets proofing is open: first DOCX/PPTX open loads it, and
+  // closing back to the start screen or a workbook retires it again.
   useEffect(() => {
+    if (!hasProofing) return
     let canceled = false
+    setSpellLoading(true)
+    setSpellError(null)
     spellCheckService
       .init('en')
       .then(() => { if (!canceled) setSpellLoading(false) })
       .catch((err: Error) => { if (!canceled) { setSpellLoading(false); setSpellError(err.message) } })
-    return () => { canceled = true }
-  }, [])
+    return () => {
+      canceled = true
+      spellCheckService.dispose()
+    }
+  }, [hasProofing])
 
   useEffect(() => {
     if (spellLoading || spellError || !hasProofing) {
@@ -796,31 +818,41 @@ export function App() {
       <div className="flex flex-1 overflow-hidden">
         <main className="flex flex-1 overflow-hidden">
           {document ? (
-            document.kind === 'docx' ? (
-              <DocxEditorView
-                ref={docxRef}
-                document={document}
-                onChange={markEdited}
-                onPrintRequest={() => {
-                  const current = documentRef.current
-                  if (current) printDocument(current)
-                }}
-              />
-            ) : document.kind === 'xlsx' ? (
-              <XlsxEditorView
-                ref={xlsxRef}
-                document={document}
-                onChange={markEdited}
-                onSaveRequest={(bytes) => void saveDocument(false, bytes)}
-              />
-            ) : (
-              <PptxEditorView
-                ref={pptxRef}
-                document={document}
-                onChange={markEdited}
-                onSelectionStateChange={handlePptxSelectionChange}
-              />
-            )
+            <Suspense
+              fallback={
+                <div className="flex h-full w-full items-center justify-center">
+                  <span className="text-sm text-neutral-500">
+                    {t('editor.loading', { name: document.name })}
+                  </span>
+                </div>
+              }
+            >
+              {document.kind === 'docx' ? (
+                <DocxEditorView
+                  ref={docxRef}
+                  document={document}
+                  onChange={markEdited}
+                  onPrintRequest={() => {
+                    const current = documentRef.current
+                    if (current) printDocument(current)
+                  }}
+                />
+              ) : document.kind === 'xlsx' ? (
+                <XlsxEditorView
+                  ref={xlsxRef}
+                  document={document}
+                  onChange={markEdited}
+                  onSaveRequest={(bytes) => void saveDocument(false, bytes)}
+                />
+              ) : (
+                <PptxEditorView
+                  ref={pptxRef}
+                  document={document}
+                  onChange={markEdited}
+                  onSelectionStateChange={handlePptxSelectionChange}
+                />
+              )}
+            </Suspense>
           ) : (
             <StartScreen
               onNew={(kind) => void newFromTemplate(kind)}

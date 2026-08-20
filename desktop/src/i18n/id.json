@@ -57,6 +57,7 @@
     "help": {
       "label": "Bantuan",
       "website": "NexOffice di web",
+      "processes": "Monitor Proses",
       "checkForUpdates": "Periksa Pembaruan…",
       "about": "Tentang NexOffice"
     }
@@ -77,6 +78,13 @@
     "about": {
       "title": "Tentang NexOffice",
       "version": "Versi {version}"
+    },
+    "processes": {
+      "title": "Monitor Proses",
+      "message": "Memori per proses",
+      "refresh": "Segarkan",
+      "copy": "Salin",
+      "close": "Tutup"
     },
     "unsaved": {
       "message": "Apakah Anda ingin menyimpan perubahan pada {name}?",

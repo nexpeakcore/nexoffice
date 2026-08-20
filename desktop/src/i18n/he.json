@@ -57,6 +57,7 @@
     "help": {
       "label": "עזרה",
       "website": "NexOffice באינטרנט",
+      "processes": "מנטר תהליכים",
       "checkForUpdates": "בדוק עדכונים…",
       "about": "אודות NexOffice"
     }
@@ -77,6 +78,13 @@
     "about": {
       "title": "אודות NexOffice",
       "version": "גרסה {version}"
+    },
+    "processes": {
+      "title": "מנטר תהליכים",
+      "message": "זיכרון לפי תהליך",
+      "refresh": "רענן",
+      "copy": "העתק",
+      "close": "סגור"
     },
     "unsaved": {
       "message": "האם לשמור את השינויים שביצעת ב-{name}?",

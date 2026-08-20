@@ -57,6 +57,7 @@
     "help": {
       "label": "Yardım",
       "website": "Web'de NexOffice",
+      "processes": "İşlem İzleyici",
       "checkForUpdates": "Güncellemeleri Denetle…",
       "about": "NexOffice Hakkında"
     }
@@ -77,6 +78,13 @@
     "about": {
       "title": "NexOffice Hakkında",
       "version": "Sürüm {version}"
+    },
+    "processes": {
+      "title": "İşlem İzleyici",
+      "message": "İşleme göre bellek",
+      "refresh": "Yenile",
+      "copy": "Kopyala",
+      "close": "Kapat"
     },
     "unsaved": {
       "message": "{name} üzerinde yaptığınız değişiklikleri kaydetmek istiyor musunuz?",
