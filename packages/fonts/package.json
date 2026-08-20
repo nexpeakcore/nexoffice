@@ -19,7 +19,8 @@
     "src",
     "assets",
     "LICENSES",
-    "README.md"
+    "README.md",
+    "!src/**/*.test.ts"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit"

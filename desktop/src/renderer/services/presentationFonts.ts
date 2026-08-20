@@ -178,6 +178,19 @@ function collectShapeFonts(
   for (const child of shape.children) collectShapeFonts(child, requests)
 }
 
+/** What a deck's font registration added, and what to hand back when it closes. */
+export interface DeckFontRegistration {
+  /** How many deck families were registered; 0 means the layout need not redo. */
+  added: number
+  /**
+   * CSS families registered under this deck's own names. Each carries its own
+   * parsed copy of the bytes, so they are released when the deck closes. The
+   * shared metric aliases are deliberately absent — they are keyed by face
+   * file, so every deck reuses the same handful.
+   */
+  families: string[]
+}
+
 /**
  * Registers the faces this deck names but the base set does not carry, and
  * reports whether anything new arrived.
@@ -200,10 +213,11 @@ export async function registerDeckFonts(
   handle: { registerFont: (face: PptxFontFace) => number },
   snapshot: DeckSnapshot,
   already: ReadonlyArray<PresentationFontRequest>,
-): Promise<number> {
+): Promise<DeckFontRegistration> {
   const seen = new Set(
     already.map((request) => requestKey(request.family, request.bold, request.italic)),
   )
+  const families = new Set<string>()
   let added = 0
   for (const request of collectFontRequests(snapshot)) {
     const key = requestKey(request.family, request.bold, request.italic)
@@ -214,13 +228,14 @@ export async function registerDeckFonts(
       handle.registerFont({ ...request, bytes: await loadPresentationFaceBytes(face) })
       await registerBundledFontFace(face, request.family)
       await registerMetricAlias(face)
+      families.add(request.family)
       added += 1
     } catch {
       // One family failing to load must not cost the deck the rest of them.
       continue
     }
   }
-  return added
+  return { added, families: [...families] }
 }
 
 function requestKey(family: string, bold: boolean, italic: boolean): string {

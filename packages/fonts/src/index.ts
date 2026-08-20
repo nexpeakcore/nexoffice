@@ -487,7 +487,19 @@ export function bundledFaceLoader(face: BundledFontFace): BundledFaceLoader {
   return load;
 }
 
-const registeredFaces = new Map<string, Promise<void>>();
+/**
+ * One DOM registration. `fontFace` is filled in once the load lands — it is
+ * the only handle `document.fonts.delete` accepts, and the key cannot
+ * reconstruct it. `family` is kept beside the key because a CSS family name
+ * may itself contain the key's separator.
+ */
+interface RegisteredFace {
+  promise: Promise<void>;
+  family: string;
+  fontFace: FontFace | null;
+}
+
+const registeredFaces = new Map<string, RegisteredFace>();
 
 /**
  * Register a face with the DOM via the `FontFace` API under an explicit CSS
@@ -495,6 +507,10 @@ const registeredFaces = new Map<string, Promise<void>>();
  * uses the SAME bytes the wasm-side `FontStore` receives. Idempotent per
  * (cssFamily, weight, style); a failed registration is evicted so it can be
  * retried. Resolves as a no-op in non-DOM environments.
+ *
+ * Each registration parses its own copy of the bytes, so a caller that
+ * registers a face under many family names holds many copies — see
+ * {@link releaseBundledFontFaces} for giving them back.
  */
 export function registerBundledFontFace(face: BundledFontFace, cssFamily?: string): Promise<void> {
   if (
@@ -507,8 +523,9 @@ export function registerBundledFontFace(face: BundledFontFace, cssFamily?: strin
   const family = cssFamily ?? face.family;
   const key = `${family}|${face.weight}|${face.style}`;
   const existing = registeredFaces.get(key);
-  if (existing) return existing;
-  const promise = (async () => {
+  if (existing) return existing.promise;
+  const entry: RegisteredFace = { promise: Promise.resolve(), family, fontFace: null };
+  entry.promise = (async () => {
     const bytes = await loadBundledFontBytes(face);
     // The family name goes through the FontFace API as a value, never
     // interpolated into a CSS string, so there is no CSS-injection sink here.
@@ -517,11 +534,42 @@ export function registerBundledFontFace(face: BundledFontFace, cssFamily?: strin
       style: face.style,
     });
     await fontFace.load();
+    // A release that ran while this was loading already dropped the entry;
+    // adding now would put back a face nothing will ever release.
+    if (registeredFaces.get(key) !== entry) return;
+    entry.fontFace = fontFace;
     document.fonts.add(fontFace);
   })();
-  promise.catch(() => {
-    if (registeredFaces.get(key) === promise) registeredFaces.delete(key);
+  entry.promise.catch(() => {
+    if (registeredFaces.get(key) === entry) registeredFaces.delete(key);
   });
-  registeredFaces.set(key, promise);
-  return promise;
+  registeredFaces.set(key, entry);
+  return entry.promise;
+}
+
+/**
+ * Drop every registration made under the named CSS families, removing each
+ * face from `document.fonts`. Registrations are per family name, and each
+ * carries its own parsed copy of the font bytes, so a presentation that named
+ * a hundred families holds a hundred faces until they are released.
+ *
+ * Families not named here — the shared metric aliases, the faces another
+ * document still needs — are untouched. Re-registering a released family
+ * loads it again, so releasing one still in use costs a reload, not a
+ * missing face.
+ *
+ * @param families - CSS family names to release
+ */
+export function releaseBundledFontFaces(families: Iterable<string>): void {
+  if (typeof document === 'undefined' || document.fonts === undefined) return;
+  const targets = new Set<string>();
+  for (const family of families) targets.add(family);
+  if (targets.size === 0) return;
+  for (const [key, entry] of [...registeredFaces]) {
+    if (!targets.has(entry.family)) continue;
+    // Dropped before the load lands, the in-flight registration sees the
+    // entry is gone and never adds its face.
+    registeredFaces.delete(key);
+    if (entry.fontFace) document.fonts.delete(entry.fontFace);
+  }
 }
