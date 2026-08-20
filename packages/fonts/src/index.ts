@@ -519,9 +519,8 @@ const registeredFaces = new Map<string, RegisteredFace>();
  * (cssFamily, weight, style); a failed registration is evicted so it can be
  * retried. Resolves as a no-op in non-DOM environments.
  *
- * `owner` joins the holders of that one registration. Omitted, the face is
- * held forever; pass one and {@link releaseBundledFontFaces} gives back the
- * copy of the bytes it parsed.
+ * `owner` joins that registration's holders; omitted, the face is held for
+ * the session.
  */
 export function registerBundledFontFace(
   face: BundledFontFace,

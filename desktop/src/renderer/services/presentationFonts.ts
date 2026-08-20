@@ -184,13 +184,7 @@ function collectShapeFonts(
 export interface DeckFontRegistration {
   /** How many deck families were registered; 0 means the layout need not redo. */
   added: number
-  /**
-   * This deck's claim on the faces registered under its own family names, each
-   * carrying its own parsed copy of the bytes. Released when the deck closes; a
-   * family another open deck also named survives on that deck's claim. The
-   * shared metric aliases are deliberately unowned — they are keyed by face
-   * file, so every deck reuses the same handful.
-   */
+  /** This deck's releasable claim on the faces registered under its family names. */
   owner: FontFaceOwner
 }
 
