@@ -1,9 +1,20 @@
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { access, readFile, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { app, BrowserWindow, dialog, ipcMain, protocol, screen, shell, type Rectangle } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  protocol,
+  screen,
+  shell,
+  type Rectangle,
+} from 'electron'
 import { closeDecision } from './closePolicy.js'
 import { buildMenu } from './menu.js'
+import { collectProcessReport, formatProcessReport, labelWebContents } from './processReport.js'
 import {
   addRecent,
   clearRecents,
@@ -186,6 +197,8 @@ function createWindow(): BrowserWindow {
     },
   })
 
+  labelWebContents(window.webContents, 'Renderer · Document window')
+
   window.once('ready-to-show', () => {
     if (maximized) window.maximize()
     window.show()
@@ -301,6 +314,7 @@ function rebuildMenu(): void {
     onSelectLocale: selectLocale,
     onCheckForUpdates: () => checkForUpdatesManually(),
     onShowAbout: showAboutDialog,
+    onShowProcesses: showProcessReportDialog,
   })
 }
 
@@ -357,6 +371,26 @@ function showAboutDialog(): void {
   }
   const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
   void (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options))
+}
+
+function showProcessReportDialog(): void {
+  const report = formatProcessReport(collectProcessReport())
+  const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+  const options: Electron.MessageBoxOptions = {
+    type: 'info',
+    title: t('dialog.processes.title'),
+    message: t('dialog.processes.message'),
+    detail: report,
+    buttons: [t('dialog.processes.refresh'), t('dialog.processes.copy'), t('dialog.processes.close')],
+    defaultId: 2,
+    cancelId: 2,
+    noLink: true,
+  }
+  const show = owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options)
+  void show.then(({ response }) => {
+    if (response === 0) showProcessReportDialog()
+    else if (response === 1) clipboard.writeText(report)
+  })
 }
 
 async function promptOpen(): Promise<OpenedDocument | null> {
@@ -422,6 +456,8 @@ function createPrintWindow(): BrowserWindow {
       nodeIntegration: false,
     },
   })
+
+  labelWebContents(window.webContents, 'Renderer · Print/PDF (transient)')
 
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event) => event.preventDefault())

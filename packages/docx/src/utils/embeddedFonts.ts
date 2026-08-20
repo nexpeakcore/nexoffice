@@ -16,7 +16,7 @@ import { readDocxContainer } from '../docx/zipContainer';
 import { preloadParseWasm } from '../docx/parseWasm';
 import { preloadOpcWasm } from '../docx/wasm';
 import { deobfuscateFont, isValidFontKey } from './fontDeobfuscation';
-import { loadFontFromBuffer } from './fontLoader';
+import { loadFontFromBuffer, type BufferFontOwner } from './fontLoader';
 import type { FontTable, FontInfo, FontEmbed } from '../types/styles';
 import type { Document } from '../types/document';
 
@@ -199,7 +199,8 @@ export async function extractEmbeddedFontFaces(document: Document): Promise<Embe
 export async function loadEmbeddedFonts(
   fontTable: FontTable | undefined,
   rawFonts: ReadonlyMap<string, ArrayBuffer>,
-  fontTableRelsXml: string | null | undefined
+  fontTableRelsXml: string | null | undefined,
+  owner?: BufferFontOwner
 ): Promise<Set<string>> {
   if (!fontTable || !fontTableRelsXml || rawFonts.size === 0) return new Set();
   await preloadParseWasm();
@@ -212,6 +213,7 @@ export async function loadEmbeddedFonts(
       const ok = await loadFontFromBuffer(face.family, face.data, {
         weight: face.weight,
         style: face.style,
+        owner,
       });
       if (ok) {
         families.add(face.family);

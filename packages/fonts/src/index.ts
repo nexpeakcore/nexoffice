@@ -487,7 +487,30 @@ export function bundledFaceLoader(face: BundledFontFace): BundledFaceLoader {
   return load;
 }
 
-const registeredFaces = new Map<string, Promise<void>>();
+/** Who holds a registration. Release takes back only that holder's claim. */
+export type FontFaceOwner = symbol;
+
+/** A fresh owner, e.g. one per open presentation. */
+export function createFontFaceOwner(label = 'font-faces'): FontFaceOwner {
+  return Symbol(label);
+}
+
+/** Holder for registrations that outlive any one document and are never released. */
+const SHARED_OWNER: FontFaceOwner = Symbol('shared-font-faces');
+
+/**
+ * One DOM registration. `fontFace` is filled in once the load lands — it is
+ * the only handle `document.fonts.delete` accepts, and the key cannot
+ * reconstruct it. `owners` is every holder that has not released yet; the
+ * face goes away when the last one does.
+ */
+interface RegisteredFace {
+  promise: Promise<void>;
+  fontFace: FontFace | null;
+  owners: Set<FontFaceOwner>;
+}
+
+const registeredFaces = new Map<string, RegisteredFace>();
 
 /**
  * Register a face with the DOM via the `FontFace` API under an explicit CSS
@@ -495,8 +518,15 @@ const registeredFaces = new Map<string, Promise<void>>();
  * uses the SAME bytes the wasm-side `FontStore` receives. Idempotent per
  * (cssFamily, weight, style); a failed registration is evicted so it can be
  * retried. Resolves as a no-op in non-DOM environments.
+ *
+ * `owner` joins that registration's holders; omitted, the face is held for
+ * the session.
  */
-export function registerBundledFontFace(face: BundledFontFace, cssFamily?: string): Promise<void> {
+export function registerBundledFontFace(
+  face: BundledFontFace,
+  cssFamily?: string,
+  owner: FontFaceOwner = SHARED_OWNER
+): Promise<void> {
   if (
     typeof document === 'undefined' ||
     typeof FontFace === 'undefined' ||
@@ -507,8 +537,16 @@ export function registerBundledFontFace(face: BundledFontFace, cssFamily?: strin
   const family = cssFamily ?? face.family;
   const key = `${family}|${face.weight}|${face.style}`;
   const existing = registeredFaces.get(key);
-  if (existing) return existing;
-  const promise = (async () => {
+  if (existing) {
+    existing.owners.add(owner);
+    return existing.promise;
+  }
+  const entry: RegisteredFace = {
+    promise: Promise.resolve(),
+    fontFace: null,
+    owners: new Set([owner]),
+  };
+  entry.promise = (async () => {
     const bytes = await loadBundledFontBytes(face);
     // The family name goes through the FontFace API as a value, never
     // interpolated into a CSS string, so there is no CSS-injection sink here.
@@ -517,11 +555,34 @@ export function registerBundledFontFace(face: BundledFontFace, cssFamily?: strin
       style: face.style,
     });
     await fontFace.load();
+    // A release that ran while this was loading already dropped the entry;
+    // adding now would put back a face nothing will ever release.
+    if (registeredFaces.get(key) !== entry) return;
+    entry.fontFace = fontFace;
     document.fonts.add(fontFace);
   })();
-  promise.catch(() => {
-    if (registeredFaces.get(key) === promise) registeredFaces.delete(key);
+  entry.promise.catch(() => {
+    if (registeredFaces.get(key) === entry) registeredFaces.delete(key);
   });
-  registeredFaces.set(key, promise);
-  return promise;
+  registeredFaces.set(key, entry);
+  return entry.promise;
+}
+
+/**
+ * Give back this owner's claim on every face it registered, removing the face
+ * from `document.fonts` once no other owner holds it. Re-registering a
+ * released face reloads it, so an early release costs a reload, not a gap.
+ *
+ * @param owner - the owner passed to {@link registerBundledFontFace}
+ */
+export function releaseBundledFontFaces(owner: FontFaceOwner): void {
+  if (typeof document === 'undefined' || document.fonts === undefined) return;
+  for (const [key, entry] of [...registeredFaces]) {
+    if (!entry.owners.delete(owner)) continue;
+    if (entry.owners.size > 0) continue;
+    // Dropped before the load lands, the in-flight registration sees the
+    // entry is gone and never adds its face.
+    registeredFaces.delete(key);
+    if (entry.fontFace) document.fonts.delete(entry.fontFace);
+  }
 }

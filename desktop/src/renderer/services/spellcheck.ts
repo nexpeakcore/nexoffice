@@ -27,7 +27,27 @@ class SpellCheckServiceImpl {
   private fallback: Promise<void> | null = null
   private pending = new Map<number, PendingRequest>()
   private nextId = 1
+  /** Bumped by dispose(); async paths re-check it so a load that was in
+   * flight when the dictionary was retired cannot resurrect it. */
+  private epoch = 0
   ready = false
+
+  /**
+   * Retires the dictionary entirely — worker and inline engine both — so the
+   * ~40MB it holds goes back when no document needs proofing. Deliberate
+   * retirement, so unlike a worker crash it never falls back to the inline
+   * engine. A later init() starts fresh.
+   */
+  dispose(): void {
+    this.epoch += 1
+    this.worker?.terminate()
+    this.worker = null
+    this.inline = null
+    this.ready = false
+    this.starting = null
+    this.fallback = null
+    this.failAll(new Error('Spell check was disposed'))
+  }
 
   init(_lang: string): Promise<void> {
     if (this.ready) return Promise.resolve()
@@ -69,6 +89,7 @@ class SpellCheckServiceImpl {
   }
 
   private async start(): Promise<void> {
+    const epoch = this.epoch
     try {
       const worker = new Worker(new URL('./spellcheckWorker.ts', import.meta.url), {
         type: 'module',
@@ -87,8 +108,10 @@ class SpellCheckServiceImpl {
       }
       this.worker = worker
       await this.request({ type: 'init' })
+      if (epoch !== this.epoch) return
       this.ready = true
     } catch {
+      if (epoch !== this.epoch) return
       await this.dropWorker(new Error('Spell-check worker unavailable'))
       if (!this.inline) throw new Error('Spell check is unavailable')
     }
@@ -109,10 +132,12 @@ class SpellCheckServiceImpl {
   }
 
   private async loadInline(): Promise<void> {
+    const epoch = this.epoch
     try {
       const { SpellCheckEngine } = await import('./spellcheckEngine.js')
       const engine = new SpellCheckEngine()
       await engine.init()
+      if (epoch !== this.epoch) return
       this.inline = engine
       this.ready = true
     } catch {

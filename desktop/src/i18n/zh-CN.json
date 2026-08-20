@@ -57,6 +57,7 @@
     "help": {
       "label": "帮助",
       "website": "网上的 NexOffice",
+      "processes": "进程监视器",
       "checkForUpdates": "检查更新…",
       "about": "关于 NexOffice"
     }
@@ -77,6 +78,13 @@
     "about": {
       "title": "关于 NexOffice",
       "version": "版本 {version}"
+    },
+    "processes": {
+      "title": "进程监视器",
+      "message": "各进程内存占用",
+      "refresh": "刷新",
+      "copy": "复制",
+      "close": "关闭"
     },
     "unsaved": {
       "message": "是否保存对 {name} 所做的更改？",

@@ -1,15 +1,18 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Document } from '@betteroffice/docx/types/document';
 import type { Comment } from '@betteroffice/docx/types/content';
 import type { YrsDocxHost } from '@betteroffice/docx/yrs';
 import {
   loadEmbeddedFonts,
+  releaseBufferFontFaces,
+  createBufferFontOwner,
   loadDocumentFonts,
   loadFontsWithMapping,
   getRenderableDocumentFonts,
   getEmbeddedFontFamilies,
   selectRenderableFonts,
   toArrayBuffer,
+  type BufferFontOwner,
   type DocxInput,
 } from '@betteroffice/docx/utils';
 import type { FontOption } from '@betteroffice/docx/utils/fontOptions';
@@ -74,6 +77,22 @@ export function useDocumentLoader({
   const [yrsSeedBytes, setYrsSeedBytes] = useState<Uint8Array | null>(null);
   const [yrsSeedGeneration, setYrsSeedGeneration] = useState(0);
   const [loadGeneration] = useState(() => new DocumentLoadGeneration());
+  // The open document's claim on the faces it embedded. Each face holds an
+  // object URL over its bytes plus an `@font-face` rule, neither of which the
+  // browser reclaims on its own — so the editor hands the claim back when the
+  // document is replaced or the editor goes away. A face the next document
+  // also embeds survives on that document's own claim.
+  const embeddedFacesRef = useRef<BufferFontOwner | null>(null);
+  // Hand back whatever the ref holds. Every path that ends a document — a
+  // replacement that parses, one that fails to, a pre-parsed document, the
+  // editor unmounting — goes through here, so a document's faces never
+  // outlive it waiting for the next successful open.
+  const releaseEmbeddedFaces = useCallback(() => {
+    const owner = embeddedFacesRef.current;
+    embeddedFacesRef.current = null;
+    if (owner) releaseBufferFontFaces(owner);
+  }, []);
+  useEffect(() => () => releaseEmbeddedFaces(), [releaseEmbeddedFaces]);
 
   const loadParsedDocument = useCallback(
     (doc: Document, seedBytes?: Uint8Array) => {
@@ -83,6 +102,7 @@ export function useDocumentLoader({
       setYrsSeedBytes(seedBytes?.slice() ?? null);
       setYrsSeedGeneration(generation);
       history.reset(doc);
+      releaseEmbeddedFaces();
       setLoadingState({ isLoading: false, parseError: null });
       loadDocumentFonts(doc).catch((err) => {
         console.warn('Failed to load document fonts:', err);
@@ -95,7 +115,14 @@ export function useDocumentLoader({
         })
       );
     },
-    [loadGeneration, resetForNewDocument, history, setLoadingState, setDocumentFonts]
+    [
+      loadGeneration,
+      resetForNewDocument,
+      history,
+      releaseEmbeddedFaces,
+      setLoadingState,
+      setDocumentFonts,
+    ]
   );
 
   const loadBuffer = useCallback(
@@ -114,12 +141,13 @@ export function useDocumentLoader({
         await loadGeneration.waitForCompletion(generation);
       } catch (error) {
         if (!loadGeneration.complete(generation)) return;
+        releaseEmbeddedFaces();
         const message = error instanceof Error ? error.message : 'Failed to parse document';
         setLoadingState({ isLoading: false, parseError: message });
         onError?.(error instanceof Error ? error : new Error(message));
       }
     },
-    [loadGeneration, resetForNewDocument, history, onError, setLoadingState]
+    [loadGeneration, resetForNewDocument, history, onError, releaseEmbeddedFaces, setLoadingState]
   );
 
   const acceptHostDocument = useCallback(
@@ -136,13 +164,31 @@ export function useDocumentLoader({
       setDocumentFonts(
         [...new Map(documentFonts.map((font) => [font.name.toLowerCase(), font])).values()]
       );
+      // This document's own claim, taken before the previous one is given
+      // back: a face both documents embed is registered once, and releasing
+      // the old claim first would take it away from under this load.
+      const owner = createBufferFontOwner();
+      const previousOwner = embeddedFacesRef.current;
+      embeddedFacesRef.current = owner;
       void loadEmbeddedFonts(
         doc.package.fontTable,
         host.embeddedFonts,
-        host.fontTableRelationshipsXml
+        host.fontTableRelationshipsXml,
+        owner
       )
         .catch((error) => {
           console.warn('Failed to load embedded document fonts:', error);
+        })
+        .then(() => {
+          // A load that was superseded mid-flight holds faces nothing will
+          // ever draw; give its claim back rather than keep it.
+          if (!loadGeneration.isCurrent(generation) && embeddedFacesRef.current === owner) {
+            embeddedFacesRef.current = null;
+          }
+          if (embeddedFacesRef.current !== owner) releaseBufferFontFaces(owner);
+          // The previous document's claim goes back only now, so a face both
+          // documents embed stays registered throughout, on this one's claim.
+          if (previousOwner) releaseBufferFontFaces(previousOwner);
         })
         .then(() =>
           Promise.all([loadFontsWithMapping(host.referencedFonts), loadDocumentFonts(doc)])
@@ -157,12 +203,15 @@ export function useDocumentLoader({
   const failHostDocument = useCallback(
     (error: Error, generation: number) => {
       if (!loadGeneration.complete(generation)) return;
+      // The document this replaced is gone from the screen either way, so its
+      // faces go back now rather than waiting for the next one that parses.
+      releaseEmbeddedFaces();
       setYrsSeedDocument(null);
       setYrsSeedBytes(null);
       setLoadingState({ isLoading: false, parseError: error.message });
       onError?.(error);
     },
-    [loadGeneration, onError, setLoadingState]
+    [loadGeneration, onError, releaseEmbeddedFaces, setLoadingState]
   );
 
   const isCurrentLoad = useCallback(

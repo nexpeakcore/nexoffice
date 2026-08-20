@@ -924,7 +924,10 @@ export function useCanvasRenderer(
     notifyCaretInputDispatched,
     notifyCaretInterrupt,
   } = useRustDisplayList(layout, undefined, fontChainsProviderRef, resolvedCommentIds, engine);
-  const resolveImage = useMemo(() => createCanvasImageResolver(), []);
+  // Keyed on the engine session (a per-document-load identity), so a reload
+  // drops the previous document's decoded bitmaps instead of carrying them
+  // for the editor's lifetime; the resolver also bounds itself by bytes.
+  const resolveImage = useMemo(() => createCanvasImageResolver(), [engine]);
   const status: UseCanvasRendererResult['status'] = error
     ? 'error'
     : loading || displayList == null

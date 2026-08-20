@@ -6,6 +6,7 @@ import {
 } from '@betteroffice/pptx-react'
 import type { DeckSnapshot, PptxFontFace, ShapeSnapshot } from '@betteroffice/pptx'
 import { en as pptxEn, locales as pptxLocales, type PartialLocaleStrings } from '@betteroffice/pptx-i18n'
+import { releaseBundledFontFaces, type FontFaceOwner } from '@betteroffice/docx-fonts'
 import {
   baseFontRequests,
   loadBaseFontFaces,
@@ -94,6 +95,8 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
     const slidesRef = useRef(1)
     const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
     const selectionRef = useRef<PptxEditorSelectionState>(NO_SELECTION)
+    /** CSS families this deck registered, held so they can be given back. */
+    const deckFontsRef = useRef<FontFaceOwner | null>(null)
     const readyRef = useRef(false)
     const onChangeRef = useRef(onChange)
     onChangeRef.current = onChange
@@ -124,6 +127,13 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
       selectionRef.current = NO_SELECTION
       return () => {
         if (refreshTimer.current) clearTimeout(refreshTimer.current)
+        // Each deck family was registered as its own DOM face carrying its own
+        // parsed copy of the bytes, so a deck naming many of them holds many.
+        // Only this deck's claim goes back: a family the next deck also names
+        // stays registered on that deck's own claim.
+        const owner = deckFontsRef.current
+        deckFontsRef.current = null
+        if (owner) releaseBundledFontFaces(owner)
       }
     }, [document.seed])
 
@@ -204,9 +214,19 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
           // is only knowable once it is parsed. Anything else it asks for —
           // a CJK family, an alias — arrives now, and the layout is redone so
           // the screen measures that text with the same face the PDF will.
-          void registerDeckFonts(api.handle, snapshot, baseFontRequests()).then((added) => {
-            if (added > 0 && apiRef.current === api) api.refresh()
-          })
+          void registerDeckFonts(api.handle, snapshot, baseFontRequests()).then(
+            ({ added, owner }) => {
+              // A deck replaced mid-registration holds faces nothing will draw;
+              // give its claim back rather than hand it to the deck that took
+              // over — a family both name survives on the new deck's claim.
+              if (apiRef.current !== api) {
+                releaseBundledFontFaces(owner)
+                return
+              }
+              deckFontsRef.current = owner
+              if (added > 0) api.refresh()
+            },
+          )
         }}
         onSelectionStateChange={(state: PptxEditorSelectionState) => {
           selectionRef.current = state

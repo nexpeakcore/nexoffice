@@ -1,9 +1,11 @@
 import {
+  createFontFaceOwner,
   loadBundledFontBytes,
   registerBundledFontFace,
   resolveLastResortFace,
   resolveMetricCompatFace,
   type BundledFontFace,
+  type FontFaceOwner,
 } from '@betteroffice/docx-fonts'
 import type { DeckSnapshot, PptxFontFace, ShapeSnapshot } from '@betteroffice/pptx'
 
@@ -178,6 +180,14 @@ function collectShapeFonts(
   for (const child of shape.children) collectShapeFonts(child, requests)
 }
 
+/** What a deck's font registration added, and what to hand back when it closes. */
+export interface DeckFontRegistration {
+  /** How many deck families were registered; 0 means the layout need not redo. */
+  added: number
+  /** This deck's releasable claim on the faces registered under its family names. */
+  owner: FontFaceOwner
+}
+
 /**
  * Registers the faces this deck names but the base set does not carry, and
  * reports whether anything new arrived.
@@ -200,10 +210,11 @@ export async function registerDeckFonts(
   handle: { registerFont: (face: PptxFontFace) => number },
   snapshot: DeckSnapshot,
   already: ReadonlyArray<PresentationFontRequest>,
-): Promise<number> {
+): Promise<DeckFontRegistration> {
   const seen = new Set(
     already.map((request) => requestKey(request.family, request.bold, request.italic)),
   )
+  const owner = createFontFaceOwner('deck-fonts')
   let added = 0
   for (const request of collectFontRequests(snapshot)) {
     const key = requestKey(request.family, request.bold, request.italic)
@@ -212,7 +223,7 @@ export async function registerDeckFonts(
     try {
       const face = resolvePresentationFace(request.family, request.bold, request.italic)
       handle.registerFont({ ...request, bytes: await loadPresentationFaceBytes(face) })
-      await registerBundledFontFace(face, request.family)
+      await registerBundledFontFace(face, request.family, owner)
       await registerMetricAlias(face)
       added += 1
     } catch {
@@ -220,7 +231,7 @@ export async function registerDeckFonts(
       continue
     }
   }
-  return added
+  return { added, owner }
 }
 
 function requestKey(family: string, bold: boolean, italic: boolean): string {

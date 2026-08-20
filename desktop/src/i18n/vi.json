@@ -57,6 +57,7 @@
     "help": {
       "label": "Trợ giúp",
       "website": "NexOffice trên web",
+      "processes": "Trình theo dõi tiến trình",
       "checkForUpdates": "Kiểm tra bản cập nhật…",
       "about": "Giới thiệu NexOffice"
     }
@@ -77,6 +78,13 @@
     "about": {
       "title": "Giới thiệu NexOffice",
       "version": "Phiên bản {version}"
+    },
+    "processes": {
+      "title": "Trình theo dõi tiến trình",
+      "message": "Bộ nhớ theo tiến trình",
+      "refresh": "Làm mới",
+      "copy": "Sao chép",
+      "close": "Đóng"
     },
     "unsaved": {
       "message": "Bạn có muốn lưu các thay đổi trong {name} không?",
