@@ -17,9 +17,19 @@ const loadedFonts = new Set<string>();
 const loadingFonts = new Map<string, Promise<boolean>>();
 
 // Track loaded faces (family|weight) for URL/buffer paths where one
-// family can have multiple weights registered independently.
+// family can have multiple weights registered independently. `loadedFaces` is
+// the union — "some source has this face" — while the per-source sets below
+// say who put it there. The two must stay separate: a document releasing its
+// embedded face cannot be allowed to take the consumer's same-named face with
+// it, nor to have suppressed its registration in the first place.
 const loadedFaces = new Set<string>();
-const loadingFaces = new Map<string, Promise<boolean>>();
+const urlFaces = new Set<string>();
+const loadingBufferFaces = new Map<string, Promise<boolean>>();
+const loadingUrlFaces = new Map<string, Promise<boolean>>();
+
+function faceLoadsInFlight(): number {
+  return loadingBufferFaces.size + loadingUrlFaces.size;
+}
 
 // What a buffer-registered face (a DOCX-embedded font) holds onto: an object
 // URL over the font bytes and the <style> element naming it. Neither is
@@ -150,14 +160,16 @@ function satisfiedBySystemFont(family: string): boolean {
   return false;
 }
 
-// In-flight buffer/URL registrations for a family (loadingFaces is keyed
+// In-flight buffer/URL registrations for a family (both maps are keyed
 // `family|weight`).
 function inFlightFacePromises(family: string): Promise<boolean>[] {
   const prefix = `${family}|`;
   const pending: Promise<boolean>[] = [];
-  for (const [key, promise] of loadingFaces) {
-    if (key.startsWith(prefix)) {
-      pending.push(promise);
+  for (const map of [loadingBufferFaces, loadingUrlFaces]) {
+    for (const [key, promise] of map) {
+      if (key.startsWith(prefix)) {
+        pending.push(promise);
+      }
     }
   }
   return pending;
@@ -337,7 +349,7 @@ export async function loadFont(
       loadingFonts.delete(normalizedFamily);
 
       // Check if still loading any fonts (Google or face-based)
-      if (loadingFonts.size === 0 && loadingFaces.size === 0) {
+      if (loadingFonts.size === 0 && faceLoadsInFlight() === 0) {
         isLoadingAny = false;
       }
     }
@@ -634,9 +646,11 @@ export async function loadFontFromBuffer(
 
   // Face-keyed dedupe so multiple weights of the same family register
   // independently and a prior URL/Google load of the family does not skip
-  // this face.
-  if (loadedFaces.has(key)) return true;
-  const existing = loadingFaces.get(key);
+  // this face. Scoped to buffer registrations: a consumer-hosted face of the
+  // same name must not stand in for the one the document embedded, which the
+  // release path is about to remove again.
+  if (bufferFaces.has(key)) return true;
+  const existing = loadingBufferFaces.get(key);
   if (existing) return existing;
 
   const loadPromise = (async (): Promise<boolean> => {
@@ -681,14 +695,14 @@ export async function loadFontFromBuffer(
       reportFontError(error, `failed to load "${normalizedFamily}" from buffer`);
       return false;
     } finally {
-      loadingFaces.delete(key);
-      if (loadingFonts.size === 0 && loadingFaces.size === 0) {
+      loadingBufferFaces.delete(key);
+      if (loadingFonts.size === 0 && faceLoadsInFlight() === 0) {
         isLoadingAny = false;
       }
     }
   })();
 
-  loadingFaces.set(key, loadPromise);
+  loadingBufferFaces.set(key, loadPromise);
   return loadPromise;
 }
 
@@ -713,7 +727,9 @@ export function releaseBufferFontFaces(owner: BufferFontOwner): void {
     if (!owners.delete(owner)) continue;
     if (owners.size > 0) continue;
     bufferFaceOwners.delete(key);
-    loadedFaces.delete(key);
+    // A consumer registered this same face from a URL; its rule is still in
+    // the head, so the face stays loaded even though the document's copy goes.
+    if (!urlFaces.has(key)) loadedFaces.delete(key);
     const resources = bufferFaces.get(key);
     if (!resources) continue;
     disposeBufferFace(resources);
@@ -791,8 +807,11 @@ export async function loadFontFromUrl(
   // Provenance: subsetted-face safety net — see registeredFamilies.
   registeredFamilies.add(normalizedFamily);
 
-  if (loadedFaces.has(key)) return true;
-  const existing = loadingFaces.get(key);
+  // Scoped to URL registrations, so a document's embedded face of the same
+  // name cannot stand in for this one and leave the consumer with nothing
+  // once that document closes.
+  if (urlFaces.has(key)) return true;
+  const existing = loadingUrlFaces.get(key);
   if (existing) return existing;
 
   const loadPromise = (async (): Promise<boolean> => {
@@ -811,6 +830,7 @@ export async function loadFontFromUrl(
 
       await waitForFontAvailable(normalizedFamily, 3000);
 
+      urlFaces.add(key);
       markFaceLoaded(key, normalizedFamily);
 
       return true;
@@ -818,14 +838,14 @@ export async function loadFontFromUrl(
       reportFontError(error, `failed to load "${normalizedFamily}" from ${src}`);
       return false;
     } finally {
-      loadingFaces.delete(key);
-      if (loadingFonts.size === 0 && loadingFaces.size === 0) {
+      loadingUrlFaces.delete(key);
+      if (loadingFonts.size === 0 && faceLoadsInFlight() === 0) {
         isLoadingAny = false;
       }
     }
   })();
 
-  loadingFaces.set(key, loadPromise);
+  loadingUrlFaces.set(key, loadPromise);
   return loadPromise;
 }
 

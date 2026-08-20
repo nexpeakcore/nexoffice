@@ -140,6 +140,34 @@ describe('releaseBufferFontFaces', () => {
     expect(isFontLoaded('SharedName')).toBe(true);
   });
 
+  test('a consumer face of the same weight and style survives the release', async () => {
+    const owner = createBufferFontOwner();
+    await loadFontFromBuffer('ExactName', bytes(), { weight: 400, owner });
+    // Same family, weight and style as the embedded face: the consumer's rule
+    // must still be injected rather than deduped against the document's.
+    await loadFontFromUrl('ExactName', 'https://example.test/exact.woff2', { weight: 400 });
+    expect(styleRules()).toContain('exact.woff2');
+
+    releaseBufferFontFaces(owner);
+
+    expect(styleRules()).toContain('exact.woff2');
+    expect(isFontLoaded('ExactName')).toBe(true);
+  });
+
+  test('an embedded face registers even when a consumer face already has the key', async () => {
+    await loadFontFromUrl('UrlFirst', 'https://example.test/urlfirst.woff2', { weight: 400 });
+    const owner = createBufferFontOwner();
+
+    await loadFontFromBuffer('UrlFirst', bytes(), { weight: 400, owner });
+
+    // Two rules for the family now: the document's own bytes, and the
+    // consumer's URL. Releasing the document leaves the consumer's.
+    expect(styleRules()).toContain('UrlFirst');
+    releaseBufferFontFaces(owner);
+    expect(styleRules()).toContain('urlfirst.woff2');
+    expect(isFontLoaded('UrlFirst')).toBe(true);
+  });
+
   test('releasing an owner that registered nothing is a no-op', async () => {
     await loadFontFromBuffer('EmbeddedEpsilon', bytes(), { weight: 400 });
     const before = revoked.length;

@@ -114,6 +114,34 @@ describe('createCanvasImageResolver', () => {
     expect(source?.naturalWidth).toBe(1);
   });
 
+  test('does not retain an image larger than the whole budget', async () => {
+    const resolve = createCanvasImageResolver(40);
+    const pending = resolve('blob:doc/huge');
+    settle('blob:doc/huge', 100);
+    await flush();
+
+    // The caller still gets its decode; the cache just does not keep it.
+    expect(await pending).not.toBeNull();
+    loads = [];
+    void resolve('blob:doc/huge');
+    expect(loads).toHaveLength(1);
+  });
+
+  test('an oversized image does not evict what fits after it', async () => {
+    const resolve = createCanvasImageResolver(40);
+    void resolve('blob:doc/small');
+    settle('blob:doc/small', 6);
+    await flush();
+    void resolve('blob:doc/huge');
+    settle('blob:doc/huge', 100);
+    await flush();
+
+    // huge went instead of evicting small on its way to not fitting either.
+    loads = [];
+    void resolve('blob:doc/small');
+    expect(loads).toHaveLength(0);
+  });
+
   test('a failed decode resolves null and stays cached weightless', async () => {
     const resolve = createCanvasImageResolver(40);
     const pending = resolve('blob:doc/broken');

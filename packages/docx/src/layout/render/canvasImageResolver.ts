@@ -12,9 +12,10 @@
  *
  * The cache is bounded: each entry is charged its decoded-bitmap size
  * (width × height × 4) once the load settles, and the least recently used
- * settled entries are dropped when the total passes the budget. An evicted
- * source simply decodes again on its next repaint — blob:/data: URLs are
- * local, so re-resolving costs decode time, never a fetch.
+ * settled entries are dropped when the total passes the budget — including
+ * the entry that just landed, if it alone is larger than the budget. An
+ * evicted source simply decodes again on its next repaint — blob:/data: URLs
+ * are local, so re-resolving costs decode time, never a fetch.
  */
 
 import type { ImageResolver } from './canvasBackend';
@@ -48,13 +49,24 @@ export function createCanvasImageResolver(
   const cache = new Map<string, CacheEntry>();
   let cachedBytes = 0;
 
+  const drop = (key: string, entry: CacheEntry): void => {
+    cache.delete(key);
+    cachedBytes -= entry.size;
+  };
+
   const trim = (keep: string): void => {
     if (cachedBytes <= budgetBytes) return;
+    // An image bigger than the whole cache can never fit, and holding it
+    // anyway would leave the bound above budget for the document's life.
+    // Dropped first, so it does not evict every smaller entry on its way in;
+    // the caller already has its promise, so this costs a decode on the next
+    // repaint and nothing else.
+    const kept = cache.get(keep);
+    if (kept?.settled && kept.size > budgetBytes) drop(keep, kept);
     for (const [key, entry] of cache) {
       if (cachedBytes <= budgetBytes) return;
       if (key === keep || !entry.settled) continue;
-      cache.delete(key);
-      cachedBytes -= entry.size;
+      drop(key, entry);
     }
   };
 

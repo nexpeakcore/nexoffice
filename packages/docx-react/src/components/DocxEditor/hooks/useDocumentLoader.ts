@@ -83,14 +83,16 @@ export function useDocumentLoader({
   // document is replaced or the editor goes away. A face the next document
   // also embeds survives on that document's own claim.
   const embeddedFacesRef = useRef<BufferFontOwner | null>(null);
-  useEffect(
-    () => () => {
-      const owner = embeddedFacesRef.current;
-      embeddedFacesRef.current = null;
-      if (owner) releaseBufferFontFaces(owner);
-    },
-    []
-  );
+  // Hand back whatever the ref holds. Every path that ends a document — a
+  // replacement that parses, one that fails to, a pre-parsed document, the
+  // editor unmounting — goes through here, so a document's faces never
+  // outlive it waiting for the next successful open.
+  const releaseEmbeddedFaces = useCallback(() => {
+    const owner = embeddedFacesRef.current;
+    embeddedFacesRef.current = null;
+    if (owner) releaseBufferFontFaces(owner);
+  }, []);
+  useEffect(() => () => releaseEmbeddedFaces(), [releaseEmbeddedFaces]);
 
   const loadParsedDocument = useCallback(
     (doc: Document, seedBytes?: Uint8Array) => {
@@ -100,6 +102,7 @@ export function useDocumentLoader({
       setYrsSeedBytes(seedBytes?.slice() ?? null);
       setYrsSeedGeneration(generation);
       history.reset(doc);
+      releaseEmbeddedFaces();
       setLoadingState({ isLoading: false, parseError: null });
       loadDocumentFonts(doc).catch((err) => {
         console.warn('Failed to load document fonts:', err);
@@ -112,7 +115,14 @@ export function useDocumentLoader({
         })
       );
     },
-    [loadGeneration, resetForNewDocument, history, setLoadingState, setDocumentFonts]
+    [
+      loadGeneration,
+      resetForNewDocument,
+      history,
+      releaseEmbeddedFaces,
+      setLoadingState,
+      setDocumentFonts,
+    ]
   );
 
   const loadBuffer = useCallback(
@@ -131,12 +141,13 @@ export function useDocumentLoader({
         await loadGeneration.waitForCompletion(generation);
       } catch (error) {
         if (!loadGeneration.complete(generation)) return;
+        releaseEmbeddedFaces();
         const message = error instanceof Error ? error.message : 'Failed to parse document';
         setLoadingState({ isLoading: false, parseError: message });
         onError?.(error instanceof Error ? error : new Error(message));
       }
     },
-    [loadGeneration, resetForNewDocument, history, onError, setLoadingState]
+    [loadGeneration, resetForNewDocument, history, onError, releaseEmbeddedFaces, setLoadingState]
   );
 
   const acceptHostDocument = useCallback(
@@ -192,12 +203,15 @@ export function useDocumentLoader({
   const failHostDocument = useCallback(
     (error: Error, generation: number) => {
       if (!loadGeneration.complete(generation)) return;
+      // The document this replaced is gone from the screen either way, so its
+      // faces go back now rather than waiting for the next one that parses.
+      releaseEmbeddedFaces();
       setYrsSeedDocument(null);
       setYrsSeedBytes(null);
       setLoadingState({ isLoading: false, parseError: error.message });
       onError?.(error);
     },
-    [loadGeneration, onError, setLoadingState]
+    [loadGeneration, onError, releaseEmbeddedFaces, setLoadingState]
   );
 
   const isCurrentLoad = useCallback(
