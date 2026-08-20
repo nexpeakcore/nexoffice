@@ -44,9 +44,12 @@ globals.fetch = (() => {
   });
 }) as unknown as typeof globalThis.fetch;
 
-const { registerBundledFontFace, releaseBundledFontFaces, resolveMetricCompatFace } = await import(
-  './index'
-);
+const {
+  createFontFaceOwner,
+  registerBundledFontFace,
+  releaseBundledFontFaces,
+  resolveMetricCompatFace,
+} = await import('./index');
 
 const arial = resolveMetricCompatFace('Arial', false, false)!;
 const times = resolveMetricCompatFace('Times New Roman', false, false)!;
@@ -62,69 +65,116 @@ describe('releaseBundledFontFaces', () => {
   });
 
   test('registering installs the face under the requested family', async () => {
-    await registerBundledFontFace(arial, 'DeckAlpha');
+    await registerBundledFontFace(arial, 'DeckAlpha', createFontFaceOwner());
 
     expect(familiesInstalled()).toContain('DeckAlpha');
   });
 
   test('releasing uninstalls it', async () => {
-    await registerBundledFontFace(arial, 'DeckBeta');
+    const owner = createFontFaceOwner();
+    await registerBundledFontFace(arial, 'DeckBeta', owner);
     expect(familiesInstalled()).toContain('DeckBeta');
 
-    releaseBundledFontFaces(['DeckBeta']);
+    releaseBundledFontFaces(owner);
 
     expect(familiesInstalled()).not.toContain('DeckBeta');
   });
 
-  test('releases only the named families', async () => {
-    await registerBundledFontFace(arial, 'DeckKeep');
-    await registerBundledFontFace(times, 'DeckDrop');
+  test('releases only what that owner registered', async () => {
+    const keeper = createFontFaceOwner();
+    const dropper = createFontFaceOwner();
+    await registerBundledFontFace(arial, 'DeckKeep', keeper);
+    await registerBundledFontFace(times, 'DeckDrop', dropper);
 
-    releaseBundledFontFaces(['DeckDrop']);
+    releaseBundledFontFaces(dropper);
 
     expect(familiesInstalled()).toContain('DeckKeep');
     expect(familiesInstalled()).not.toContain('DeckDrop');
   });
 
   test('the same face under many families is one registration each', async () => {
-    await registerBundledFontFace(arial, 'DeckMulti1');
-    await registerBundledFontFace(arial, 'DeckMulti2');
+    const owner = createFontFaceOwner();
+    await registerBundledFontFace(arial, 'DeckMulti1', owner);
+    await registerBundledFontFace(arial, 'DeckMulti2', owner);
     expect(familiesInstalled().filter((f) => f.startsWith('DeckMulti'))).toHaveLength(2);
 
-    releaseBundledFontFaces(['DeckMulti1', 'DeckMulti2']);
+    releaseBundledFontFaces(owner);
 
     expect(familiesInstalled().filter((f) => f.startsWith('DeckMulti'))).toHaveLength(0);
   });
 
+  test('a family two owners registered survives the first release', async () => {
+    const first = createFontFaceOwner();
+    const second = createFontFaceOwner();
+    await registerBundledFontFace(arial, 'DeckShared', first);
+    await registerBundledFontFace(arial, 'DeckShared', second);
+
+    releaseBundledFontFaces(first);
+    expect(familiesInstalled()).toContain('DeckShared');
+
+    releaseBundledFontFaces(second);
+    expect(familiesInstalled()).not.toContain('DeckShared');
+  });
+
+  test('an owner that registered the same face twice releases it once', async () => {
+    const owner = createFontFaceOwner();
+    await registerBundledFontFace(arial, 'DeckTwice', owner);
+    await registerBundledFontFace(arial, 'DeckTwice', owner);
+
+    releaseBundledFontFaces(owner);
+
+    expect(familiesInstalled()).not.toContain('DeckTwice');
+  });
+
   test('a released family registers again on the next deck', async () => {
-    await registerBundledFontFace(arial, 'DeckReopen');
-    releaseBundledFontFaces(['DeckReopen']);
+    const owner = createFontFaceOwner();
+    await registerBundledFontFace(arial, 'DeckReopen', owner);
+    releaseBundledFontFaces(owner);
     expect(familiesInstalled()).not.toContain('DeckReopen');
 
     // The memo must have been cleared, or this resolves against a registration
     // whose face is no longer installed.
-    await registerBundledFontFace(arial, 'DeckReopen');
+    await registerBundledFontFace(arial, 'DeckReopen', createFontFaceOwner());
 
     expect(familiesInstalled()).toContain('DeckReopen');
   });
 
-  test('releasing an unknown family is a no-op', () => {
+  test('releasing an owner that registered nothing is a no-op', () => {
     const before = installed.size;
 
-    releaseBundledFontFaces(['NeverRegistered']);
+    releaseBundledFontFaces(createFontFaceOwner());
 
     expect(installed.size).toBe(before);
   });
 
   test('a release during an in-flight load stops the face being installed', async () => {
     hold = () => {};
-    const pending = registerBundledFontFace(courier, 'DeckRacing');
+    const owner = createFontFaceOwner();
+    const pending = registerBundledFontFace(courier, 'DeckRacing', owner);
 
-    releaseBundledFontFaces(['DeckRacing']);
+    releaseBundledFontFaces(owner);
     hold?.();
     hold = null;
     await pending;
 
     expect(familiesInstalled()).not.toContain('DeckRacing');
+  });
+
+  test('a deck that joins an in-flight load keeps the face when the first lets go', async () => {
+    hold = () => {};
+    const stale = createFontFaceOwner();
+    const current = createFontFaceOwner();
+    const first = registerBundledFontFace(times, 'DeckHandover', stale);
+    const second = registerBundledFontFace(times, 'DeckHandover', current);
+
+    hold?.();
+    hold = null;
+    await Promise.all([first, second]);
+    releaseBundledFontFaces(stale);
+
+    expect(familiesInstalled()).toContain('DeckHandover');
+
+    releaseBundledFontFaces(current);
+    expect(familiesInstalled()).not.toContain('DeckHandover');
   });
 });

@@ -1,9 +1,11 @@
 import {
+  createFontFaceOwner,
   loadBundledFontBytes,
   registerBundledFontFace,
   resolveLastResortFace,
   resolveMetricCompatFace,
   type BundledFontFace,
+  type FontFaceOwner,
 } from '@betteroffice/docx-fonts'
 import type { DeckSnapshot, PptxFontFace, ShapeSnapshot } from '@betteroffice/pptx'
 
@@ -183,12 +185,13 @@ export interface DeckFontRegistration {
   /** How many deck families were registered; 0 means the layout need not redo. */
   added: number
   /**
-   * CSS families registered under this deck's own names. Each carries its own
-   * parsed copy of the bytes, so they are released when the deck closes. The
-   * shared metric aliases are deliberately absent — they are keyed by face
+   * This deck's claim on the faces registered under its own family names, each
+   * carrying its own parsed copy of the bytes. Released when the deck closes; a
+   * family another open deck also named survives on that deck's claim. The
+   * shared metric aliases are deliberately unowned — they are keyed by face
    * file, so every deck reuses the same handful.
    */
-  families: string[]
+  owner: FontFaceOwner
 }
 
 /**
@@ -217,7 +220,7 @@ export async function registerDeckFonts(
   const seen = new Set(
     already.map((request) => requestKey(request.family, request.bold, request.italic)),
   )
-  const families = new Set<string>()
+  const owner = createFontFaceOwner('deck-fonts')
   let added = 0
   for (const request of collectFontRequests(snapshot)) {
     const key = requestKey(request.family, request.bold, request.italic)
@@ -226,16 +229,15 @@ export async function registerDeckFonts(
     try {
       const face = resolvePresentationFace(request.family, request.bold, request.italic)
       handle.registerFont({ ...request, bytes: await loadPresentationFaceBytes(face) })
-      await registerBundledFontFace(face, request.family)
+      await registerBundledFontFace(face, request.family, owner)
       await registerMetricAlias(face)
-      families.add(request.family)
       added += 1
     } catch {
       // One family failing to load must not cost the deck the rest of them.
       continue
     }
   }
-  return { added, families: [...families] }
+  return { added, owner }
 }
 
 function requestKey(family: string, bold: boolean, italic: boolean): string {

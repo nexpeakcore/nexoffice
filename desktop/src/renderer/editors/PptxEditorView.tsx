@@ -6,7 +6,7 @@ import {
 } from '@betteroffice/pptx-react'
 import type { DeckSnapshot, PptxFontFace, ShapeSnapshot } from '@betteroffice/pptx'
 import { en as pptxEn, locales as pptxLocales, type PartialLocaleStrings } from '@betteroffice/pptx-i18n'
-import { releaseBundledFontFaces } from '@betteroffice/docx-fonts'
+import { releaseBundledFontFaces, type FontFaceOwner } from '@betteroffice/docx-fonts'
 import {
   baseFontRequests,
   loadBaseFontFaces,
@@ -96,7 +96,7 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
     const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
     const selectionRef = useRef<PptxEditorSelectionState>(NO_SELECTION)
     /** CSS families this deck registered, held so they can be given back. */
-    const deckFontsRef = useRef<string[] | null>(null)
+    const deckFontsRef = useRef<FontFaceOwner | null>(null)
     const readyRef = useRef(false)
     const onChangeRef = useRef(onChange)
     onChangeRef.current = onChange
@@ -129,12 +129,11 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
         if (refreshTimer.current) clearTimeout(refreshTimer.current)
         // Each deck family was registered as its own DOM face carrying its own
         // parsed copy of the bytes, so a deck naming many of them holds many.
-        // Released on the way out, before the next deck registers: two decks
-        // can name the same family, and a release running after would take
-        // away the face the new deck was just told it already had.
-        const families = deckFontsRef.current
+        // Only this deck's claim goes back: a family the next deck also names
+        // stays registered on that deck's own claim.
+        const owner = deckFontsRef.current
         deckFontsRef.current = null
-        if (families) releaseBundledFontFaces(families)
+        if (owner) releaseBundledFontFaces(owner)
       }
     }, [document.seed])
 
@@ -216,14 +215,15 @@ export const PptxEditorView = forwardRef<PptxEditorViewRef, PptxEditorViewProps>
           // a CJK family, an alias — arrives now, and the layout is redone so
           // the screen measures that text with the same face the PDF will.
           void registerDeckFonts(api.handle, snapshot, baseFontRequests()).then(
-            ({ added, families }) => {
-              // A deck replaced mid-registration owns faces nothing will draw;
-              // release them rather than hand them to the deck that took over.
+            ({ added, owner }) => {
+              // A deck replaced mid-registration holds faces nothing will draw;
+              // give its claim back rather than hand it to the deck that took
+              // over — a family both name survives on the new deck's claim.
               if (apiRef.current !== api) {
-                releaseBundledFontFaces(families)
+                releaseBundledFontFaces(owner)
                 return
               }
-              deckFontsRef.current = families
+              deckFontsRef.current = owner
               if (added > 0) api.refresh()
             },
           )

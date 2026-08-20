@@ -33,6 +33,23 @@ interface BufferFaceResources {
 }
 const bufferFaces = new Map<string, BufferFaceResources>();
 
+/** Who holds a buffer-registered face. Release takes back only that claim. */
+export type BufferFontOwner = symbol;
+
+/** A fresh owner, e.g. one per open document. */
+export function createBufferFontOwner(label = 'buffer-font-faces'): BufferFontOwner {
+  return Symbol(label);
+}
+
+/** Holder for faces that outlive any one document and are never released. */
+const SHARED_BUFFER_OWNER: BufferFontOwner = Symbol('shared-buffer-font-faces');
+
+// Claims per face key, recorded before the load starts so a document that is
+// replaced mid-load still gives back exactly what it asked for. A face two
+// documents both embed is registered once and held by both; it goes away when
+// the second one lets go, not the first.
+const bufferFaceOwners = new Map<string, Set<BufferFontOwner>>();
+
 function disposeBufferFace(resources: BufferFaceResources): void {
   resources.styleEl.remove();
   URL.revokeObjectURL(resources.objectUrl);
@@ -593,6 +610,7 @@ export async function loadFontFromBuffer(
   options?: {
     weight?: number | string;
     style?: 'normal' | 'italic';
+    owner?: BufferFontOwner;
   }
 ): Promise<boolean> {
   if (typeof document === 'undefined') return false;
@@ -600,6 +618,13 @@ export async function loadFontFromBuffer(
   const normalizedFamily = fontFamily.trim();
   const style = options?.style ?? 'normal';
   const key = faceKey(normalizedFamily, options?.weight, style);
+
+  // Claimed before any await: a caller that joins an in-flight load must be
+  // holding the face by the time the load it joined can be released.
+  const owner = options?.owner ?? SHARED_BUFFER_OWNER;
+  const owners = bufferFaceOwners.get(key);
+  if (owners) owners.add(owner);
+  else bufferFaceOwners.set(key, new Set([owner]));
 
   // Provenance: mark before the async work so an in-flight registration
   // already counts as registered (see loadFontWithMapping). Marking a family
@@ -636,6 +661,14 @@ export async function loadFontFromBuffer(
 
       await waitForFontAvailable(normalizedFamily, 3000);
 
+      // Every owner let go while this was loading, so nothing will ever
+      // release what recording it would hold.
+      if (!bufferFaceOwners.has(key)) {
+        disposeBufferFace(resources);
+        resources = null;
+        return true;
+      }
+
       // Only a face that is now reachable gets recorded; a failed one is
       // torn down below rather than left holding its bytes for the session.
       bufferFaces.set(key, resources);
@@ -660,39 +693,39 @@ export async function loadFontFromBuffer(
 }
 
 /**
- * Release every buffer-registered face of the named families — the fonts a
- * DOCX embedded in itself. Removes each `@font-face` rule and revokes the
- * object URL over the font bytes, so closing a document gives back what its
- * embedded fonts held instead of keeping them for the session.
+ * Give back this owner's claim on every buffer-registered face it asked for —
+ * the fonts a DOCX embedded in itself. A face no other owner still holds has
+ * its `@font-face` rule removed and its object URL revoked, so closing a
+ * document gives back what its embedded fonts held.
  *
  * Only faces registered through {@link loadFontFromBuffer} are touched:
  * consumer-hosted faces (the `fonts` prop, `loadFontFromUrl`) outlive any one
- * document and are left alone, as are Google-fetched families.
+ * document, as do Google-fetched families.
  *
- * A family whose last buffer face is released also loses its "loaded" and
- * "registered here" markers, so re-opening a document that embeds it
- * registers the bytes again rather than trusting a face that is gone.
- *
- * @param families - Family names to release, e.g. the set `loadEmbeddedFonts` returned
+ * @param owner - the owner passed to {@link loadFontFromBuffer}
  *
  * @public
  */
-export function releaseBufferFontFaces(families: Iterable<string>): void {
-  const targets = new Set<string>();
-  for (const family of families) targets.add(family.trim());
-  if (targets.size === 0) return;
+export function releaseBufferFontFaces(owner: BufferFontOwner): void {
+  const families = new Set<string>();
 
-  for (const [key, resources] of [...bufferFaces]) {
-    if (!targets.has(resources.family)) continue;
+  for (const [key, owners] of [...bufferFaceOwners]) {
+    if (!owners.delete(owner)) continue;
+    if (owners.size > 0) continue;
+    bufferFaceOwners.delete(key);
+    loadedFaces.delete(key);
+    const resources = bufferFaces.get(key);
+    if (!resources) continue;
     disposeBufferFace(resources);
     bufferFaces.delete(key);
-    loadedFaces.delete(key);
+    families.add(resources.family);
   }
+  if (families.size === 0) return;
 
   // Family-wide markers only drop once no face of that family survives —
   // a family can also carry URL-registered faces, whose provenance must not
   // be discarded along with the document's.
-  for (const family of targets) {
+  for (const family of families) {
     const prefix = `${family}|`;
     let survives = false;
     for (const key of loadedFaces) {

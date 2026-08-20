@@ -5,12 +5,14 @@ import type { YrsDocxHost } from '@betteroffice/docx/yrs';
 import {
   loadEmbeddedFonts,
   releaseBufferFontFaces,
+  createBufferFontOwner,
   loadDocumentFonts,
   loadFontsWithMapping,
   getRenderableDocumentFonts,
   getEmbeddedFontFamilies,
   selectRenderableFonts,
   toArrayBuffer,
+  type BufferFontOwner,
   type DocxInput,
 } from '@betteroffice/docx/utils';
 import type { FontOption } from '@betteroffice/docx/utils/fontOptions';
@@ -75,16 +77,17 @@ export function useDocumentLoader({
   const [yrsSeedBytes, setYrsSeedBytes] = useState<Uint8Array | null>(null);
   const [yrsSeedGeneration, setYrsSeedGeneration] = useState(0);
   const [loadGeneration] = useState(() => new DocumentLoadGeneration());
-  // Families the open document embedded in itself. Each holds an object URL
-  // over its font bytes plus an `@font-face` rule, neither of which the
-  // browser reclaims on its own — so the editor hands them back when the
-  // document is replaced or the editor goes away.
-  const embeddedFacesRef = useRef<Set<string> | null>(null);
+  // The open document's claim on the faces it embedded. Each face holds an
+  // object URL over its bytes plus an `@font-face` rule, neither of which the
+  // browser reclaims on its own — so the editor hands the claim back when the
+  // document is replaced or the editor goes away. A face the next document
+  // also embeds survives on that document's own claim.
+  const embeddedFacesRef = useRef<BufferFontOwner | null>(null);
   useEffect(
     () => () => {
-      const families = embeddedFacesRef.current;
+      const owner = embeddedFacesRef.current;
       embeddedFacesRef.current = null;
-      if (families) releaseBufferFontFaces(families);
+      if (owner) releaseBufferFontFaces(owner);
     },
     []
   );
@@ -150,26 +153,31 @@ export function useDocumentLoader({
       setDocumentFonts(
         [...new Map(documentFonts.map((font) => [font.name.toLowerCase(), font])).values()]
       );
-      // Give back the previous document's embedded faces before registering
-      // this one's. Released first, not after: the two documents may embed
-      // the same family, and a face already registered under that name would
-      // make this load a no-op — then the release would take it away.
-      const previousEmbedded = embeddedFacesRef.current;
-      embeddedFacesRef.current = null;
-      if (previousEmbedded) releaseBufferFontFaces(previousEmbedded);
+      // This document's own claim, taken before the previous one is given
+      // back: a face both documents embed is registered once, and releasing
+      // the old claim first would take it away from under this load.
+      const owner = createBufferFontOwner();
+      const previousOwner = embeddedFacesRef.current;
+      embeddedFacesRef.current = owner;
       void loadEmbeddedFonts(
         doc.package.fontTable,
         host.embeddedFonts,
-        host.fontTableRelationshipsXml
+        host.fontTableRelationshipsXml,
+        owner
       )
-        .then((families) => {
-          // A load that was superseded mid-flight owns faces nothing will
-          // ever draw; release them rather than record them.
-          if (loadGeneration.isCurrent(generation)) embeddedFacesRef.current = families;
-          else releaseBufferFontFaces(families);
-        })
         .catch((error) => {
           console.warn('Failed to load embedded document fonts:', error);
+        })
+        .then(() => {
+          // A load that was superseded mid-flight holds faces nothing will
+          // ever draw; give its claim back rather than keep it.
+          if (!loadGeneration.isCurrent(generation) && embeddedFacesRef.current === owner) {
+            embeddedFacesRef.current = null;
+          }
+          if (embeddedFacesRef.current !== owner) releaseBufferFontFaces(owner);
+          // The previous document's claim goes back only now, so a face both
+          // documents embed stays registered throughout, on this one's claim.
+          if (previousOwner) releaseBufferFontFaces(previousOwner);
         })
         .then(() =>
           Promise.all([loadFontsWithMapping(host.referencedFonts), loadDocumentFonts(doc)])

@@ -80,6 +80,7 @@ export {
   loadFonts,
   loadFontFromBuffer,
   releaseBufferFontFaces,
+  createBufferFontOwner,
   isFontLoaded,
   isLoading as isFontsLoading,
   getLoadedFonts,
@@ -89,6 +90,7 @@ export {
   setGoogleFontsEnabled,
   isGoogleFontsEnabled,
 } from './utils/fontLoader';
+export type { BufferFontOwner } from './utils/fontLoader';
 
 export {
   type PrintOptions,

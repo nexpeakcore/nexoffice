@@ -61,6 +61,7 @@ export {
   loadFonts,
   loadFontFromBuffer,
   releaseBufferFontFaces,
+  createBufferFontOwner,
   loadFontFromUrl,
   loadFontDefinitions,
   loadFontWithMapping,
@@ -79,7 +80,7 @@ export {
   getGoogleFontEquivalent,
   extractFontsFromDocument,
 } from './fontLoader';
-export type { FontDefinition } from './fontLoader';
+export type { FontDefinition, BufferFontOwner } from './fontLoader';
 
 // Embedded fonts (de-obfuscation + load + picker discovery)
 export { deobfuscateFont, isValidFontKey } from './fontDeobfuscation';

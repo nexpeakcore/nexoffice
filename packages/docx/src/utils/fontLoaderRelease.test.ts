@@ -20,9 +20,13 @@ URL.revokeObjectURL = ((url: string) => {
   revoked.push(url);
 }) as typeof URL.revokeObjectURL;
 
-const { loadFontFromBuffer, loadFontFromUrl, releaseBufferFontFaces, isFontLoaded } = await import(
-  './fontLoader'
-);
+const {
+  createBufferFontOwner,
+  loadFontFromBuffer,
+  loadFontFromUrl,
+  releaseBufferFontFaces,
+  isFontLoaded,
+} = await import('./fontLoader');
 
 const doc = globals.document as Document;
 
@@ -49,46 +53,85 @@ describe('releaseBufferFontFaces', () => {
   });
 
   test('releasing removes the rule and revokes the bytes', async () => {
-    await loadFontFromBuffer('EmbeddedBeta', bytes(), { weight: 400 });
+    const owner = createBufferFontOwner();
+    await loadFontFromBuffer('EmbeddedBeta', bytes(), { weight: 400, owner });
     const before = revoked.length;
 
-    releaseBufferFontFaces(['EmbeddedBeta']);
+    releaseBufferFontFaces(owner);
 
     expect(styleRules()).not.toContain('EmbeddedBeta');
     expect(revoked.length).toBe(before + 1);
     expect(isFontLoaded('EmbeddedBeta')).toBe(false);
   });
 
-  test('every weight of a released family is dropped', async () => {
-    await loadFontFromBuffer('EmbeddedGamma', bytes(), { weight: 400 });
-    await loadFontFromBuffer('EmbeddedGamma', bytes(), { weight: 700 });
+  test('every weight that owner registered is dropped', async () => {
+    const owner = createBufferFontOwner();
+    await loadFontFromBuffer('EmbeddedGamma', bytes(), { weight: 400, owner });
+    await loadFontFromBuffer('EmbeddedGamma', bytes(), { weight: 700, owner });
     const before = revoked.length;
 
-    releaseBufferFontFaces(['EmbeddedGamma']);
+    releaseBufferFontFaces(owner);
 
     expect(revoked.length).toBe(before + 2);
     expect(styleRules()).not.toContain('EmbeddedGamma');
   });
 
   test('a released family registers again on the next document', async () => {
-    await loadFontFromBuffer('EmbeddedDelta', bytes(), { weight: 400 });
-    releaseBufferFontFaces(['EmbeddedDelta']);
+    const first = createBufferFontOwner();
+    await loadFontFromBuffer('EmbeddedDelta', bytes(), { weight: 400, owner: first });
+    releaseBufferFontFaces(first);
     expect(styleRules()).not.toContain('EmbeddedDelta');
 
     // The face key must have been cleared, or this call short-circuits and
     // the document renders against a rule that no longer exists.
-    await loadFontFromBuffer('EmbeddedDelta', bytes(), { weight: 400 });
+    await loadFontFromBuffer('EmbeddedDelta', bytes(), {
+      weight: 400,
+      owner: createBufferFontOwner(),
+    });
 
     expect(styleRules()).toContain('EmbeddedDelta');
     expect(isFontLoaded('EmbeddedDelta')).toBe(true);
   });
 
-  test('leaves consumer-hosted faces of the same family alone', async () => {
-    await loadFontFromUrl('SharedName', 'https://example.test/shared.woff2', { weight: 700 });
-    await loadFontFromBuffer('SharedName', bytes(), { weight: 400 });
+  test('a face two documents embed survives the first release', async () => {
+    const stale = createBufferFontOwner();
+    const current = createBufferFontOwner();
+    await loadFontFromBuffer('EmbeddedShared', bytes(), { weight: 400, owner: stale });
+    await loadFontFromBuffer('EmbeddedShared', bytes(), { weight: 400, owner: current });
     const before = revoked.length;
 
-    releaseBufferFontFaces(['SharedName']);
+    releaseBufferFontFaces(stale);
+
+    expect(styleRules()).toContain('EmbeddedShared');
+    expect(isFontLoaded('EmbeddedShared')).toBe(true);
+    expect(revoked.length).toBe(before);
+
+    releaseBufferFontFaces(current);
+
+    expect(styleRules()).not.toContain('EmbeddedShared');
+    expect(revoked.length).toBe(before + 1);
+  });
+
+  test('a document that joins an in-flight load still holds the face', async () => {
+    const stale = createBufferFontOwner();
+    const current = createBufferFontOwner();
+    const first = loadFontFromBuffer('EmbeddedRacing', bytes(), { weight: 400, owner: stale });
+    const second = loadFontFromBuffer('EmbeddedRacing', bytes(), { weight: 400, owner: current });
+    await Promise.all([first, second]);
+
+    releaseBufferFontFaces(stale);
+
+    expect(styleRules()).toContain('EmbeddedRacing');
+    expect(isFontLoaded('EmbeddedRacing')).toBe(true);
+  });
+
+  test('leaves consumer-hosted faces of the same family alone', async () => {
+    const owner = createBufferFontOwner();
+    await loadFontFromUrl('SharedName', 'https://example.test/shared.woff2', { weight: 700 });
+    await loadFontFromBuffer('SharedName', bytes(), { weight: 400, owner });
+    const before = revoked.length;
+
+    releaseBufferFontFaces(owner);
 
     // The url-registered face's rule survives; only the buffer face's bytes
     // were revoked, and the family stays "loaded" because a face remains.
@@ -97,19 +140,11 @@ describe('releaseBufferFontFaces', () => {
     expect(isFontLoaded('SharedName')).toBe(true);
   });
 
-  test('releasing an unknown family is a no-op', () => {
-    const before = revoked.length;
-
-    releaseBufferFontFaces(['NeverRegistered']);
-
-    expect(revoked.length).toBe(before);
-  });
-
-  test('releasing nothing touches nothing', async () => {
+  test('releasing an owner that registered nothing is a no-op', async () => {
     await loadFontFromBuffer('EmbeddedEpsilon', bytes(), { weight: 400 });
     const before = revoked.length;
 
-    releaseBufferFontFaces([]);
+    releaseBufferFontFaces(createBufferFontOwner());
 
     expect(revoked.length).toBe(before);
     expect(styleRules()).toContain('EmbeddedEpsilon');

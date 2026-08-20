@@ -487,16 +487,27 @@ export function bundledFaceLoader(face: BundledFontFace): BundledFaceLoader {
   return load;
 }
 
+/** Who holds a registration. Release takes back only that holder's claim. */
+export type FontFaceOwner = symbol;
+
+/** A fresh owner, e.g. one per open presentation. */
+export function createFontFaceOwner(label = 'font-faces'): FontFaceOwner {
+  return Symbol(label);
+}
+
+/** Holder for registrations that outlive any one document and are never released. */
+const SHARED_OWNER: FontFaceOwner = Symbol('shared-font-faces');
+
 /**
  * One DOM registration. `fontFace` is filled in once the load lands — it is
  * the only handle `document.fonts.delete` accepts, and the key cannot
- * reconstruct it. `family` is kept beside the key because a CSS family name
- * may itself contain the key's separator.
+ * reconstruct it. `owners` is every holder that has not released yet; the
+ * face goes away when the last one does.
  */
 interface RegisteredFace {
   promise: Promise<void>;
-  family: string;
   fontFace: FontFace | null;
+  owners: Set<FontFaceOwner>;
 }
 
 const registeredFaces = new Map<string, RegisteredFace>();
@@ -508,11 +519,15 @@ const registeredFaces = new Map<string, RegisteredFace>();
  * (cssFamily, weight, style); a failed registration is evicted so it can be
  * retried. Resolves as a no-op in non-DOM environments.
  *
- * Each registration parses its own copy of the bytes, so a caller that
- * registers a face under many family names holds many copies — see
- * {@link releaseBundledFontFaces} for giving them back.
+ * `owner` joins the holders of that one registration. Omitted, the face is
+ * held forever; pass one and {@link releaseBundledFontFaces} gives back the
+ * copy of the bytes it parsed.
  */
-export function registerBundledFontFace(face: BundledFontFace, cssFamily?: string): Promise<void> {
+export function registerBundledFontFace(
+  face: BundledFontFace,
+  cssFamily?: string,
+  owner: FontFaceOwner = SHARED_OWNER
+): Promise<void> {
   if (
     typeof document === 'undefined' ||
     typeof FontFace === 'undefined' ||
@@ -523,8 +538,15 @@ export function registerBundledFontFace(face: BundledFontFace, cssFamily?: strin
   const family = cssFamily ?? face.family;
   const key = `${family}|${face.weight}|${face.style}`;
   const existing = registeredFaces.get(key);
-  if (existing) return existing.promise;
-  const entry: RegisteredFace = { promise: Promise.resolve(), family, fontFace: null };
+  if (existing) {
+    existing.owners.add(owner);
+    return existing.promise;
+  }
+  const entry: RegisteredFace = {
+    promise: Promise.resolve(),
+    fontFace: null,
+    owners: new Set([owner]),
+  };
   entry.promise = (async () => {
     const bytes = await loadBundledFontBytes(face);
     // The family name goes through the FontFace API as a value, never
@@ -548,25 +570,17 @@ export function registerBundledFontFace(face: BundledFontFace, cssFamily?: strin
 }
 
 /**
- * Drop every registration made under the named CSS families, removing each
- * face from `document.fonts`. Registrations are per family name, and each
- * carries its own parsed copy of the font bytes, so a presentation that named
- * a hundred families holds a hundred faces until they are released.
+ * Give back this owner's claim on every face it registered, removing the face
+ * from `document.fonts` once no other owner holds it. Re-registering a
+ * released face reloads it, so an early release costs a reload, not a gap.
  *
- * Families not named here — the shared metric aliases, the faces another
- * document still needs — are untouched. Re-registering a released family
- * loads it again, so releasing one still in use costs a reload, not a
- * missing face.
- *
- * @param families - CSS family names to release
+ * @param owner - the owner passed to {@link registerBundledFontFace}
  */
-export function releaseBundledFontFaces(families: Iterable<string>): void {
+export function releaseBundledFontFaces(owner: FontFaceOwner): void {
   if (typeof document === 'undefined' || document.fonts === undefined) return;
-  const targets = new Set<string>();
-  for (const family of families) targets.add(family);
-  if (targets.size === 0) return;
   for (const [key, entry] of [...registeredFaces]) {
-    if (!targets.has(entry.family)) continue;
+    if (!entry.owners.delete(owner)) continue;
+    if (entry.owners.size > 0) continue;
     // Dropped before the load lands, the in-flight registration sees the
     // entry is gone and never adds its face.
     registeredFaces.delete(key);
