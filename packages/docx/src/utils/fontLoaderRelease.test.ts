@@ -9,7 +9,7 @@ const saved: Record<string, unknown> = {};
 const revoked: string[] = [];
 let nextUrl = 0;
 
-for (const key of ['document', 'Blob', 'HTMLStyleElement']) {
+for (const key of ['document', 'Blob', 'Event', 'HTMLStyleElement']) {
   saved[key] = globals[key];
   globals[key] = (window as unknown as Record<string, unknown>)[key];
 }
@@ -24,6 +24,7 @@ const {
   createBufferFontOwner,
   loadFontFromBuffer,
   loadFontFromUrl,
+  loadFontWithMapping,
   releaseBufferFontFaces,
   isFontLoaded,
 } = await import('./fontLoader');
@@ -36,6 +37,13 @@ function styleRules(): string {
 
 function bytes(): ArrayBuffer {
   return new Uint8Array([0, 1, 2, 3]).buffer;
+}
+
+/** The Google Fonts <link> loadFontWithMapping injects, if it got that far. */
+function googleLinks(name: string): HTMLLinkElement[] {
+  return [...doc.head.querySelectorAll('link')].filter((el) =>
+    (el.getAttribute('href') ?? '').includes(name)
+  ) as HTMLLinkElement[];
 }
 
 describe('releaseBufferFontFaces', () => {
@@ -166,6 +174,28 @@ describe('releaseBufferFontFaces', () => {
     releaseBufferFontFaces(owner);
     expect(styleRules()).toContain('urlfirst.woff2');
     expect(isFontLoaded('UrlFirst')).toBe(true);
+  });
+
+  test('a release keeps family provenance while a same-family face is loading', async () => {
+    const owner = createBufferFontOwner();
+    await loadFontFromBuffer('Calibri', bytes(), { weight: 400, owner });
+    // A second face of the family, still in flight when the document closes.
+    const pending = loadFontFromUrl('Calibri', 'https://example.test/calibri-bold.woff2', {
+      weight: 700,
+    });
+
+    releaseBufferFontFaces(owner);
+    await pending;
+
+    // Calibri is still a registered — so possibly subsetted — family, which is
+    // what keeps its metric-compatible Google equivalent being fetched as the
+    // glyph-coverage fallback. Dropping the marker mid-load loses that.
+    expect(googleLinks('Carlito')).toHaveLength(0);
+    const mapping = loadFontWithMapping('Calibri');
+    const injected = googleLinks('Carlito');
+    expect(injected).toHaveLength(1);
+    injected[0].dispatchEvent(new (globals.Event as typeof Event)('error'));
+    await mapping;
   });
 
   test('releasing an owner that registered nothing is a no-op', async () => {

@@ -175,6 +175,25 @@ function inFlightFacePromises(family: string): Promise<boolean>[] {
   return pending;
 }
 
+// Any face of this family, settled or still loading. The in-flight half is
+// what keeps a release from dropping family-wide markers out from under a
+// registration that is still going: both loaders mark provenance before they
+// await and neither re-marks on success, so a marker dropped mid-load never
+// comes back and loadFontWithMapping would stop treating the family as
+// possibly subsetted.
+function familyFaceRemains(family: string): boolean {
+  const prefix = `${family}|`;
+  for (const key of loadedFaces) {
+    if (key.startsWith(prefix)) return true;
+  }
+  for (const map of [loadingBufferFaces, loadingUrlFaces]) {
+    for (const key of map.keys()) {
+      if (key.startsWith(prefix)) return true;
+    }
+  }
+  return false;
+}
+
 // Shared success bookkeeping for the buffer/URL face loaders. One place, so
 // the two loaders cannot drift (the next probeSatisfied-style cache line
 // added to one but not the other would skew buffer vs URL faces silently).
@@ -707,14 +726,10 @@ export async function loadFontFromBuffer(
 }
 
 /**
- * Give back this owner's claim on every buffer-registered face it asked for —
- * the fonts a DOCX embedded in itself. A face no other owner still holds has
- * its `@font-face` rule removed and its object URL revoked, so closing a
- * document gives back what its embedded fonts held.
- *
- * Only faces registered through {@link loadFontFromBuffer} are touched:
- * consumer-hosted faces (the `fonts` prop, `loadFontFromUrl`) outlive any one
- * document, as do Google-fetched families.
+ * Give back this owner's claim on the faces it registered from buffers. A face
+ * no other owner holds loses its `@font-face` rule and object URL; consumer
+ * faces (`loadFontFromUrl`, the `fonts` prop) and Google families are never
+ * touched.
  *
  * @param owner - the owner passed to {@link loadFontFromBuffer}
  *
@@ -738,19 +753,11 @@ export function releaseBufferFontFaces(owner: BufferFontOwner): void {
   }
   if (families.size === 0) return;
 
-  // Family-wide markers only drop once no face of that family survives —
-  // a family can also carry URL-registered faces, whose provenance must not
-  // be discarded along with the document's.
+  // Family-wide markers only drop once no face of that family remains — a
+  // family can also carry URL-registered faces, or a load still in flight,
+  // whose provenance must not be discarded along with the document's.
   for (const family of families) {
-    const prefix = `${family}|`;
-    let survives = false;
-    for (const key of loadedFaces) {
-      if (key.startsWith(prefix)) {
-        survives = true;
-        break;
-      }
-    }
-    if (survives) continue;
+    if (familyFaceRemains(family)) continue;
     loadedFonts.delete(family);
     registeredFamilies.delete(family);
   }
