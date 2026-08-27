@@ -26,6 +26,12 @@ import {
   type StatusMessage,
   type TextSelectionState,
 } from './services/documentPolicy.js'
+import {
+  clearDocumentProfile,
+  noteDocumentOpened,
+  serveDiagnosticsSamples,
+  trackOpenSettle,
+} from './services/diagnostics.js'
 import { shareInFlight } from './services/singleFlight.js'
 import { spellCheckService, type Misspelling } from './services/spellcheck.js'
 import type { EditorStats } from './services/textStats.js'
@@ -109,6 +115,19 @@ export function App() {
   }, [document])
 
   const documentKind = document?.kind ?? null
+  const documentId = document?.id ?? null
+
+  useEffect(() => serveDiagnosticsSamples(), [])
+
+  // Keyed on the document id, not the state object: a dirty flip replaces the
+  // object and would otherwise restart the measurement mid-open.
+  useEffect(() => {
+    if (documentId === null) {
+      clearDocumentProfile()
+      return
+    }
+    return trackOpenSettle()
+  }, [documentId])
 
   // The menu lives in the main process and is rebuilt whole, so a caret moving
   // inside one paragraph must not reach it: only a flip in what the verbs can
@@ -419,6 +438,7 @@ export function App() {
     // until it says otherwise.
     pptxSelectionRef.current = null
     publishEditCapabilities()
+    noteDocumentOpened(opened, kind)
     setDocument(next)
     setStatus({ key: 'status.opened', vars: { name: opened.name } })
   }, [clearStats, publishEditCapabilities])

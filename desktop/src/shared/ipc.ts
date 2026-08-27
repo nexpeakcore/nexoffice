@@ -18,6 +18,8 @@ export const IPC = {
   menuAction: 'menu:action',
   webEditAction: 'edit:webAction',
   documentKind: 'app:documentKind',
+  diagnostics: 'app:diagnostics',
+  diagnosticsSample: 'app:diagnosticsSample',
   editCapabilities: 'app:editCapabilities',
   rendererReady: 'renderer:ready',
   closeRequest: 'window:closeRequest',
@@ -60,6 +62,11 @@ export interface OpenedDocument {
   name: string
   kind: DocumentKind | null
   data: Uint8Array
+  /** Milliseconds the main process spent reading the bytes off disk. */
+  readMs?: number
+  /** `Date.now()` as the main process handed the bytes over, so the renderer
+   * can charge the structured-clone transfer to the right phase. */
+  sentAt?: number
 }
 
 export interface SaveRequest {
@@ -155,6 +162,88 @@ export function readEditCapabilities(value: unknown): EditCapabilities | null {
     return null
   }
   return { cut, copy, paste, delete: remove, selectAll }
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics. Chromium runs Web Workers as threads inside the renderer, so
+// `app.getAppMetrics()` reports one number covering the resident layout
+// engine, the image cache and the JS heap together. The renderer is the only
+// place that can take those apart, so it pushes its own account over and the
+// main process merges it into the report.
+
+/** Which document the renderer is holding, for the process label. */
+export interface DocumentProfile {
+  kind: DocumentKind
+  name: string
+  /** Size of the seed bytes as opened from disk. */
+  bytes: number
+}
+
+/**
+ * Wall-clock cost of each phase of the last document open, in milliseconds.
+ * Every phase is measured where it actually happens rather than inferred, so
+ * a missing one means it was not observed — never that it was instant.
+ */
+export interface OpenPhaseTimings {
+  /** Main-process disk read. */
+  read?: number
+  /** Hand-off from the main process to the renderer (structured clone). */
+  transfer?: number
+  /** Editor construction, parse and CRDT seed, to the first frame after the
+   * document is committed to React. */
+  mount?: number
+  /** From that first frame to the one where the main thread is no longer
+   * blocked — where a heavy document stops being frozen. */
+  interactive?: number
+}
+
+export interface MemoryBreakdownRow {
+  label: string
+  bytes: number
+}
+
+export interface RendererDiagnostics {
+  document: DocumentProfile | null
+  open: OpenPhaseTimings | null
+  memory: MemoryBreakdownRow[]
+}
+
+function readOpenPhaseTimings(value: unknown): OpenPhaseTimings | null {
+  if (typeof value !== 'object' || value === null) return null
+  const timings: OpenPhaseTimings = {}
+  for (const phase of ['read', 'transfer', 'mount', 'interactive'] as const) {
+    const ms = (value as Record<string, unknown>)[phase]
+    if (typeof ms === 'number' && Number.isFinite(ms) && ms >= 0) timings[phase] = ms
+  }
+  return timings
+}
+
+// The payload crosses the IPC boundary as a plain value and is rendered into a
+// dialog, so its shape is checked rather than trusted.
+export function readRendererDiagnostics(value: unknown): RendererDiagnostics | null {
+  if (typeof value !== 'object' || value === null) return null
+  const { document, open, memory } = value as Partial<RendererDiagnostics>
+
+  let profile: DocumentProfile | null = null
+  if (typeof document === 'object' && document !== null) {
+    const { kind, name, bytes } = document
+    const known = kind === 'docx' || kind === 'xlsx' || kind === 'pptx'
+    if (!known || typeof name !== 'string' || typeof bytes !== 'number') return null
+    profile = { kind, name, bytes: Number.isFinite(bytes) && bytes >= 0 ? bytes : 0 }
+  }
+
+  const rows: MemoryBreakdownRow[] = []
+  if (Array.isArray(memory)) {
+    for (const row of memory) {
+      if (typeof row !== 'object' || row === null) continue
+      const { label, bytes } = row as Partial<MemoryBreakdownRow>
+      if (typeof label !== 'string' || typeof bytes !== 'number') continue
+      if (!Number.isFinite(bytes) || bytes <= 0) continue
+      rows.push({ label, bytes })
+    }
+  }
+
+  return { document: profile, open: readOpenPhaseTimings(open), memory: rows }
 }
 
 export type UpdateEvent =

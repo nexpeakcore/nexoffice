@@ -14,7 +14,12 @@ import {
 } from 'electron'
 import { closeDecision } from './closePolicy.js'
 import { buildMenu } from './menu.js'
-import { collectProcessReport, formatProcessReport, labelWebContents } from './processReport.js'
+import {
+  collectProcessReport,
+  documentRendererLabel,
+  formatProcessReport,
+  labelWebContents,
+} from './processReport.js'
 import {
   addRecent,
   clearRecents,
@@ -42,6 +47,7 @@ import {
   kindFromPath,
   PRINT_PAGE_CAP,
   readEditCapabilities,
+  readRendererDiagnostics,
   sameEditCapabilities,
   type DocumentKind,
   type EditCapabilities,
@@ -53,6 +59,7 @@ import {
   type PrintResult,
   type PrintRenderResult,
   type RefusedChoice,
+  type RendererDiagnostics,
   type SaveRequest,
   type SaveResult,
   type UnsavedChoice,
@@ -69,6 +76,9 @@ let closeRequested = false
 /** Whether the renderer has stopped answering input, per Electron. */
 let rendererUnresponsive = false
 let activeDocumentKind: DocumentKind | null = null
+/** The renderer's last account of its own memory, and when it landed. */
+let rendererDiagnostics: RendererDiagnostics | null = null
+let diagnosticsAt = 0
 let activeEditCapabilities: EditCapabilities = ALL_EDIT_CAPABILITIES
 const pendingOpenPaths: string[] = []
 const grantedPaths = new Set<string>()
@@ -177,6 +187,10 @@ function trackWindowState(window: BrowserWindow): void {
 
 function createWindow(): BrowserWindow {
   rendererReady = false
+  // A fresh window holds none of the previous one's memory, so its numbers
+  // must not survive into the next report as though they still did.
+  rendererDiagnostics = null
+  diagnosticsAt = 0
 
   const { bounds, maximized } = restoredWindowState()
 
@@ -197,7 +211,7 @@ function createWindow(): BrowserWindow {
     },
   })
 
-  labelWebContents(window.webContents, 'Renderer · Document window')
+  labelWebContents(window.webContents, documentRendererLabel(null))
 
   window.once('ready-to-show', () => {
     if (maximized) window.maximize()
@@ -283,12 +297,15 @@ function createWindow(): BrowserWindow {
 }
 
 async function readDocument(filePath: string): Promise<OpenedDocument> {
+  const started = Date.now()
   const data = await readFile(filePath)
   return {
     path: filePath,
     name: basename(filePath),
     kind: kindFromPath(filePath),
     data: new Uint8Array(data),
+    readMs: Date.now() - started,
+    sentAt: Date.now(),
   }
 }
 
@@ -373,8 +390,21 @@ function showAboutDialog(): void {
   void (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options))
 }
 
+function requestDiagnosticsSample(): void {
+  if (!mainWindow || mainWindow.isDestroyed() || !rendererReady) return
+  mainWindow.webContents.send(IPC.diagnosticsSample)
+}
+
 function showProcessReportDialog(): void {
-  const report = formatProcessReport(collectProcessReport())
+  // The renderer takes a fresh sample on the way in, so the Refresh button —
+  // not this first render — is what shows current numbers. Asking and then
+  // waiting would hang the dialog exactly when it is most wanted: while the
+  // renderer is busy laying out the heavy document being diagnosed.
+  requestDiagnosticsSample()
+  const report = formatProcessReport(collectProcessReport(), {
+    diagnostics: rendererDiagnostics,
+    sampleAgeMs: rendererDiagnostics ? Date.now() - diagnosticsAt : null,
+  })
   const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
   const options: Electron.MessageBoxOptions = {
     type: 'info',
@@ -748,6 +778,15 @@ function registerIpc(): void {
     else if (action === 'delete') contents.delete()
     else if (action === 'selectAll') contents.selectAll()
     else contents.paste()
+  })
+
+  ipcMain.on(IPC.diagnostics, (event, payload: unknown) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) return
+    const next = readRendererDiagnostics(payload)
+    if (!next) return
+    rendererDiagnostics = next
+    diagnosticsAt = Date.now()
+    labelWebContents(mainWindow.webContents, documentRendererLabel(next.document))
   })
 
   ipcMain.on(IPC.documentKind, (event, kind: DocumentKind | null) => {

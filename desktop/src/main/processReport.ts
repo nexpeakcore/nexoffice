@@ -1,4 +1,5 @@
 import { app, BrowserWindow, webContents, type ProcessMetric, type WebContents } from 'electron'
+import type { DocumentProfile, RendererDiagnostics } from '../shared/ipc.js'
 
 export interface ProcessRow {
   pid: number
@@ -17,6 +18,20 @@ const explicitLabels = new WeakMap<WebContents, string>()
 /** Name a renderer so the report can say which window a PID belongs to. */
 export function labelWebContents(contents: WebContents, label: string): void {
   explicitLabels.set(contents, label)
+}
+
+function megabytes(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/**
+ * The document renderer's label. Naming the open file is what makes a report
+ * from a user actionable: "the renderer is at 1.2 GB" says nothing without the
+ * document that put it there.
+ */
+export function documentRendererLabel(profile: DocumentProfile | null): string {
+  if (!profile) return 'Renderer · Document window (no document)'
+  return `Renderer · ${profile.kind.toUpperCase()} · ${profile.name} (${megabytes(profile.bytes)})`
 }
 
 const UTILITY_LABELS: Record<string, string> = {
@@ -99,7 +114,58 @@ function padStart(value: string, width: number): string {
   return value.length >= width ? value : ' '.repeat(width - value.length) + value
 }
 
-export function formatProcessReport(rows: readonly ProcessRow[]): string {
+/** The renderer's own account of its memory, and how stale that account is. */
+export interface ProcessReportDetail {
+  diagnostics: RendererDiagnostics | null
+  /** Milliseconds since the renderer's sample landed; null if none ever did. */
+  sampleAgeMs: number | null
+}
+
+function formatAge(ms: number | null): string {
+  if (ms === null) return 'never sampled'
+  if (ms < 1000) return 'just sampled'
+  if (ms < 60_000) return `sampled ${Math.round(ms / 1000)}s ago`
+  return `sampled ${Math.round(ms / 60_000)}m ago`
+}
+
+function memorySection(detail: ProcessReportDetail): string[] {
+  const rows = [...(detail.diagnostics?.memory ?? [])].sort((a, b) => b.bytes - a.bytes)
+  if (rows.length === 0) return []
+  const width = Math.max(...rows.map((row) => row.label.length), 'accounted'.length)
+  const accounted = rows.reduce((sum, row) => sum + row.bytes, 0)
+  return [
+    '',
+    `Document renderer · memory (${formatAge(detail.sampleAgeMs)})`,
+    ...rows.map((row) => `  ${pad(row.label, width)}  ${padStart(megabytes(row.bytes), 10)}`),
+    `  ${pad('accounted', width)}  ${padStart(megabytes(accounted), 10)}`,
+  ]
+}
+
+function openSection(detail: ProcessReportDetail): string[] {
+  const open = detail.diagnostics?.open
+  if (!open) return []
+  const phases: Array<[string, number | undefined]> = [
+    ['read', open.read],
+    ['transfer', open.transfer],
+    ['mount', open.mount],
+    ['interactive', open.interactive],
+  ]
+  const measured = phases.filter((entry): entry is [string, number] => entry[1] !== undefined)
+  if (measured.length === 0) return []
+  const total = measured.reduce((sum, [, ms]) => sum + ms, 0)
+  const name = detail.diagnostics?.document?.name
+  return [
+    '',
+    name ? `Document open · ${name}` : 'Document open',
+    `  ${measured.map(([phase, ms]) => `${phase} ${Math.round(ms)}ms`).join(' · ')}`,
+    `  total ${Math.round(total)}ms`,
+  ]
+}
+
+export function formatProcessReport(
+  rows: readonly ProcessRow[],
+  detail?: ProcessReportDetail
+): string {
   const labelWidth = Math.max(5, ...rows.map((row) => row.label.length))
   const header = `${pad('PROCESS', labelWidth)}  ${padStart('PID', 7)}  ${padStart('RAM', 9)}  ${padStart('PEAK', 9)}  ${padStart('CPU', 6)}`
   const lines = rows.map(
@@ -113,5 +179,6 @@ export function formatProcessReport(rows: readonly ProcessRow[]): string {
     ...lines,
     '-'.repeat(header.length),
     `${pad('TOTAL', labelWidth)}  ${padStart('', 7)}  ${padStart(`${total.toFixed(1)} MB`, 9)}`,
+    ...(detail ? [...memorySection(detail), ...openSection(detail)] : []),
   ].join('\n')
 }

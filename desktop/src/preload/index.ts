@@ -16,6 +16,7 @@ import {
   type PrintJob,
   type PrintRenderResult,
   type RefusedChoice,
+  type RendererDiagnostics,
   type SaveResult,
   type UnsavedChoice,
   type UpdateEvent,
@@ -80,6 +81,15 @@ const api = {
   webEditAction: (action: WebEditAction): void => ipcRenderer.send(IPC.webEditAction, action),
 
   setDocumentKind: (kind: DocumentKind | null): void => ipcRenderer.send(IPC.documentKind, kind),
+
+  reportDiagnostics: (diagnostics: RendererDiagnostics): void =>
+    ipcRenderer.send(IPC.diagnostics, diagnostics),
+
+  onDiagnosticsSample: (handler: () => void): (() => void) => {
+    const listener = () => handler()
+    ipcRenderer.on(IPC.diagnosticsSample, listener)
+    return () => ipcRenderer.removeListener(IPC.diagnosticsSample, listener)
+  },
 
   setEditCapabilities: (capabilities: EditCapabilities): void =>
     ipcRenderer.send(IPC.editCapabilities, capabilities),
