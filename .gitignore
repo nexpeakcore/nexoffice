@@ -21,3 +21,6 @@ apps/redact-worker/src/wasm/generated/*.wasm
 apps/redact-worker/src/wasm/generated/*.js
 screenshots/
 .hermes/
+
+# Generated performance fixtures (bun scripts/make-heavy-docx.ts)
+test-fixtures/
