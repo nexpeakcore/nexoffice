@@ -10,6 +10,12 @@
  */
 
 import { memoryReport } from '@betteroffice/docx/diagnostics'
+
+// The registry backing the breakdown. Re-exported so anything in the renderer
+// registers through this module rather than reaching for the docx package,
+// which happens to own it but does not own what it measures.
+export { registerMemoryReader, unregisterMemoryReader } from '@betteroffice/docx/diagnostics'
+
 import type {
   DocumentProfile,
   MemoryBreakdownRow,

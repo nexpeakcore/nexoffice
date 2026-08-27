@@ -1,3 +1,4 @@
+import { registerMemoryReader } from './diagnostics.js'
 import type { Misspelling, SpellCheckEngine } from './spellcheckEngine.js'
 import type {
   SpellCheckRequest,
@@ -20,6 +21,12 @@ interface PendingRequest {
  * it, neither of which belongs on the thread that paints the editor. If the
  * worker cannot start, the engine is loaded inline so proofing still works.
  */
+// The dictionary lives in the worker's own isolate, so the main thread cannot
+// measure it; the worker reports its heap on every answer and this caches the
+// last one. Zeroed on retirement, when that memory is genuinely handed back.
+let workerHeapBytes = 0
+registerMemoryReader('spell-check dictionary (worker)', () => workerHeapBytes)
+
 class SpellCheckServiceImpl {
   private worker: Worker | null = null
   private inline: SpellCheckEngine | null = null
@@ -40,6 +47,7 @@ class SpellCheckServiceImpl {
    */
   dispose(): void {
     this.epoch += 1
+    workerHeapBytes = 0
     this.worker?.terminate()
     this.worker = null
     this.inline = null
@@ -97,6 +105,7 @@ class SpellCheckServiceImpl {
       })
       worker.onmessage = (event: MessageEvent<SpellCheckResponse>) => {
         const response = event.data
+        if (response.ok && response.heapBytes !== undefined) workerHeapBytes = response.heapBytes
         const pending = this.pending.get(response.id)
         if (!pending) return
         this.pending.delete(response.id)
@@ -123,6 +132,7 @@ class SpellCheckServiceImpl {
    * request pending against a dead thread.
    */
   private dropWorker(error: Error): Promise<void> {
+    workerHeapBytes = 0
     this.worker?.terminate()
     this.worker = null
     this.ready = false
