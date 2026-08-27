@@ -50,3 +50,15 @@ opt-level = 3
 
 [profile.release.package.yrs]
 opt-level = 3
+
+# yrs 0.27 reaches a text insertion index by walking the block list from the
+# start of the story and keeps no position cache, so seeding a document costs
+# 0 + 1 + ... + N block visits — over a minute for a long one. vendor/yrs adds
+# a cursor API (73 added lines, nothing removed; see vendor/README.md) that
+# turns that into one walk per run of ascending inserts.
+#
+# TEMPORARY. The same change is meant to go upstream; when a release carries
+# it, delete vendor/, drop this patch, drop the `yrs-cursor` feature, and bump
+# the version in the three crates that depend on yrs.
+[patch.crates-io]
+yrs = { path = "vendor/yrs" }
