@@ -4,6 +4,7 @@ import type {
   YrsResidentWorkerSnapshot,
   YrsSelection,
 } from './index';
+import { registerMemoryReader } from '../diagnostics';
 import type { ResidentCaretPaintStyle } from './residentCaret';
 import type {
   ResidentEngineWorkerRequest,
@@ -24,6 +25,9 @@ export interface ResidentEngineWorkerFrame {
   replayMs: number;
   replayedPages: number;
   layoutRevision: number;
+  /** Wasm heap held in the worker thread, folded into the renderer process
+   * by Electron's metrics and only separable from here. */
+  heapBytes: number;
 }
 
 export interface ResidentEngineOffscreenPage {
@@ -332,9 +336,16 @@ function snapshotTransfers(snapshot: YrsResidentWorkerSnapshot): Transferable[] 
   return [snapshot.state.buffer, ...snapshot.fonts.map((font) => font.buffer)];
 }
 
+// The worker reports its heap with every frame it returns, so the reader below
+// is a cache of the last report rather than a live probe: nothing on the main
+// thread can reach across into the worker's wasm memory to measure it.
+let workerHeapBytes = 0;
+registerMemoryReader('wasm · resident engine (worker)', () => workerHeapBytes);
+
 function frameResult(
   response: ResidentEngineWorkerResponse & { ok: true }
 ): ResidentEngineWorkerFrame {
+  if (response.heapBytes !== undefined) workerHeapBytes = response.heapBytes;
   if (!response.frame) throw new Error('Resident engine worker response omitted its FrameDelta');
   if (!response.caret) throw new Error('Resident engine worker response omitted its caret snapshot');
   if (response.selection === undefined) {
@@ -352,6 +363,7 @@ function frameResult(
     replayMs: response.replayMs ?? 0,
     replayedPages: response.replayedPages ?? 0,
     layoutRevision: response.layoutRevision ?? 0,
+    heapBytes: workerHeapBytes,
   };
 }
 

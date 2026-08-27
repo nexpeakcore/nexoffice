@@ -18,6 +18,7 @@
  * are local, so re-resolving costs decode time, never a fetch.
  */
 
+import { registerMemoryReader } from '../../diagnostics';
 import type { ImageResolver } from './canvasBackend';
 
 /** Roughly a screenful of large photos; big enough that repaints never churn. */
@@ -48,6 +49,11 @@ export function createCanvasImageResolver(
 ): ImageResolver {
   const cache = new Map<string, CacheEntry>();
   let cachedBytes = 0;
+
+  // A resolver is keyed to one document session, so the newest one made is the
+  // one holding the open document's bitmaps; an earlier session's resolver is
+  // unreachable by then and its entries are already collectable.
+  registerMemoryReader('image cache', () => cachedBytes);
 
   const drop = (key: string, entry: CacheEntry): void => {
     cache.delete(key);

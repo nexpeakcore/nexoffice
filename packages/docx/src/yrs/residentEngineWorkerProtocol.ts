@@ -93,6 +93,9 @@ export type ResidentEngineWorkerResponse =
       replayMs?: number;
       replayedPages?: number;
       layoutRevision?: number;
+      /** Wasm linear memory held in the worker thread, which the renderer's
+       * own process metrics cannot separate out. */
+      heapBytes?: number;
       /** The worker replica's yrs state vector after this operation, so the
        * next sync can ship a diff instead of the whole document state. */
       stateVector?: ArrayBuffer;

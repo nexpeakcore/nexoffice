@@ -17,6 +17,7 @@ import {
   type RetainedFrame,
 } from '../layout/render/frameDelta';
 import { GlyphCache } from '../layout/render/glyphCache';
+import { memoryTotalBytes } from '../diagnostics';
 import type {
   ResidentEngineWorkerRequest,
   ResidentEngineWorkerResponse,
@@ -336,6 +337,7 @@ async function replyFrame(
       replayMs,
       replayedPages,
       layoutRevision,
+      heapBytes: memoryTotalBytes(),
       ...(stateVector ? { stateVector } : {}),
     },
     [frame, ...updateBuffers, ...(stateVector ? [stateVector] : [])]

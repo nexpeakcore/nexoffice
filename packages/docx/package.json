@@ -29,6 +29,10 @@
       "types": "./dist/layout/pagination/index.d.mts",
       "import": "./dist/layout/pagination/index.mjs"
     },
+    "./diagnostics": {
+      "types": "./dist/diagnostics/index.d.mts",
+      "import": "./dist/diagnostics/index.mjs"
+    },
     "./layout/render": {
       "types": "./dist/layout/render/index.d.mts",
       "import": "./dist/layout/render/index.mjs"

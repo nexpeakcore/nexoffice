@@ -20,6 +20,8 @@
  * package established the pattern).
  */
 
+import { registerMemoryReader } from '../diagnostics';
+
 export type WasmSyncInput = BufferSource | WebAssembly.Module;
 export type WasmAsyncInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -97,6 +99,18 @@ export function createWasmModuleState(options: {
 }): WasmModuleState {
   let initialized = false;
   let pending: Promise<void> | undefined;
+  // Both `initSync` and the async init return the instance's export object,
+  // which carries its linear memory. Held so a diagnostic can read the heap
+  // as it grows; `memory.buffer` is replaced on every grow, so the byte count
+  // must be read through the Memory, never cached.
+  let heap: WebAssembly.Memory | undefined;
+
+  const rememberHeap = (exports: unknown): void => {
+    const memory = (exports as { memory?: unknown } | null | undefined)?.memory;
+    if (memory instanceof WebAssembly.Memory) heap = memory;
+  };
+
+  registerMemoryReader(`wasm · ${options.label}`, () => heap?.buffer.byteLength ?? 0);
 
   return {
     initialized(): boolean {
@@ -113,7 +127,7 @@ export function createWasmModuleState(options: {
       const bytes = syncInput(input) ?? (input === undefined ? readWasmSync(options.assetUrl()) : undefined);
       if (bytes) {
         try {
-          options.initSync({ module: bytes });
+          rememberHeap(options.initSync({ module: bytes }));
         } catch (error) {
           return Promise.reject(error instanceof Error ? error : new Error(String(error)));
         }
@@ -123,7 +137,8 @@ export function createWasmModuleState(options: {
       pending = options
         .initAsync({ module_or_path: input ?? options.assetUrl() })
         .then(
-          () => {
+          (exports) => {
+            rememberHeap(exports);
             initialized = true;
           },
           (error: unknown) => {
@@ -143,7 +158,7 @@ export function createWasmModuleState(options: {
       }
       const bytes = readWasmSync(options.assetUrl());
       if (bytes) {
-        options.initSync({ module: bytes });
+        rememberHeap(options.initSync({ module: bytes }));
         initialized = true;
         return;
       }
