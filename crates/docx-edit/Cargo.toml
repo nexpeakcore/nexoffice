@@ -22,6 +22,11 @@ crate-type = ["cdylib", "rlib"]
 # and `cargo test` never pull the wasm-bindgen stack; wasm-pack builds pass
 # `--features wasm` (driven by scripts/embed-edit-wasm.mjs).
 wasm = ["dep:wasm-bindgen", "dep:js-sys"]
+# Seeds a story through the cursor API added by vendor/yrs instead of walking
+# to every insertion index. Off by default: `[patch.crates-io]` covers this
+# workspace only, so the published crate has to keep compiling against
+# upstream yrs. Workspace builds turn it on (scripts/build-docx-wasm.ts, CI).
+yrs-cursor = []
 
 [dependencies]
 # 0.27.3 is the newest crates.io release. The repository's minimumReleaseAge is a Bun/npm

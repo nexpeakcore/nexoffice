@@ -48,7 +48,7 @@ const MODULES: WasmModuleBuild[] = [
   // --locked must ride with the cargo pass-through here: wasm-pack forwards its
   // own trailing args verbatim once a `--` section exists, and cargo rejects a
   // stray `--` marker.
-  { crate: 'docx-edit', name: 'docx_edit', dir: 'edit', cargoArgs: ['--locked', '--features', 'wasm'] },
+  { crate: 'docx-edit', name: 'docx_edit', dir: 'edit', cargoArgs: ['--locked', '--features', 'wasm,yrs-cursor'] },
   {
     crate: 'docx-parse',
     name: 'docx_parse',
