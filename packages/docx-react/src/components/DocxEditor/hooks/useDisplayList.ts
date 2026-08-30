@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   buildRustDisplayFrame,
+  isSupersededSessionError,
   applyFrameDelta,
   applyFrameDeltaOwned,
   createCanvasImageResolver,
@@ -718,7 +719,11 @@ export function useRustDisplayList(
       .catch((error) => {
         if (
           generation !== generationRef.current ||
-          contentEpoch !== contentEpochRef.current
+          contentEpoch !== contentEpochRef.current ||
+          // The session was destroyed under this build — the host swapped
+          // documents. Surfacing it would blame the document now opening for
+          // the previous one going away.
+          isSupersededSessionError(error)
         ) {
           return;
         }

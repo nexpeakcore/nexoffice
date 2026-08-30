@@ -235,10 +235,26 @@ export class RustDisplayListSourceError extends Error {
 
   constructor(stage: RustDisplayListSourceErrorStage, cause: unknown) {
     const detail = cause instanceof Error ? cause.message : String(cause);
-    super(`Rust display-list ${stage} failed: ${detail}`);
+    super(`Rust display-list ${stage} failed: ${detail}`, { cause });
     this.name = 'RustDisplayListSourceError';
     this.stage = stage;
   }
+}
+
+/**
+ * Whether a failure is only that the session went away underneath the build —
+ * the host swapped documents while this one was in flight. The next document's
+ * own build is already coming, so this is not something to show anyone.
+ *
+ * Matched by name rather than `instanceof`: the error crosses a package
+ * boundary, and two copies of a class do not compare equal.
+ */
+export function isSupersededSessionError(error: unknown): boolean {
+  for (let current = error, hops = 0; current instanceof Error && hops < 8; hops += 1) {
+    if (current.name === 'YrsSessionDestroyedError') return true;
+    current = current.cause;
+  }
+  return false;
 }
 
 /** Injectable display-list query surface with optional session handles. */

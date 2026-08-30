@@ -970,6 +970,43 @@ function decodeDocxHost(json: string, source: Uint8Array): YrsDocxHost {
   };
 }
 
+/**
+ * Raised when something reaches a session that has already been destroyed —
+ * typically a display-list build still in flight when the host swapped
+ * documents.
+ *
+ * Without this the call reaches wasm-bindgen with a freed pointer, and Rust
+ * panics with "null pointer passed to rust": an opaque failure that surfaces
+ * to the user as the *new* document refusing to open.
+ */
+export class YrsSessionDestroyedError extends Error {
+  constructor(operation: string) {
+    super(`yrs session was destroyed before ${operation} could run`);
+    this.name = 'YrsSessionDestroyedError';
+  }
+}
+
+export function isYrsSessionDestroyedError(error: unknown): boolean {
+  return error instanceof YrsSessionDestroyedError;
+}
+
+/**
+ * Stands in for the freed wasm session. Every facade method closes over the
+ * `session` binding, so swapping it once on destroy guards all of them without
+ * costing a check on any live call.
+ */
+function destroyedSession(): EditSession {
+  return new Proxy(
+    {},
+    {
+      get(_target, property) {
+        if (property === 'free' || property === '__destroy_into_raw') return () => undefined;
+        throw new YrsSessionDestroyedError(String(property));
+      },
+    }
+  ) as unknown as EditSession;
+}
+
 function wrapSession(session: EditSession, clientId: number): YrsSession {
   const listeners = new Map<
     number,
@@ -1762,6 +1799,10 @@ function wrapSession(session: EditSession, clientId: number): YrsSession {
       pendingUpdates.length = 0;
       if (observing) session.clear_update_observer();
       session.free();
+      // Anything still holding this facade now gets a typed error instead of a
+      // freed pointer. The binding is reassigned rather than checked per call
+      // so live sessions pay nothing.
+      session = destroyedSession();
     },
   };
 }
