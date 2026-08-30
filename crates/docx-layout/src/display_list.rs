@@ -9080,30 +9080,89 @@ pub fn build_resident_display_list_with_fonts_observed(
     Ok((ResidentDisplayInput { input }, list))
 }
 
+/// Writes integral floats as integers so the display-input contract's integer
+/// fields accept them straight from the byte stream. This is what the old
+/// `Value`-tree normalization pass did, moved to write time.
+struct IntegralFloatFormatter;
+
+impl serde_json::ser::Formatter for IntegralFloatFormatter {
+    fn write_f64<W>(&mut self, writer: &mut W, value: f64) -> std::io::Result<()>
+    where
+        W: ?Sized + std::io::Write,
+    {
+        if value.is_finite()
+            && value.fract() == 0.0
+            && value >= i64::MIN as f64
+            && value <= i64::MAX as f64
+        {
+            return self.write_i64(writer, value as i64);
+        }
+        serde_json::ser::CompactFormatter.write_f64(writer, value)
+    }
+}
+
+fn write_normalized<T: serde::Serialize>(
+    out: &mut Vec<u8>,
+    value: &T,
+    what: &str,
+) -> Result<(), String> {
+    let mut serializer = serde_json::Serializer::with_formatter(out, IntegralFloatFormatter);
+    value
+        .serialize(&mut serializer)
+        .map_err(|e| format!("encode resident {what}: {e}"))
+}
+
+/// Bridges the pagination model to the display-input contract without ever
+/// holding the whole document in wire form.
+///
+/// The two models are separate on purpose (see [`ResidentDisplayInput`]), and
+/// serde is what spans them. What matters is how much exists at once: a
+/// `serde_json::Value` tree of the whole document cost ~1.9GB of peak on 2000
+/// pages, and even a flat byte buffer of it is ~768MB. The measured blocks are
+/// independent array elements, so they go one at a time through a single
+/// reused buffer and only the small parts — options, layout, extras — are ever
+/// assembled whole.
 fn resident_build_input(
     pagination: &crate::types::Input,
     layout: &crate::types::Layout,
     extras: &str,
 ) -> Result<BuildInput, String> {
-    let mut wire: serde_json::Map<String, Value> =
+    let mut extra_fields: serde_json::Map<String, Value> =
         serde_json::from_str(extras).map_err(|e| format!("parse display extras: {e}"))?;
-    wire.insert(
-        "measured".to_owned(),
-        serde_json::to_value(&pagination.measured)
-            .map_err(|e| format!("encode resident measured blocks: {e}"))?,
-    );
-    wire.insert(
-        "options".to_owned(),
-        serde_json::to_value(&pagination.options)
-            .map_err(|e| format!("encode resident layout options: {e}"))?,
-    );
-    wire.insert(
-        "layout".to_owned(),
-        serde_json::to_value(layout).map_err(|e| format!("encode resident layout: {e}"))?,
-    );
-    let mut wire = Value::Object(wire);
-    normalize_integral_json_numbers(&mut wire);
-    serde_json::from_value(wire).map_err(|e| format!("parse resident display input: {e}"))
+    for owned in ["measured", "options", "layout"] {
+        extra_fields.remove(owned);
+    }
+
+    let mut wire = Vec::<u8>::new();
+    wire.push(b'{');
+    for (key, value) in &extra_fields {
+        write_normalized(&mut wire, key, "display extras key")?;
+        wire.push(b':');
+        write_normalized(&mut wire, value, "display extras value")?;
+        wire.push(b',');
+    }
+    // Deserialized empty and filled below, block by block.
+    wire.extend_from_slice(br#""measured":[],"options":"#);
+    write_normalized(&mut wire, &pagination.options, "layout options")?;
+    wire.extend_from_slice(br#","layout":"#);
+    write_normalized(&mut wire, layout, "layout")?;
+    wire.push(b'}');
+
+    let mut input: BuildInput =
+        serde_json::from_slice(&wire).map_err(|e| format!("parse resident display input: {e}"))?;
+    drop(wire);
+
+    input.measured.reserve_exact(pagination.measured.len());
+    let mut block = Vec::<u8>::new();
+    for measured in &pagination.measured {
+        block.clear();
+        write_normalized(&mut block, measured, "measured block")?;
+        input.measured.push(
+            serde_json::from_slice(&block)
+                .map_err(|e| format!("parse resident measured block: {e}"))?,
+        );
+    }
+    Ok(input)
 }
 
 /// Rebuild only pages dirtied by incremental pagination, retain the remaining
