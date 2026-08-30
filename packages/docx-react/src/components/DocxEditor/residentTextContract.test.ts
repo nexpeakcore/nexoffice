@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { isResidentInputText } from './residentTextContract';
+import { isBatchableInputText, isResidentInputText } from './residentTextContract';
 
 describe('isResidentInputText', () => {
   test('carries the scripts the ASCII-only rule used to exclude', () => {
@@ -24,5 +24,17 @@ describe('isResidentInputText', () => {
     expect(isResidentInputText('a\tb')).toBe(false);
     expect(isResidentInputText('a\u2028b')).toBe(false);
     expect(isResidentInputText('a\u2029b')).toBe(false);
+  });
+
+  test('does not coalesce what the fast path newly admits', () => {
+    // Batching widens the blast radius of the drop path in `insertText`: one
+    // lost operation loses every character coalesced into it. Vietnamese takes
+    // the fast path but is applied one operation at a time until that path
+    // cannot lose text.
+    expect(isBatchableInputText('hello')).toBe(true);
+    expect(isBatchableInputText('\u0111\u01b0\u1ee3c')).toBe(false);
+    expect(isBatchableInputText('\u5bbd\u5ea6')).toBe(false);
+    expect(isBatchableInputText('\u{1f642}')).toBe(false);
+    expect(isBatchableInputText('a\nb')).toBe(false);
   });
 });
