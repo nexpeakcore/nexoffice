@@ -96,7 +96,12 @@ struct ResidentLayoutInput {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RegionLayoutOutput<'a> {
-    measured: &'a [MeasuredBlock],
+    /// Omitted for hosts that build their display list through this engine,
+    /// which already retains the measured blocks. It dominates the envelope
+    /// (696MB of 768MB on a 2000-page document) and a JS string cannot hold
+    /// that, so sending it to a host that discards it fails the whole open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    measured: Option<&'a [MeasuredBlock]>,
     options: &'a docx_layout::types::LayoutOptions,
     layout: &'a Layout,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,9 +114,10 @@ fn serialize_region_layout(
     layout: &Layout,
     headers_footers: Option<&serde_json::Value>,
     notes_converged: bool,
+    include_measured: bool,
 ) -> Result<String, String> {
     serde_json::to_string(&RegionLayoutOutput {
-        measured: &input.measured,
+        measured: include_measured.then_some(input.measured.as_slice()),
         options: &input.options,
         layout,
         headers_footers,
@@ -831,6 +837,32 @@ impl EngineSession {
     /// by the resident engine. The returned envelope is ready for the Rust
     /// display-list builder without host-side layout mutation.
     pub fn layout_document_with_regions_json(&self, input_json: &str) -> Result<String, String> {
+        self.region_layout_envelope(input_json, true)
+    }
+
+    /// The same pass, minus the measured blocks. Hosts that build their
+    /// display list through this engine read them out of retained state, so
+    /// shipping them is pure cost — and above roughly 1300 pages the envelope
+    /// outgrows the host string limit and the document fails to open at all.
+    pub fn layout_document_with_regions_slim_json(
+        &self,
+        input_json: &str,
+    ) -> Result<String, String> {
+        self.region_layout_envelope(input_json, false)
+    }
+
+    /// The pass alone, for hosts that want only the retained state. Building
+    /// an envelope nobody reads is what the resident worker used to do.
+    pub fn layout_document_with_regions_void(&self, input_json: &str) -> Result<(), String> {
+        self.layout_document_with_regions_value(input_json)
+            .map(drop)
+    }
+
+    fn region_layout_envelope(
+        &self,
+        input_json: &str,
+        include_measured: bool,
+    ) -> Result<String, String> {
         let notes_converged = self.layout_document_with_regions_value(input_json)?;
         let pagination = self.pagination.borrow();
         let regions_state = self.regions.borrow();
@@ -848,6 +880,7 @@ impl EngineSession {
                 .expect("layout retained after successful pagination"),
             state.headers_footers.as_ref(),
             notes_converged,
+            include_measured,
         )
     }
 
@@ -924,10 +957,12 @@ impl EngineSession {
                     .expect("resident body required render environment"),
             )?;
         }
-        let base_input = input.clone();
+        // Cloned inside the closure, not before it: `stabilize_note_layout`
+        // returns without ever calling this when no note reserves space, and
+        // the arena is the whole document's measured blocks.
         let stabilized = stabilize_note_layout(
             |reserved| {
-                let mut pass = base_input.clone();
+                let mut pass = input.clone();
                 pass.options.footnote_reserved_heights = reservation_options(reserved);
                 let mut layout = docx_layout::place::layout_document(&mut pass)?;
                 apply_document_regions(&mut layout, &regions);
@@ -2450,6 +2485,7 @@ mod tests {
                 pagination.layout.as_ref().unwrap(),
                 regions_state.as_ref().unwrap().headers_footers.as_ref(),
                 true,
+                true,
             )
             .unwrap()
         };
@@ -2703,6 +2739,192 @@ mod tests {
                 .as_f64()
                 .unwrap()
                 > docx_layout::footnotes::FOOTNOTE_SEPARATOR_HEIGHT
+        );
+    }
+
+    /// A converged suffix holding blocks that are not plain paragraphs — a
+    /// table, a block image, and a paragraph carrying an inline image. Only
+    /// the leading paragraph's text changes; everything after it keeps its
+    /// content and moves by one document position.
+
+    /// Page ids carried by a FrameDelta v1's operation table, read straight
+    /// from the encoded bytes rather than from the state that produced them —
+    /// an assertion against the encoder's own bookkeeping proves nothing.
+    fn frame_page_ids(frame: &[u8]) -> std::collections::BTreeSet<u64> {
+        const HEADER: usize = 80;
+        const OP_BYTES: usize = 48;
+        let u32_at = |offset: usize| {
+            u32::from_le_bytes(frame[offset..offset + 4].try_into().unwrap()) as usize
+        };
+        assert_eq!(&frame[0..4], b"FDV1", "frame magic");
+        let operation_count = u32_at(52);
+        let operations_offset = u32_at(56);
+        assert_eq!(
+            operations_offset, HEADER,
+            "operation table follows the header"
+        );
+        (0..operation_count)
+            .map(|index| {
+                let at = operations_offset + index * OP_BYTES + 8;
+                u64::from_le_bytes(frame[at..at + 8].try_into().unwrap())
+            })
+            .collect()
+    }
+
+    fn mixed_pagination_input(first_text: &str, shifted_suffix: bool) -> String {
+        let paragraph = |index: usize, start: usize, text: &str| {
+            serde_json::json!({
+                "kind": "paragraph",
+                "id": format!("p{index}"),
+                "paraId": format!("para-{index}"),
+                "runs": [{
+                    "kind": "text", "text": text,
+                    "pmStart": start + 1, "pmEnd": start + 2
+                }],
+                "pmStart": start, "pmEnd": start + 2
+            })
+        };
+        let line = serde_json::json!({
+            "headRun": 0, "headChar": 0, "tailRun": 0, "tailChar": 1,
+            "width": 10, "ascent": 8, "descent": 2, "lineHeight": 20
+        });
+        let paragraph_extent =
+            serde_json::json!({ "kind": "paragraph", "lines": [line], "totalHeight": 20 });
+
+        let mut measured = Vec::new();
+        for index in 0..12 {
+            let shift = usize::from(shifted_suffix && index > 0);
+            let start = index * 2 + shift;
+            let text = if index == 0 { first_text } else { "x" };
+            measured.push(serde_json::json!({
+                "block": paragraph(index, start, text),
+                "measure": paragraph_extent
+            }));
+        }
+        let shift = usize::from(shifted_suffix);
+
+        // Non-floating table: `paragraph_identity` refuses it, so it is what
+        // the eligibility rule currently trips over.
+        let table_start = 24 + shift;
+        measured.push(serde_json::json!({
+            "block": {
+                "kind": "table", "id": "t0",
+                "rows": [{ "id": "r0", "cells": [
+                    { "id": "c0", "blocks": [paragraph(90, table_start, "x")] }
+                ] }],
+                "columnWidths": [100],
+                "pmStart": table_start, "pmEnd": table_start + 2
+            },
+            "measure": {
+                "kind": "table", "columnWidths": [100],
+                "totalWidth": 100, "totalHeight": 20,
+                "rows": [{ "height": 20, "cells": [
+                    { "width": 100, "height": 20, "blocks": [paragraph_extent] }
+                ] }]
+            }
+        }));
+
+        // Inline (not anchored) image block.
+        let image_start = 26 + shift;
+        measured.push(serde_json::json!({
+            "block": {
+                "kind": "image", "id": "i0", "src": "embedded",
+                "width": 40, "height": 20,
+                "pmStart": image_start, "pmEnd": image_start + 1
+            },
+            "measure": { "kind": "image", "width": 40, "height": 20 }
+        }));
+
+        // Paragraph whose run is an inline image — the case the current rule
+        // rejects even though nothing about it floats.
+        let inline_start = 28 + shift;
+        measured.push(serde_json::json!({
+            "block": {
+                "kind": "paragraph", "id": "p-inline", "paraId": "para-inline",
+                "runs": [{
+                    "kind": "image", "src": "embedded", "width": 12, "height": 12,
+                    "pmStart": inline_start + 1, "pmEnd": inline_start + 2
+                }],
+                "pmStart": inline_start, "pmEnd": inline_start + 2
+            },
+            "measure": { "kind": "paragraph", "lines": [line], "totalHeight": 20 }
+        }));
+
+        serde_json::json!({
+            "measured": measured,
+            "options": {
+                "pageSize": { "w": 200, "h": 120 },
+                "margins": { "top": 10, "right": 10, "bottom": 10, "left": 10 }
+            }
+        })
+        .to_string()
+    }
+
+    /// Pins what a shifted suffix must produce when it holds tables and images
+    /// rather than only paragraphs.
+    ///
+    /// The paragraph-only twin above covers the same ground for paragraphs,
+    /// and that gap let a change ship internally that carried stale absolute
+    /// positions into the retained display input: the fingerprints that decide
+    /// what may be reused deliberately strip `pmStart`/`pmEnd`, so a block that
+    /// only *moved* looks unchanged. Nothing then compared the reused output
+    /// against a fresh one, and the frame silently under-reported its changed
+    /// pages. These assertions are what would have caught it.
+    #[test]
+    fn mixed_block_pagination_matches_a_full_rebuild_after_a_shift() {
+        let engine = EngineSession::new(21);
+        engine
+            .layout_document_json(&mixed_pagination_input("x", false))
+            .unwrap();
+        engine.build_display_list_frame("{}", 0).unwrap();
+        let before_pages = engine.display.borrow().pages.clone();
+
+        let next_input = mixed_pagination_input("y", true);
+        let incremental = engine.layout_document_json(&next_input).unwrap();
+        let full = docx_layout::layout_to_json(&next_input).unwrap();
+        assert_eq!(
+            incremental, full,
+            "pagination over a shifted mixed suffix must match a full rebuild"
+        );
+
+        let frame = engine.build_display_list_frame("{}", 1).unwrap();
+        let retained = engine
+            .with_display_list(Clone::clone)
+            .expect("display list retained");
+        let fresh = {
+            let pagination = engine.pagination.borrow();
+            docx_layout::build_display_list_value_from_resident(
+                pagination.input.as_ref().unwrap(),
+                pagination.layout.as_ref().unwrap(),
+                "{}",
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            retained, fresh,
+            "the retained display list must equal a fresh build, positions included"
+        );
+
+        // Every page the rebuild actually changed must appear in the frame's
+        // page operations. Under-reporting is what a stale-position reuse
+        // produces, and it renders as a page that silently never repaints.
+        let after_pages = engine.display.borrow().pages.clone();
+        let changed: std::collections::BTreeSet<u64> = before_pages
+            .iter()
+            .zip(&after_pages)
+            .filter(|(before, after)| before != after)
+            .map(|(_, after)| after.page_id)
+            .chain(
+                after_pages
+                    .iter()
+                    .skip(before_pages.len())
+                    .map(|page| page.page_id),
+            )
+            .collect();
+        let announced = frame_page_ids(&frame);
+        assert!(
+            changed.is_subset(&announced),
+            "frame announced {announced:?} but these pages changed: {changed:?}"
         );
     }
 
@@ -2979,5 +3201,67 @@ mod tests {
 
         assert_eq!(hit["region"], "body");
         assert!((target.3..=target.4).contains(&position));
+    }
+
+    /// The slim envelope drops the measured blocks and nothing else. They
+    /// dominate the payload — 696MB of 768MB on a 2000-page document, past
+    /// what a host string can hold — and hosts that build their display list
+    /// through this session read them out of retained state instead.
+    #[test]
+    fn slim_region_envelope_omits_measured_and_keeps_the_layout() {
+        const FONT: &[u8] =
+            include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
+        docx_layout::clear_measure_fonts();
+        let font_id = docx_layout::register_measure_font(FONT).unwrap();
+        let engine = EngineSession::new(140);
+        engine
+            .doc()
+            .create_story("body", "AlphaBravo", "Normal", "left")
+            .unwrap();
+        let request = serde_json::json!({
+            "bodyStory": "body",
+            "regions": {"sections": [{"sectionId": "main", "properties": {}}]},
+            "measurement": {
+                "fontChains": {"calibri|0|0": [font_id]},
+                "defaults": {"fontSize": 11, "fontFamily": "Calibri"},
+                "authoritativeShaping": true
+            },
+            "renderEnv": {}
+        })
+        .to_string();
+
+        let fat: serde_json::Value =
+            serde_json::from_str(&engine.layout_document_with_regions_json(&request).unwrap())
+                .unwrap();
+        let slim: serde_json::Value = serde_json::from_str(
+            &engine
+                .layout_document_with_regions_slim_json(&request)
+                .unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            fat.get("measured").is_some(),
+            "the full envelope carries them"
+        );
+        assert!(slim.get("measured").is_none(), "the slim envelope does not");
+        assert_eq!(fat["layout"], slim["layout"], "same pagination either way");
+        assert_eq!(fat["notesConverged"], slim["notesConverged"]);
+        assert!(
+            serde_json::to_string(&slim).unwrap().len()
+                < serde_json::to_string(&fat).unwrap().len()
+        );
+
+        // The pass alone lands the same retained state the envelopes read from.
+        engine
+            .layout_document_with_regions_void(&request)
+            .expect("void pass");
+        let after: serde_json::Value = serde_json::from_str(
+            &engine
+                .layout_document_with_regions_slim_json(&request)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(slim, after, "the void pass leaves the same layout behind");
     }
 }

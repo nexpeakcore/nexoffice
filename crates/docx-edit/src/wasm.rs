@@ -1087,6 +1087,21 @@ impl EditSession {
             .map_err(|error| JsValue::from_str(&error))
     }
 
+    /// The same pass without the measured blocks, for hosts that read them
+    /// back out of this session rather than off the wire.
+    pub fn layout_document_with_regions_slim_json(&self, input: &str) -> Result<String, JsValue> {
+        self.engine
+            .layout_document_with_regions_slim_json(input)
+            .map_err(|error| JsValue::from_str(&error))
+    }
+
+    /// The pass alone, for hosts that want only the retained state.
+    pub fn layout_document_with_regions_void(&self, input: &str) -> Result<(), JsValue> {
+        self.engine
+            .layout_document_with_regions_void(input)
+            .map_err(|error| JsValue::from_str(&error))
+    }
+
     /// Build display primitives against the same resident font store used by
     /// this session's measurement path.
     pub fn build_display_list_json(&self, input: &str) -> Result<String, JsValue> {
@@ -2958,4 +2973,36 @@ impl EditSession {
             .collect();
         serde_json::to_string(&items).map_err(js_err)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Heap reporting. `WebAssembly.Memory.buffer.byteLength` is the linear memory
+// the allocator has claimed — it includes free lists and never shrinks, so it
+// cannot say how much of the wasm32 address space a document actually needs.
+// These read the allocator's own counters instead. See `crate::heap_stats`.
+
+/// Rust heap bytes currently allocated, or 0 in a build without the counter.
+#[wasm_bindgen]
+pub fn heap_live_bytes() -> f64 {
+    crate::heap_stats::live_bytes() as f64
+}
+
+/// Highest live figure since the last [`heap_reset_peak`], or 0 without it.
+#[wasm_bindgen]
+pub fn heap_peak_bytes() -> f64 {
+    crate::heap_stats::peak_bytes() as f64
+}
+
+/// Restart the high-water mark so the next phase's peak is its own. Hosts call
+/// this at phase boundaries to attribute transient cost rather than carrying
+/// one session-wide maximum.
+#[wasm_bindgen]
+pub fn heap_reset_peak() {
+    crate::heap_stats::reset_peak();
+}
+
+/// Whether the figures above mean anything in this build.
+#[wasm_bindgen]
+pub fn heap_stats_available() -> bool {
+    crate::heap_stats::available()
 }

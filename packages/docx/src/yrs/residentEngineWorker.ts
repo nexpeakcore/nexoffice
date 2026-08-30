@@ -233,7 +233,8 @@ function hydrate(snapshot: YrsResidentWorkerSnapshot) {
   for (const { story, env } of snapshot.renderInputs) session.yrsBlocksForStory(story, env);
   for (const input of snapshot.measureInputs) session.measureParagraphJson(input);
   if (snapshot.layoutWithRegions) {
-    session.layoutDocumentWithRegionsJson(snapshot.layoutInput);
+    // Only the retained state matters here; the envelope was always discarded.
+    session.layoutDocumentWithRegionsVoid(snapshot.layoutInput);
   } else {
     session.layoutDocumentJson(snapshot.layoutInput);
   }

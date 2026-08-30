@@ -154,8 +154,12 @@ export interface DisplayListCommentThread {
 export interface DisplayListBuildInputs {
   /** Serialization contract version. Undefined reads as legacy version 0. */
   contractVersion?: number;
-  measured: MeasuredBlock[];
-  options: unknown;
+  /**
+   * Omitted when the engine building this list is the one that paginated it
+   * and still retains them. Required only by the stateless JSON builder.
+   */
+  measured?: MeasuredBlock[];
+  options?: unknown;
   layout: Layout;
   /** header/footer parts + section flags; omitted ⇒ body-only display list */
   headersFooters?: DisplayListHeadersFooters;
@@ -177,6 +181,18 @@ export interface DisplayListBuildInputs {
   /** Per-comment thread metadata for a11y announcements. Undefined = none. */
   commentThreads?: DisplayListCommentThread[];
 }
+
+/**
+ * What the stateless builder needs on top of the shared fields. The engine
+ * that paginated a document retains its measured blocks and reads them back
+ * itself; the stateless wasm cannot, so it has to be handed them. Spelling
+ * that out here is what stops a resident input — where `measured` is legally
+ * absent — from reaching a builder that cannot work without it.
+ */
+export type StatelessDisplayListBuildInputs = DisplayListBuildInputs & {
+  measured: MeasuredBlock[];
+  options: unknown;
+};
 
 /** Minimal engine surface, injectable so tests can fake the wasm module. */
 export interface RustDisplayListEngine {
@@ -340,7 +356,7 @@ export function loadRustDisplayListQueryEngine(): Promise<RustDisplayListQueryEn
  * use `buildRustDisplayList`, which owns the process-wide cache.
  */
 export function encodeDisplayListInputs(
-  inputs: DisplayListBuildInputs,
+  inputs: StatelessDisplayListBuildInputs,
   cache?: WeakMap<object, string>
 ): string {
   const m = inputs.measured;
@@ -424,7 +440,7 @@ const measureFragmentCache = new WeakMap<object, string>();
  * caller is expected to fall back to the DOM painter.
  */
 export async function buildRustDisplayList(
-  inputs: DisplayListBuildInputs,
+  inputs: StatelessDisplayListBuildInputs,
   engine?: RustDisplayListEngine
 ): Promise<DisplayList> {
   let eng: RustDisplayListEngine;
@@ -464,8 +480,24 @@ export async function buildRustDisplayFrame(
     throw new RustDisplayListSourceError('load', error);
   }
   if (!eng.buildDisplayListFrame) {
+    // Only this branch needs the measured blocks, and only because the engine
+    // it falls back to does not retain them. Whether they are required is a
+    // property of the engine at hand, not of the call, so it is checked here
+    // rather than demanded of every caller.
+    if (!inputs.measured) {
+      throw new RustDisplayListSourceError(
+        'build',
+        new Error(
+          'this engine does not retain pagination, so it cannot build a display ' +
+            'list from a resident layout computed without measured blocks'
+        )
+      );
+    }
     return {
-      displayList: await buildRustDisplayList(inputs, eng),
+      displayList: await buildRustDisplayList(
+        inputs as StatelessDisplayListBuildInputs,
+        eng
+      ),
       frame: null,
       transport: 'json',
     };

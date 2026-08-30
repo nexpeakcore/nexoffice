@@ -634,6 +634,10 @@ export interface YrsSession extends CollaborationReplica {
   layoutFontRequirementsJson(input: string): string;
   /** Paginate and compose section/page regions in the resident engine. */
   layoutDocumentWithRegionsJson(input: string): string;
+  /** The same pass without the measured blocks, which stay retained here. */
+  layoutDocumentWithRegionsSlimJson(input: string): string;
+  /** The same pass with no envelope at all, for retained state only. */
+  layoutDocumentWithRegionsVoid(input: string): void;
   /** Build display primitives against the session's resident font store. */
   buildDisplayListJson(input: string): string;
   /** Build a binary FrameDelta v1 against the last host-applied frame. */
@@ -1150,6 +1154,19 @@ function wrapSession(session: EditSession, clientId: number): YrsSession {
       residentLayoutWithRegions = true;
       residentLayoutRevision += 1;
       return output;
+    },
+    layoutDocumentWithRegionsSlimJson: (input) => {
+      const output = session.layout_document_with_regions_slim_json(input);
+      residentLayoutInput = input;
+      residentLayoutWithRegions = true;
+      residentLayoutRevision += 1;
+      return output;
+    },
+    layoutDocumentWithRegionsVoid: (input) => {
+      session.layout_document_with_regions_void(input);
+      residentLayoutInput = input;
+      residentLayoutWithRegions = true;
+      residentLayoutRevision += 1;
     },
     buildDisplayListJson: (input) => session.build_display_list_json(input),
     buildDisplayListFrame: (input, expectedFrameEpoch) =>

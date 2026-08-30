@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  buildRustDisplayList,
   buildRustDisplayFrame,
   applyFrameDelta,
   applyFrameDeltaOwned,
@@ -18,6 +17,8 @@ import {
   type RetainedFrame,
   type ResidentDisplayListQueryEngine,
 } from '@betteroffice/docx/layout/render';
+import type { DisplayListBuildInputs } from '@betteroffice/docx/layout/render';
+import { markHeapStage } from '@betteroffice/docx/diagnostics';
 import { getLayoutKernelInputs } from '@betteroffice/docx/editor';
 import {
   canUseResidentEngineWorker,
@@ -97,7 +98,12 @@ export interface ResidentFrameApplyResult {
 
 /** test seam: unit tests inject a fake engine/inputs-resolver instead of the wasm module */
 export interface RustDisplayListHookOverrides {
-  build?: typeof buildRustDisplayList;
+  /** Takes the resident input shape: a fake builder stands in for the whole
+   * build, so it is not bound by what the stateless one needs. */
+  build?: (
+    inputs: DisplayListBuildInputs,
+    engine?: RustDisplayListEngine
+  ) => Promise<DisplayList>;
   getInputs?: typeof getLayoutKernelInputs;
 }
 
@@ -539,13 +545,12 @@ export function useRustDisplayList(
       setLoading(false);
       return;
     }
-    const build = overrides?.build ?? buildRustDisplayList;
     // Merged doc-wide font chains from the Rust measure source (when active).
     // A non-empty map activates GlyphRun emission; absent ⇒ TextRunPrimitive.
     const fontChains = fontChainsProviderRef?.current?.();
     const buildInputs = {
-      measured: inputs.measured,
-      options: inputs.options,
+      ...(inputs.measured ? { measured: inputs.measured } : {}),
+      ...(inputs.options !== undefined ? { options: inputs.options } : {}),
       layout,
       ...(inputs.headersFooters ? { headersFooters: inputs.headersFooters } : {}),
       ...(fontChains ? { fontChains } : {}),
@@ -561,7 +566,7 @@ export function useRustDisplayList(
     const probe = workerEligible ? residentEngine.residentWorkerProbe() : null;
     const buildOnMainThread = () =>
       overrides?.build
-        ? build(buildInputs, engine ?? undefined).then((displayList) => ({
+        ? overrides.build(buildInputs, engine ?? undefined).then((displayList) => ({
             displayList,
             frame: null as RetainedFrame | null,
             caret: null as YrsResidentCaretSnapshot | null,
@@ -669,6 +674,7 @@ export function useRustDisplayList(
     }
     pending
       .then((result) => {
+        markHeapStage('display');
         if (
           generation !== generationRef.current ||
           contentEpoch !== contentEpochRef.current
