@@ -651,8 +651,12 @@ fn incremental_eligible(
             .all(|(previous, next)| {
                 suffix_identity(&previous.block)
                     .zip(suffix_identity(&next.block))
-                    .is_some_and(|((previous_id, _), (next_id, _))| {
+                    .is_some_and(|((previous_id, previous_start), (next_id, next_start))| {
+                        // Positions are stripped before fingerprinting, so a
+                        // block that gained or lost one still looks unchanged.
+                        // Such a block cannot say how far it moved.
                         block_key(previous_id) == block_key(next_id)
+                            && previous_start.is_some() == next_start.is_some()
                     })
             })
 }
