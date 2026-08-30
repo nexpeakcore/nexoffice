@@ -2583,6 +2583,131 @@ mod tests {
         );
     }
 
+    /// The resident input path on text the host currently refuses to send it.
+    /// `YrsInput` gates resident input on `/^[\x20-\x7e]+$/`, so Vietnamese —
+    /// and every other non-Latin-1 script — falls through to the full
+    /// compatibility relayout. The engine itself has no such rule: `apply_input`
+    /// rejects only empty text and paragraph breaks. This pins that the fast
+    /// path is byte-identical to a full pass on non-ASCII text, so the gate can
+    /// be widened against evidence rather than hope.
+    ///
+    /// The emoji case is the one with real teeth: yrs indexes text in UTF-16
+    /// code units, and an astral character is two of them.
+    #[test]
+    fn resident_region_fast_path_matches_a_full_pass_on_non_ascii_text() {
+        const FONT: &[u8] =
+            include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
+        for (label, seed, inserted, at, expected) in [
+            (
+                "vietnamese",
+                "Trình bày tài liệu",
+                "được đo",
+                5_u32,
+                "Trìnhđược đo bày tài liệu",
+            ),
+            (
+                "cjk",
+                "排版引擎测量文本",
+                "宽度决定",
+                4,
+                "排版引擎宽度决定测量文本",
+            ),
+            // Astral characters are two UTF-16 units each, which is what yrs
+            // indexes in — an offset computed per code point lands elsewhere.
+            ("astral", "before after", "🙂🚀", 6, "before🙂🚀 after"),
+            // Not normalised into a precomposed é, and it should not be:
+            // the engine stores what was typed.
+            (
+                "combining",
+                "cafe naive",
+                "\u{0301}",
+                4,
+                "cafe\u{0301} naive",
+            ),
+        ] {
+            docx_layout::clear_measure_fonts();
+            let font_id = docx_layout::register_measure_font(FONT).unwrap();
+            let engine = EngineSession::new(140);
+            engine
+                .doc()
+                .create_story("body", seed, "Normal", "left")
+                .unwrap();
+            let request = serde_json::json!({
+                "bodyStory": "body",
+                "regions": {"sections": [{
+                    "sectionId": "main",
+                    "properties": {
+                        "pageWidth": 4320, "pageHeight": 2880,
+                        "marginTop": 300, "marginRight": 300,
+                        "marginBottom": 300, "marginLeft": 300
+                    }
+                }]},
+                "measurement": {
+                    "fontChains": {"calibri|0|0": [font_id]},
+                    "defaults": {"fontSize": 11, "fontFamily": "Calibri"},
+                    "authoritativeShaping": true
+                },
+                "renderEnv": {}
+            });
+            engine
+                .layout_document_with_regions_json(&request.to_string())
+                .unwrap();
+            engine
+                .build_display_list_frame(
+                    &serde_json::json!({"fontChains": {"calibri|0|0": [font_id]}}).to_string(),
+                    0,
+                )
+                .unwrap();
+            engine
+                .doc()
+                .insert_text(
+                    &crate::EditCtx::local("", ""),
+                    crate::Position::new("body", at),
+                    inserted,
+                    crate::FormatPolicy::Inherit,
+                )
+                .unwrap();
+
+            let before = engine.stats();
+            let frame = engine.apply_and_layout("body", 1).unwrap();
+            let after = engine.stats();
+            assert_eq!(
+                engine.doc().paragraphs("body").unwrap()[0].text,
+                expected,
+                "{label}: the insertion landed at the wrong offset"
+            );
+            assert!(
+                !frame.is_empty(),
+                "{label}: resident input produced no frame"
+            );
+            assert_eq!(
+                after.resident_measure_calls,
+                before.resident_measure_calls + 1,
+                "{label}: only the dirty paragraph should re-measure"
+            );
+
+            let fast_json = {
+                let pagination = engine.pagination.borrow();
+                let regions_state = engine.regions.borrow();
+                serialize_region_layout(
+                    pagination.input.as_ref().unwrap(),
+                    pagination.layout.as_ref().unwrap(),
+                    regions_state.as_ref().unwrap().headers_footers.as_ref(),
+                    true,
+                    true,
+                )
+                .unwrap()
+            };
+            let full_json = engine
+                .layout_document_with_regions_json(&request.to_string())
+                .unwrap();
+            assert_eq!(
+                fast_json, full_json,
+                "{label}: resident state must be byte-identical to a full pass"
+            );
+        }
+    }
+
     /// Compares resident and full region passes on a paragraph-heavy document.
     /// Run: `cargo test -p betteroffice-docx-edit --release --lib -- --ignored perf_probe --nocapture`
     #[test]
