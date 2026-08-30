@@ -237,7 +237,11 @@ fn lower_story<T: ReadTxn>(
                         });
                     }
                     let kind = shared_map_string(&page_break, txn, "_kind").unwrap_or_default();
-                    let id = BlockId::Str(format!("{story_id}:{kind}:{story_index}"));
+                    // Block ordinal, not story index: the latter counts characters, so
+                    // typing anywhere earlier renamed every break behind the caret and
+                    // took its fingerprint with it. Same reasoning as the table identity
+                    // below, which anchors on a persistent cell story instead.
+                    let id = BlockId::Str(format!("{story_id}:{kind}:b{}", blocks.len()));
                     if kind == "columnBreak" {
                         blocks.push(LayoutBlock::ColumnBreak(ColumnBreakBlock {
                             sdt_groups: None,
@@ -3469,15 +3473,62 @@ mod tests {
             value,
             json!([
                 {
-                    "kind": "pageBreak", "id": "body:pageBreak:0",
+                    "kind": "pageBreak", "id": "body:pageBreak:b0",
                     "pmStart": 0.0, "pmEnd": 1.0
                 },
                 {
-                    "kind": "columnBreak", "id": "body:columnBreak:1",
+                    "kind": "columnBreak", "id": "body:columnBreak:b1",
                     "pmStart": 1.0, "pmEnd": 2.0
                 }
             ])
         );
+    }
+
+    /// Break ids used to carry the story index, which counts characters: typing
+    /// anywhere earlier renamed every break behind the caret, changed its
+    /// fingerprint, and denied incremental pagination any suffix to converge on.
+    #[test]
+    fn break_ids_survive_typing_in_an_earlier_paragraph() {
+        let doc = EditingDoc::new(44);
+        doc.create_story("body", "before", "Normal", "left")
+            .unwrap();
+        doc.apply_raw_ops(
+            "body",
+            vec![RawOp::InsertEmbed {
+                index: 7,
+                kind: "pageBreak".to_owned(),
+                payload: Vec::new(),
+                attrs: Attrs::new(),
+            }],
+            &EditCtx::local("", DATE),
+        )
+        .unwrap();
+        let break_ids = |doc: &EditingDoc| -> Vec<String> {
+            serde_json::to_value(
+                yrs_doc_to_layout_blocks(doc, "body", &RenderEnv::default()).unwrap(),
+            )
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|block| block["kind"] == "pageBreak")
+            .map(|block| block["id"].as_str().unwrap().to_owned())
+            .collect()
+        };
+        let before = break_ids(&doc);
+        assert_eq!(before.len(), 1, "expected one break, got {before:?}");
+
+        doc.apply_raw_ops(
+            "body",
+            vec![RawOp::Insert {
+                index: 0,
+                text: "typed".to_owned(),
+                attrs: Attrs::new(),
+            }],
+            &EditCtx::local("", DATE),
+        )
+        .unwrap();
+        assert_eq!(break_ids(&doc), before, "typing must not rename a break");
     }
 
     #[test]
