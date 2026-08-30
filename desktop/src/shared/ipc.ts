@@ -202,10 +202,26 @@ export interface MemoryBreakdownRow {
   bytes: number
 }
 
+/**
+ * What one phase of opening cost the editing core's Rust heap. Distinct from
+ * `MemoryBreakdownRow`, which reports a wasm module's linear-memory size —
+ * that figure includes the allocator's free lists and never shrinks, so it
+ * cannot attribute cost to a phase or separate waste from occupancy.
+ */
+export interface HeapStageRow {
+  label: string
+  /** Bytes still held when the phase ended. */
+  liveBytes: number
+  /** Highest figure during the phase; transient cost the live number hides. */
+  peakBytes: number
+  atMs: number
+}
+
 export interface RendererDiagnostics {
   document: DocumentProfile | null
   open: OpenPhaseTimings | null
   memory: MemoryBreakdownRow[]
+  heapStages: HeapStageRow[]
 }
 
 function readOpenPhaseTimings(value: unknown): OpenPhaseTimings | null {
@@ -243,7 +259,25 @@ export function readRendererDiagnostics(value: unknown): RendererDiagnostics | n
     }
   }
 
-  return { document: profile, open: readOpenPhaseTimings(open), memory: rows }
+  const heapStages: HeapStageRow[] = []
+  const stages = (value as Partial<RendererDiagnostics>).heapStages
+  if (Array.isArray(stages)) {
+    for (const stage of stages) {
+      if (typeof stage !== 'object' || stage === null) continue
+      const { label, liveBytes, peakBytes, atMs } = stage as Partial<HeapStageRow>
+      if (typeof label !== 'string') continue
+      if (typeof liveBytes !== 'number' || !Number.isFinite(liveBytes) || liveBytes < 0) continue
+      if (typeof peakBytes !== 'number' || !Number.isFinite(peakBytes) || peakBytes < 0) continue
+      heapStages.push({
+        label,
+        liveBytes,
+        peakBytes,
+        atMs: typeof atMs === 'number' && Number.isFinite(atMs) && atMs >= 0 ? atMs : 0,
+      })
+    }
+  }
+
+  return { document: profile, open: readOpenPhaseTimings(open), memory: rows, heapStages }
 }
 
 export type UpdateEvent =

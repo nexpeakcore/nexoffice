@@ -27,6 +27,11 @@ wasm = ["dep:wasm-bindgen", "dep:js-sys"]
 # workspace only, so the published crate has to keep compiling against
 # upstream yrs. Workspace builds turn it on (scripts/build-docx-wasm.ts, CI).
 yrs-cursor = []
+# Counts live/peak Rust heap bytes through a global allocator (src/heap_stats.rs).
+# Off by default: installing a global allocator is the final binary's decision,
+# not a library's. The wasm build turns it on so the host can report occupancy
+# rather than the linear memory the allocator happens to hold.
+heap-stats = []
 
 [dependencies]
 # 0.27.3 is the newest crates.io release. The repository's minimumReleaseAge is a Bun/npm

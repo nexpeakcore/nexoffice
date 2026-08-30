@@ -9,7 +9,7 @@
  * into the process report.
  */
 
-import { memoryReport } from '@betteroffice/docx/diagnostics'
+import { heapStages, memoryReport, onHeapStage } from '@betteroffice/docx/diagnostics'
 
 // The registry backing the breakdown. Re-exported so anything in the renderer
 // registers through this module rather than reaching for the docx package,
@@ -47,8 +47,12 @@ function collect(): RendererDiagnostics {
   const rows: MemoryBreakdownRow[] = memoryReport()
   const heap = jsHeapBytes()
   if (heap > 0) rows.push({ label: 'JS heap', bytes: heap })
-  return { document: profile, open: timings, memory: rows }
+  return { document: profile, open: timings, memory: rows, heapStages: heapStages() }
 }
+
+// A phase that blocks the thread cannot answer a sample request while it is
+// blocking, so each completed phase pushes its own snapshot instead.
+onHeapStage(() => publishDiagnostics())
 
 export function publishDiagnostics(): void {
   window.nexoffice.reportDiagnostics(collect())

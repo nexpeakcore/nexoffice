@@ -62,6 +62,10 @@ describe('formatProcessReport detail', () => {
         { label: 'JS heap', bytes: 189_000_000 },
         { label: 'wasm · resident engine (worker)', bytes: 642_000_000 },
       ],
+      heapStages: [
+        { label: 'seed', liveBytes: 299_000_000, peakBytes: 1_493_000_000, atMs: 0 },
+        { label: 'layout', liveBytes: 1_507_000_000, peakBytes: 2_628_000_000, atMs: 24_150 },
+      ],
     },
     sampleAgeMs: 2_400,
   }
@@ -103,7 +107,12 @@ describe('formatProcessReport detail', () => {
 
   test('omits the open section for a renderer holding no document', () => {
     const report = formatProcessReport(rows, {
-      diagnostics: { document: null, open: null, memory: [{ label: 'JS heap', bytes: 1_048_576 }] },
+      diagnostics: {
+        document: null,
+        open: null,
+        memory: [{ label: 'JS heap', bytes: 1_048_576 }],
+        heapStages: [],
+      },
       sampleAgeMs: 100,
     })
     expect(report).toContain('JS heap')

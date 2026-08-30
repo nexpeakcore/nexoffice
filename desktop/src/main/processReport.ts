@@ -141,6 +141,31 @@ function memorySection(detail: ProcessReportDetail): string[] {
   ]
 }
 
+/**
+ * What each phase of the open left behind, and what it peaked at getting
+ * there. The peak is the number that decides whether a document fits: a phase
+ * can end holding little while having briefly needed gigabytes, and it is the
+ * brief figure that meets the address-space ceiling.
+ */
+function heapSection(detail: ProcessReportDetail): string[] {
+  const stages = detail.diagnostics?.heapStages ?? []
+  if (stages.length === 0) return []
+  const width = Math.max(...stages.map((stage) => stage.label.length), 'total held'.length)
+  const held = stages.length > 0 ? stages[stages.length - 1]!.liveBytes : 0
+  const highest = stages.reduce((most, stage) => Math.max(most, stage.peakBytes), 0)
+  return [
+    '',
+    'Document open · editing-core heap by phase',
+    `  ${pad('phase', width)}  ${padStart('held after', 12)}  ${padStart('peak during', 12)}`,
+    ...stages.map(
+      (stage) =>
+        `  ${pad(stage.label, width)}  ${padStart(megabytes(stage.liveBytes), 12)}  ${padStart(megabytes(stage.peakBytes), 12)}`
+    ),
+    `  ${pad('total held', width)}  ${padStart(megabytes(held), 12)}`,
+    `  ${pad('highest peak', width)}  ${padStart('', 12)}  ${padStart(megabytes(highest), 12)}`,
+  ]
+}
+
 function openSection(detail: ProcessReportDetail): string[] {
   const open = detail.diagnostics?.open
   if (!open) return []
@@ -179,6 +204,6 @@ export function formatProcessReport(
     ...lines,
     '-'.repeat(header.length),
     `${pad('TOTAL', labelWidth)}  ${padStart('', 7)}  ${padStart(`${total.toFixed(1)} MB`, 9)}`,
-    ...(detail ? [...memorySection(detail), ...openSection(detail)] : []),
+    ...(detail ? [...memorySection(detail), ...openSection(detail), ...heapSection(detail)] : []),
   ].join('\n')
 }

@@ -1,3 +1,4 @@
+import { clearHeapStages, markHeapStage } from '@betteroffice/docx/diagnostics';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { LayoutBlock } from '@betteroffice/docx/layout/pagination';
 import type {
@@ -119,9 +120,11 @@ export function seedYrsSession(
   seed: YrsSeedSources
 ): YrsDocxHost | null {
   const { bytes, document, initialUpdate } = seed;
+  clearHeapStages();
   if (bytes) {
     const host = session.openDocx(bytes, !initialUpdate);
     if (initialUpdate) session.loadState(initialUpdate.slice());
+    markHeapStage('seed');
     return host;
   }
   if (initialUpdate) {

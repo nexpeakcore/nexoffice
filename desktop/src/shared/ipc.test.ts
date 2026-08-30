@@ -71,6 +71,9 @@ describe('readRendererDiagnostics', () => {
       { label: 'wasm · resident engine (worker)', bytes: 642_000_000 },
       { label: 'JS heap', bytes: 189_000_000 },
     ],
+    heapStages: [
+      { label: 'seed', liveBytes: 299_000_000, peakBytes: 1_493_000_000, atMs: 0 },
+    ],
   }
 
   test('keeps a well-formed payload whole', () => {
@@ -84,8 +87,8 @@ describe('readRendererDiagnostics', () => {
   })
 
   test('accepts a renderer holding no document', () => {
-    const empty = readRendererDiagnostics({ document: null, open: null, memory: [] })
-    expect(empty).toEqual({ document: null, open: null, memory: [] })
+    const empty = readRendererDiagnostics({ document: null, open: null, memory: [], heapStages: [] })
+    expect(empty).toEqual({ document: null, open: null, memory: [], heapStages: [] })
   })
 
   test('drops memory rows that carry no readable byte count', () => {
