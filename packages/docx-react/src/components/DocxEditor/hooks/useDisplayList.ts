@@ -96,6 +96,17 @@ export interface ResidentFrameApplyResult {
   caretSynchronized: boolean;
 }
 
+/**
+ * Above this page count the resident worker is skipped. Workers are threads in
+ * this process, and the worker's bootstrap rebuilds the whole document — it
+ * reloads the CRDT, re-lowers every story, re-measures and re-paginates. On a
+ * long document that second copy does not finish inside the bootstrap timeout,
+ * so it costs the memory, gets terminated, and returns no frame. The threshold
+ * is set from the bootstrap budget rather than measured per machine: an
+ * 800-page pass already takes ~10s in wasm against a 15s timeout.
+ */
+const RESIDENT_WORKER_MAX_PAGES = 500;
+
 /** test seam: unit tests inject a fake engine/inputs-resolver instead of the wasm module */
 export interface RustDisplayListHookOverrides {
   /** Takes the resident input shape: a fake builder stands in for the whole
@@ -559,7 +570,9 @@ export function useRustDisplayList(
         : {}),
     };
     const workerEligible =
-      residentEngine !== null && workerFallbackEngineRef.current !== residentEngine;
+      residentEngine !== null &&
+      workerFallbackEngineRef.current !== residentEngine &&
+      layout.pages.length <= RESIDENT_WORKER_MAX_PAGES;
     // Cheap probe only: the full snapshot (document state, font bytes) is
     // built lazily below, and only for bootstrap/sync — steady-state frame
     // builds never encode state or copy fonts.
