@@ -3013,9 +3013,21 @@ mod tests {
             },
             "measure": { "kind": "image", "width": 40, "height": 20 }
         }));
-        for index in 3..16 {
+        // A shape, which the suffix rule refuses outright. Only the fact that
+        // the prefix is exempt lets this document take the incremental path at
+        // all, so removing that exemption fails this test rather than merely
+        // making it redundant with its mixed-suffix sibling.
+        measured.push(serde_json::json!({
+            "block": {
+                "kind": "shape", "id": "s0", "shapeType": "rect",
+                "geometryPath": [], "children": [], "width": 40, "height": 20,
+                "pmStart": 5, "pmEnd": 6
+            },
+            "measure": { "kind": "shape", "width": 40, "height": 20 }
+        }));
+        for index in 4..17 {
             let shift = usize::from(shifted_suffix && index > EDITED);
-            let start = 5 + (index - 3) * 2 + shift;
+            let start = 6 + (index - 4) * 2 + shift;
             let text = if index == EDITED { edited_text } else { "x" };
             measured.push(paragraph(index, start, text));
         }
