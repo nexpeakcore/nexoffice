@@ -513,6 +513,55 @@ fn paragraph_identity(block: &LayoutBlock) -> Option<(&BlockId, Option<f64>)> {
     }
 }
 
+/// A block a converged suffix may keep. Everything such a block emits is keyed
+/// by an identity that survives the edit, and its only difference afterwards is
+/// that its absolute document positions have all moved by the same amount — so
+/// shifting the retained primitives is equivalent to rebuilding them.
+///
+/// Wider than [`paragraph_identity`], which answers the different question of
+/// which blocks the resident measurement mirror can reuse slot-for-slot.
+/// Floating tables and anchored images are excluded: they are placed against
+/// the page rather than the text stream, so an earlier edit can move them
+/// without moving their positions. A table admits only what it can carry — its
+/// cell text is keyed by the cell block, so one nested block without an
+/// identity would be left behind at its old position.
+fn suffix_identity(block: &LayoutBlock) -> Option<(&BlockId, Option<f64>)> {
+    match block {
+        LayoutBlock::Paragraph(paragraph)
+            if paragraph
+                .runs
+                .iter()
+                .all(|run| !matches!(run, Run::Unsupported)) =>
+        {
+            Some((&paragraph.id, paragraph.pm_start))
+        }
+        LayoutBlock::Table(table)
+            if table.floating.is_none()
+                && table.rows.iter().all(|row| {
+                    row.cells.iter().all(|cell| {
+                        cell.blocks
+                            .iter()
+                            .all(|block| suffix_identity(block).is_some())
+                    })
+                }) =>
+        {
+            Some((&table.id, table.pm_start))
+        }
+        LayoutBlock::Image(image)
+            if !image
+                .anchor
+                .as_ref()
+                .and_then(|anchor| anchor.is_anchored)
+                .unwrap_or(false) =>
+        {
+            Some((&image.id, image.pm_start))
+        }
+        LayoutBlock::PageBreak(block) => Some((&block.id, block.pm_start)),
+        LayoutBlock::ColumnBreak(block) => Some((&block.id, block.pm_start)),
+        _ => None,
+    }
+}
+
 fn resident_block_slots_match(previous: &LayoutBlock, next: &LayoutBlock) -> bool {
     match (paragraph_identity(previous), paragraph_identity(next)) {
         (Some((previous_id, _)), Some((next_id, _))) => {
@@ -523,28 +572,59 @@ fn resident_block_slots_match(previous: &LayoutBlock, next: &LayoutBlock) -> boo
     }
 }
 
-fn position_deltas(previous: &LayoutInput, next: &LayoutInput) -> HashMap<String, i64> {
-    previous
-        .measured
-        .iter()
-        .zip(&next.measured)
-        .filter_map(|(previous, next)| {
-            let (previous_id, previous_start) = paragraph_identity(&previous.block)?;
-            let (next_id, next_start) = paragraph_identity(&next.block)?;
-            let key = block_key(previous_id);
-            if key != block_key(next_id) {
-                return None;
+/// A table's own primitives carry its id, but the text inside its cells carries
+/// the cell paragraph's, so a shifted table needs a delta for every block it
+/// contains as well as for itself.
+fn collect_position_deltas(
+    previous: &LayoutBlock,
+    next: &LayoutBlock,
+    deltas: &mut HashMap<String, i64>,
+) {
+    let (Some((previous_id, previous_start)), Some((next_id, next_start))) =
+        (suffix_identity(previous), suffix_identity(next))
+    else {
+        return;
+    };
+    let key = block_key(previous_id);
+    if key != block_key(next_id) {
+        return;
+    }
+    if let (Some(previous_start), Some(next_start)) = (previous_start, next_start) {
+        let delta = next_start as i64 - previous_start as i64;
+        if delta != 0 {
+            deltas.insert(key, delta);
+        }
+    }
+    let (LayoutBlock::Table(previous), LayoutBlock::Table(next)) = (previous, next) else {
+        return;
+    };
+    for (previous_row, next_row) in previous.rows.iter().zip(&next.rows) {
+        for (previous_cell, next_cell) in previous_row.cells.iter().zip(&next_row.cells) {
+            for (previous_block, next_block) in previous_cell.blocks.iter().zip(&next_cell.blocks) {
+                collect_position_deltas(previous_block, next_block, deltas);
             }
-            let delta = next_start? as i64 - previous_start? as i64;
-            (delta != 0).then_some((key, delta))
-        })
-        .collect()
+        }
+    }
 }
 
+fn position_deltas(previous: &LayoutInput, next: &LayoutInput) -> HashMap<String, i64> {
+    let mut deltas = HashMap::new();
+    for (previous, next) in previous.measured.iter().zip(&next.measured) {
+        collect_position_deltas(&previous.block, &next.block, &mut deltas);
+    }
+    deltas
+}
+
+/// `first_dirty` is the first block the edit touched. Blocks before it are
+/// identical in content *and* position — nothing ahead of an edit moves — so
+/// they need no identity check and may be of any kind. From it onward every
+/// block must be one whose retained output can be shifted rather than rebuilt;
+/// see [`suffix_identity`].
 fn incremental_eligible(
     previous: &PaginationState,
     next: &LayoutInput,
     next_options_fingerprint: u64,
+    first_dirty: usize,
 ) -> bool {
     let Some(previous_input) = previous.input.as_ref() else {
         return false;
@@ -567,9 +647,10 @@ fn incremental_eligible(
             .measured
             .iter()
             .zip(&next.measured)
+            .skip(first_dirty)
             .all(|(previous, next)| {
-                paragraph_identity(&previous.block)
-                    .zip(paragraph_identity(&next.block))
+                suffix_identity(&previous.block)
+                    .zip(suffix_identity(&next.block))
                     .is_some_and(|((previous_id, _), (next_id, _))| {
                         block_key(previous_id) == block_key(next_id)
                     })
@@ -1221,7 +1302,7 @@ impl EngineSession {
                 .zip(&block_fingerprints)
                 .position(|(previous, next)| previous != next);
             if let Some(dirty_index) = first_dirty
-                && incremental_eligible(&previous, &input, input_options_fingerprint)
+                && incremental_eligible(&previous, &input, input_options_fingerprint, dirty_index)
             {
                 let previous_input = previous.input.as_ref().expect("eligibility checked input");
                 deltas = position_deltas(previous_input, &input);
@@ -2742,11 +2823,6 @@ mod tests {
         );
     }
 
-    /// A converged suffix holding blocks that are not plain paragraphs — a
-    /// table, a block image, and a paragraph carrying an inline image. Only
-    /// the leading paragraph's text changes; everything after it keeps its
-    /// content and moves by one document position.
-
     /// Page ids carried by a FrameDelta v1's operation table, read straight
     /// from the encoded bytes rather than from the state that produced them —
     /// an assertion against the encoder's own bookkeeping proves nothing.
@@ -2771,6 +2847,10 @@ mod tests {
             .collect()
     }
 
+    /// A converged suffix holding blocks that are not plain paragraphs — a
+    /// table, a block image, a paragraph carrying an inline image, and a page
+    /// break. Only the leading paragraph's text changes; everything after it
+    /// keeps its content and moves by one document position.
     fn mixed_pagination_input(first_text: &str, shifted_suffix: bool) -> String {
         let paragraph = |index: usize, start: usize, text: &str| {
             serde_json::json!({
@@ -2803,8 +2883,8 @@ mod tests {
         }
         let shift = usize::from(shifted_suffix);
 
-        // Non-floating table: `paragraph_identity` refuses it, so it is what
-        // the eligibility rule currently trips over.
+        // Non-floating table. Its cell text carries the cell paragraph's key,
+        // not the table's, so a shifted table needs deltas for both.
         let table_start = 24 + shift;
         measured.push(serde_json::json!({
             "block": {
@@ -2835,8 +2915,8 @@ mod tests {
             "measure": { "kind": "image", "width": 40, "height": 20 }
         }));
 
-        // Paragraph whose run is an inline image — the case the current rule
-        // rejects even though nothing about it floats.
+        // Paragraph whose run is an inline image. Everything it emits carries
+        // the paragraph's key, so the paragraph's own delta covers it.
         let inline_start = 28 + shift;
         measured.push(serde_json::json!({
             "block": {
@@ -2850,6 +2930,23 @@ mod tests {
             "measure": { "kind": "paragraph", "lines": [line], "totalHeight": 20 }
         }));
 
+        // Explicit page break. It places no fragment and paints nothing, but
+        // its block still has to be admissible or the suffix behind every one
+        // of them is unreachable — and a page-per-break document is exactly
+        // what a paginated export looks like.
+        let break_start = 30 + shift;
+        measured.push(serde_json::json!({
+            "block": {
+                "kind": "pageBreak", "id": "body:pageBreak:b15",
+                "pmStart": break_start, "pmEnd": break_start + 1
+            },
+            "measure": { "kind": "pageBreak" }
+        }));
+        measured.push(serde_json::json!({
+            "block": paragraph(16, break_start + 1, "x"),
+            "measure": paragraph_extent
+        }));
+
         serde_json::json!({
             "measured": measured,
             "options": {
@@ -2858,6 +2955,140 @@ mod tests {
             }
         })
         .to_string()
+    }
+
+    /// A table and an image sitting in the *prefix*, ahead of the edit. The
+    /// suffix that convergence retains is plain paragraphs, so this is the
+    /// shape incremental pagination is allowed to take.
+    fn prefix_furniture_input(edited_text: &str, shifted_suffix: bool) -> String {
+        let line = serde_json::json!({
+            "headRun": 0, "headChar": 0, "tailRun": 0, "tailChar": 1,
+            "width": 10, "ascent": 8, "descent": 2, "lineHeight": 20
+        });
+        let paragraph_extent =
+            serde_json::json!({ "kind": "paragraph", "lines": [line], "totalHeight": 20 });
+        let paragraph = |index: usize, start: usize, text: &str| {
+            serde_json::json!({
+                "block": {
+                    "kind": "paragraph",
+                    "id": format!("p{index}"),
+                    "paraId": format!("para-{index}"),
+                    "runs": [{
+                        "kind": "text", "text": text,
+                        "pmStart": start + 1, "pmEnd": start + 2
+                    }],
+                    "pmStart": start, "pmEnd": start + 2
+                },
+                "measure": paragraph_extent
+            })
+        };
+
+        const EDITED: usize = 8;
+        let mut measured = vec![paragraph(0, 0, "x")];
+        measured.push(serde_json::json!({
+            "block": {
+                "kind": "table", "id": "t0",
+                "rows": [{ "id": "r0", "cells": [
+                    { "id": "c0", "blocks": [paragraph(90, 2, "x")["block"]] }
+                ] }],
+                "columnWidths": [100],
+                "pmStart": 2, "pmEnd": 4
+            },
+            "measure": {
+                "kind": "table", "columnWidths": [100],
+                "totalWidth": 100, "totalHeight": 20,
+                "rows": [{ "height": 20, "cells": [
+                    { "width": 100, "height": 20, "blocks": [paragraph_extent] }
+                ] }]
+            }
+        }));
+        measured.push(serde_json::json!({
+            "block": {
+                "kind": "image", "id": "i0", "src": "embedded",
+                "width": 40, "height": 20, "pmStart": 4, "pmEnd": 5
+            },
+            "measure": { "kind": "image", "width": 40, "height": 20 }
+        }));
+        for index in 3..16 {
+            let shift = usize::from(shifted_suffix && index > EDITED);
+            let start = 5 + (index - 3) * 2 + shift;
+            let text = if index == EDITED { edited_text } else { "x" };
+            measured.push(paragraph(index, start, text));
+        }
+
+        serde_json::json!({
+            "measured": measured,
+            "options": {
+                "pageSize": { "w": 200, "h": 120 },
+                "margins": { "top": 10, "right": 10, "bottom": 10, "left": 10 }
+            }
+        })
+        .to_string()
+    }
+
+    /// The case the eligibility rule now admits: furniture ahead of the edit,
+    /// paragraphs behind it. This one must actually take the incremental path
+    /// — its twin above stays on the full rebuild, so only this test can catch
+    /// a suffix that converges at the wrong positions.
+    #[test]
+    fn prefix_furniture_takes_the_incremental_path_and_matches_a_full_rebuild() {
+        let engine = EngineSession::new(22);
+        engine
+            .layout_document_json(&prefix_furniture_input("x", false))
+            .unwrap();
+        engine.build_display_list_frame("{}", 0).unwrap();
+        let before_pages = engine.display.borrow().pages.clone();
+        let before = engine.stats().incremental_pagination_calls;
+
+        let next_input = prefix_furniture_input("y", true);
+        let incremental = engine.layout_document_json(&next_input).unwrap();
+        let full = docx_layout::layout_to_json(&next_input).unwrap();
+        assert_eq!(
+            incremental, full,
+            "an incrementally paginated suffix must match a full rebuild"
+        );
+        assert_eq!(
+            engine.stats().incremental_pagination_calls,
+            before + 1,
+            "furniture confined to the prefix must not force a full pagination"
+        );
+
+        let frame = engine.build_display_list_frame("{}", 1).unwrap();
+        let retained = engine
+            .with_display_list(Clone::clone)
+            .expect("display list retained");
+        let fresh = {
+            let pagination = engine.pagination.borrow();
+            docx_layout::build_display_list_value_from_resident(
+                pagination.input.as_ref().unwrap(),
+                pagination.layout.as_ref().unwrap(),
+                "{}",
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            retained, fresh,
+            "the retained display list must equal a fresh build, positions included"
+        );
+
+        let after_pages = engine.display.borrow().pages.clone();
+        let changed: std::collections::BTreeSet<u64> = before_pages
+            .iter()
+            .zip(&after_pages)
+            .filter(|(before, after)| before != after)
+            .map(|(_, after)| after.page_id)
+            .chain(
+                after_pages
+                    .iter()
+                    .skip(before_pages.len())
+                    .map(|page| page.page_id),
+            )
+            .collect();
+        let announced = frame_page_ids(&frame);
+        assert!(
+            changed.is_subset(&announced),
+            "frame announced {announced:?} but these pages changed: {changed:?}"
+        );
     }
 
     /// Pins what a shifted suffix must produce when it holds tables and images
@@ -2878,6 +3109,7 @@ mod tests {
             .unwrap();
         engine.build_display_list_frame("{}", 0).unwrap();
         let before_pages = engine.display.borrow().pages.clone();
+        let before = engine.stats().incremental_pagination_calls;
 
         let next_input = mixed_pagination_input("y", true);
         let incremental = engine.layout_document_json(&next_input).unwrap();
@@ -2885,6 +3117,12 @@ mod tests {
         assert_eq!(
             incremental, full,
             "pagination over a shifted mixed suffix must match a full rebuild"
+        );
+        assert_eq!(
+            engine.stats().incremental_pagination_calls,
+            before + 1,
+            "a mixed suffix must take the incremental path, or the assertions \
+             below only re-check the full rebuild against itself"
         );
 
         let frame = engine.build_display_list_frame("{}", 1).unwrap();
