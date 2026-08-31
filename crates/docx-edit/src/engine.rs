@@ -1015,7 +1015,19 @@ impl EngineSession {
         } else {
             None
         };
-        self.layout_document_value(input.clone())?;
+        let refs = input
+            .measured
+            .iter()
+            .flat_map(|measured| collect_note_refs(std::slice::from_ref(&measured.block)))
+            .collect::<Vec<_>>();
+        // Pagination retains the arena, so the local copy is only needed again
+        // to re-run layout at a reserved note height. A document without notes
+        // never reaches that, and the arena is every measured block in the
+        // document — 696MB on the 2000-page fixture, against a 4GiB wasm32
+        // ceiling — so only a document with notes pays for a second one.
+        let has_notes = !refs.is_empty() || !notes.contents.is_empty();
+        let for_notes = has_notes.then(|| input.clone());
+        self.layout_document_value(input)?;
         let mut initial_layout = self
             .pagination
             .borrow()
@@ -1023,11 +1035,6 @@ impl EngineSession {
             .clone()
             .expect("layout retained after successful pagination");
         apply_document_regions(&mut initial_layout, &regions);
-        let refs = input
-            .measured
-            .iter()
-            .flat_map(|measured| collect_note_refs(std::slice::from_ref(&measured.block)))
-            .collect::<Vec<_>>();
         let presentations = build_note_presentations(&refs, &initial_layout.pages, &regions);
         assign_note_presentations(&mut notes.contents, &presentations);
         if resident_body {
@@ -1047,7 +1054,10 @@ impl EngineSession {
         // the arena is the whole document's measured blocks.
         let stabilized = stabilize_note_layout(
             |reserved| {
-                let mut pass = input.clone();
+                let mut pass = for_notes
+                    .as_ref()
+                    .expect("a reserved note height implies a note")
+                    .clone();
                 pass.options.footnote_reserved_heights = reservation_options(reserved);
                 let mut layout = docx_layout::place::layout_document(&mut pass)?;
                 apply_document_regions(&mut layout, &regions);
@@ -1061,9 +1071,10 @@ impl EngineSession {
         .map_err(layout_error_message)?;
         let notes_converged = stabilized.converged;
         if !stabilized.reserved_heights.is_empty() {
-            input.options.footnote_reserved_heights =
+            let mut reserved = for_notes.expect("a reserved note height implies a note");
+            reserved.options.footnote_reserved_heights =
                 reservation_options(&stabilized.reserved_heights);
-            self.layout_document_value(input)?;
+            self.layout_document_value(reserved)?;
         }
         let mut pagination = self.pagination.borrow_mut();
         let layout = pagination
