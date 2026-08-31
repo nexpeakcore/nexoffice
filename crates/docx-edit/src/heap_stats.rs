@@ -1,8 +1,9 @@
-//! Live and peak Rust heap bytes, for diagnosing what a document actually
-//! costs. `WebAssembly.Memory.buffer.byteLength` — the only figure the host
-//! could read before — reports the linear memory the allocator has *claimed*,
-//! including its free lists, and it never shrinks. That conflates waste with
-//! occupancy and cannot say how close a document is to the wasm32 ceiling.
+//! Live and peak bytes *requested* from the Rust allocator, for diagnosing what
+//! a document costs. This is the sum of `Layout::size()`, so it excludes
+//! rounding, allocator metadata and fragmentation, and reads below true
+//! occupancy. `WebAssembly.Memory.buffer.byteLength` — the only figure the host
+//! could read before — is the opposite error: linear memory the allocator has
+//! *claimed*, including free lists, and it never shrinks.
 //!
 //! Counting at the allocator answers the occupancy question directly, and in
 //! the same units natively and under wasm, so the two are comparable.
@@ -29,15 +30,13 @@ mod imp {
     /// Relaxed ordering throughout: these counters are read for reporting, and
     /// no other memory is published through them.
     ///
-    /// The high-water mark is a load/compare/store rather than `fetch_max`,
-    /// which is a compare-exchange loop on every single allocation. Two
-    /// threads can lose an update to each other here; a diagnostic counter is
-    /// worth neither that loop nor the contention.
+    /// `fetch_max` rather than load/compare/store: two threads racing there can
+    /// store in the reverse order and leave the mark below a figure that was
+    /// genuinely reached — even below `LIVE`, which makes the reading absurd
+    /// rather than merely approximate.
     fn record_growth(delta: usize) {
         let live = LIVE.fetch_add(delta, Ordering::Relaxed) + delta;
-        if live > PEAK.load(Ordering::Relaxed) {
-            PEAK.store(live, Ordering::Relaxed);
-        }
+        PEAK.fetch_max(live, Ordering::Relaxed);
     }
 
     unsafe impl GlobalAlloc for Counting {
@@ -130,25 +129,38 @@ mod tests {
 
     const CHUNK: usize = 8 * 1024 * 1024;
 
+    /// The counters are process-wide, so these tests perturb each other's
+    /// readings when they run at the same time.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Assertions here compare against the chunk alone, never against a
+    /// difference between two readings: the test harness allocates and frees on
+    /// its own threads throughout, so a delta is not the test's to predict.
     #[test]
     fn counts_an_allocation_and_gives_it_back() {
-        let before = live_bytes();
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let held = vec![0_u8; CHUNK];
         let during = live_bytes();
         assert!(
-            during >= before + CHUNK,
-            "live should cover the allocation: {before} -> {during}"
+            during >= CHUNK,
+            "live must cover an allocation this thread is still holding: {during}"
         );
         drop(held);
+        let after = live_bytes();
+        // Two readings of a process-wide counter cannot be compared exactly:
+        // the harness allocates on its own threads between them. The slack
+        // absorbs that while staying two orders of magnitude under the chunk,
+        // so it cannot hide a chunk that was never returned.
+        const SLACK: usize = 64 * 1024;
         assert!(
-            live_bytes() < during,
-            "dropping should give the bytes back: still {} of {during}",
-            live_bytes()
+            after + CHUNK <= during + SLACK,
+            "dropping must give the chunk back: {after} against {during}"
         );
     }
 
     #[test]
     fn peak_outlives_the_allocation_until_reset() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         drop(vec![0_u8; CHUNK]);
         let peak = peak_bytes();
         let live = live_bytes();
@@ -166,14 +178,15 @@ mod tests {
 
     #[test]
     fn growing_a_vec_through_realloc_is_tracked() {
-        let before = live_bytes();
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let mut grown = Vec::<u8>::new();
         for _ in 0..CHUNK {
             grown.push(1);
         }
+        let live = live_bytes();
         assert!(
-            live_bytes() >= before + CHUNK,
-            "realloc growth must be counted, not just fresh allocations"
+            live >= CHUNK,
+            "realloc growth must be counted, not just fresh allocations: {live}"
         );
         drop(grown);
     }
