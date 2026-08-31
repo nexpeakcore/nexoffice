@@ -19,7 +19,13 @@ export function registerMemoryReader(label: string, read: () => number): void {
   readers.set(label, read);
 }
 
-export function unregisterMemoryReader(label: string): void {
+/**
+ * `reader` makes this safe to call during teardown: a later owner of the same
+ * label has already replaced the entry, and removing the label outright would
+ * take the live reader with it.
+ */
+export function unregisterMemoryReader(label: string, reader?: () => number): void {
+  if (reader && readers.get(label) !== reader) return;
   readers.delete(label);
 }
 

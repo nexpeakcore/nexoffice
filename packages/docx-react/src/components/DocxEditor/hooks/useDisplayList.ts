@@ -971,6 +971,10 @@ export function useCanvasRenderer(
   // drops the previous document's decoded bitmaps instead of carrying them
   // for the editor's lifetime; the resolver also bounds itself by bytes.
   const resolveImage = useMemo(() => createCanvasImageResolver(), [engine]);
+  // The resolver reports its cache to the process report, so an unmounted or
+  // replaced one must stop: a DOCX closed, or replaced by a format that makes
+  // no resolver, would otherwise keep its bitmaps attributed to the renderer.
+  useEffect(() => () => resolveImage.dispose(), [resolveImage]);
   const status: UseCanvasRendererResult['status'] = error
     ? 'error'
     : loading || displayList == null

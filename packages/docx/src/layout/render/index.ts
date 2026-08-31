@@ -129,7 +129,7 @@ export {
   type DisplayPageHostOptions,
 } from './canvasPointer';
 
-export { createCanvasImageResolver } from './canvasImageResolver';
+export { createCanvasImageResolver, type DisposableImageResolver } from './canvasImageResolver';
 
 export {
   computeA11yAnnouncements,
