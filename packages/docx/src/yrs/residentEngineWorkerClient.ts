@@ -268,6 +268,7 @@ export class ResidentEngineWorkerClient {
     const message: ResidentEngineWorkerRequest = { id, type: 'destroy' };
     this.worker.postMessage(message);
     this.worker.terminate();
+    forgetWorkerHeap();
     this.failAll(new Error('Resident engine worker was destroyed'));
     this.ready = false;
   }
@@ -301,6 +302,7 @@ export class ResidentEngineWorkerClient {
             this.ready = false;
             this.destroyed = true;
             this.worker.terminate();
+            forgetWorkerHeap();
           }, timeoutMs)
         : null;
       this.pending.set(id, { resolve, reject, timeout });
@@ -341,6 +343,15 @@ function snapshotTransfers(snapshot: YrsResidentWorkerSnapshot): Transferable[] 
 // thread can reach across into the worker's wasm memory to measure it.
 let workerHeapBytes = 0;
 registerMemoryReader('wasm · resident engine (worker)', () => workerHeapBytes);
+
+/**
+ * A terminated worker holds nothing. Without this the last frame's figure
+ * outlives the worker, so a main-thread fallback or a closed document keeps
+ * reporting memory that has already been released.
+ */
+function forgetWorkerHeap(): void {
+  workerHeapBytes = 0;
+}
 
 function frameResult(
   response: ResidentEngineWorkerResponse & { ok: true }
