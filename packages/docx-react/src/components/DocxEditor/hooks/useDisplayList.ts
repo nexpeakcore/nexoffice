@@ -20,6 +20,7 @@ import {
 } from '@betteroffice/docx/layout/render';
 import type { DisplayListBuildInputs } from '@betteroffice/docx/layout/render';
 import { markHeapStage } from '@betteroffice/docx/diagnostics';
+import { workerServesEngine } from './residentWorkerLifecycle';
 import { getLayoutKernelInputs } from '@betteroffice/docx/editor';
 import {
   canUseResidentEngineWorker,
@@ -400,6 +401,12 @@ export function useRustDisplayList(
         const worker = workerRef.current;
         const currentFrame = snapshotRef.current.frame;
         if (!worker || !worker.client.isReady() || !currentFrame) return null;
+        // Returning null here is what routes the edit to the compatibility
+        // path. A worker bootstrapped for a different engine must take that
+        // route: its reply is reported as applied, so accepting one would
+        // commit the keystroke to the previous document and drop it from this
+        // one.
+        if (!workerServesEngine(worker, residentEngine)) return null;
         const selection = worker.engine.selection();
         if (!selection) return null;
         paintedCaretMachine.noteInput(performance.now());
@@ -498,6 +505,7 @@ export function useRustDisplayList(
       paintedCaretMachine,
       publishQuerySnapshot,
       queryEpochGate,
+      residentEngine,
     ]
   );
 
@@ -684,6 +692,17 @@ export function useRustDisplayList(
         pending = fallback(error);
       }
     } else {
+      // A worker outlives only the document it was bootstrapped for. Reaching
+      // the main-thread path means this document is not eligible for one — a
+      // different engine, a page count over the cutoff, or an earlier
+      // bootstrap failure — and leaving the previous document's worker in
+      // place would let `applyResidentInput` keep editing that document.
+      if (workerRef.current) {
+        workerRef.current.client.destroy();
+        workerRef.current = null;
+        setWorkerSurfacesActive(false);
+        setWorkerPresentationActive(false);
+      }
       pending = buildOnMainThread();
     }
     pending
