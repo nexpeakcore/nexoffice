@@ -450,6 +450,23 @@ export interface YrsResidentWorkerSnapshot {
 }
 
 /**
+ * The seeded replica handed to a worker that will then own the document's
+ * layout. Deliberately smaller than {@link YrsResidentWorkerSnapshot}: there
+ * are no recorded render/measure inputs to replay, because the point is that
+ * nobody has lowered, measured or paginated this document yet.
+ *
+ * @internal
+ */
+export interface YrsResidentWorkerOpen {
+  /** Full document state. */
+  state: Uint8Array;
+  selection: YrsSelection | null;
+  fonts: Uint8Array[];
+  /** Monotonic revision of the resident font set (bumped by register/clear). */
+  fontsRevision: number;
+}
+
+/**
  * What the sync target already holds, so a snapshot can ship deltas instead
  * of the whole world.
  *
@@ -660,6 +677,12 @@ export interface YrsSession extends CollaborationReplica {
   ): { frame: Uint8Array; profile: YrsEngineApplyProfile };
   /** Snapshot the inputs needed to move resident layout ownership to a worker. */
   residentWorkerSnapshot(options?: YrsResidentWorkerSyncOptions): YrsResidentWorkerSnapshot | null;
+  /**
+   * The seeded replica, for handing a document to a worker that will lay it
+   * out. Always available — unlike {@link residentWorkerSnapshot}, it does not
+   * require this session to have laid the document out first.
+   */
+  residentWorkerOpen(): YrsResidentWorkerOpen;
   /**
    * Cheap worker-sync probe: the resident layout revision when a worker
    * snapshot would be available, without encoding document state or copying
@@ -1263,6 +1286,12 @@ function wrapSession(session: EditSession, clientId: number): YrsSession {
         layoutRevision: residentLayoutRevision,
       };
     },
+    residentWorkerOpen: () => ({
+      state: session.encode_state(),
+      selection: JSON.parse(session.selection()) as YrsSelection | null,
+      fonts: residentFonts.map((bytes) => bytes.slice()),
+      fontsRevision: residentFontsRevision,
+    }),
     residentWorkerProbe: () => {
       if (!residentLayoutInput) return null;
       if (!residentLayoutWithRegions && residentRenderInputs.size === 0) return null;

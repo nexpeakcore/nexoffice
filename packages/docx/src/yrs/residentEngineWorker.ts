@@ -80,16 +80,22 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
   }
   if (request.type === 'open') {
     destroySession();
-    // The worker is the origin of this document, not a copy of it: it seeds
-    // once and nothing replays that work. `bootstrap` below exists for the
-    // path where a main-thread replica opened first, which costs the document
-    // twice over.
+    // The worker is the origin of this document's layout, not a copy of it:
+    // it lowers, measures and paginates once and nothing replays that work.
+    // `bootstrap` below exists for the path where a main-thread replica laid
+    // the document out first, which costs the document twice over.
     session = await createResidentEngineSession();
+    session.loadState(request.open.state);
     session.clearFonts();
-    for (const font of request.fonts) session.registerFont(font);
-    fontsRevision = request.fontsRevision;
-    session.seedDocx(request.bytes);
+    for (const font of request.open.fonts) session.registerFont(font);
+    fontsRevision = request.open.fontsRevision;
+    if (request.open.selection) {
+      session.setSelection(request.open.selection.anchor, request.open.selection.head);
+    }
+    // No render or measure inputs to replay: lowering and measuring happen
+    // here, inside this one region layout, and nowhere else.
     session.layoutDocumentWithRegionsVoid(request.layoutInput);
+    layoutRevision = 1;
     subscribe();
     const started = performance.now();
     const frame = session.buildDisplayListFrame(request.extras, 0);

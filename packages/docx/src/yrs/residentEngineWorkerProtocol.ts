@@ -1,6 +1,7 @@
 import type {
   YrsEngineApplyProfile,
   YrsResidentCaretSnapshot,
+  YrsResidentWorkerOpen,
   YrsResidentWorkerSnapshot,
   YrsSelection,
 } from './index';
@@ -15,19 +16,22 @@ export type ResidentEngineWorkerRequest =
     }
   | {
       /**
-       * Opens the document in the worker, which then owns it: it seeds the
-       * replica, lowers, measures, paginates and builds the display list once.
+       * Opens the document in the worker, which then owns its layout: it takes
+       * the seeded replica, then lowers, measures, paginates and builds the
+       * display list once, for good.
        *
-       * `bootstrap` below does the same work a second time, from a main-thread
-       * replica that has already done all of it — that duplicate is what makes
-       * a long document cost two of everything and what the bootstrap budget
-       * runs out of.
+       * `bootstrap` below does that same work a second time, after a main
+       * thread that has already done all of it — the duplicate is what makes a
+       * long document cost two of everything.
+       *
+       * The replica arrives as state rather than as DOCX bytes on purpose:
+       * seeding independently would give the worker its own block keys, and
+       * the display positions the main thread maps selections through would
+       * then address a different document.
        */
       id: number;
       type: 'open';
-      bytes: Uint8Array;
-      fonts: Uint8Array[];
-      fontsRevision: number;
+      open: YrsResidentWorkerOpen;
       /** The region layout request, as `layoutDocumentWithRegionsVoid` takes it. */
       layoutInput: string;
       extras: string;

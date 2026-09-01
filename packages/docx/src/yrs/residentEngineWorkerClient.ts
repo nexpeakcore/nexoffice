@@ -1,6 +1,7 @@
 import type {
   YrsEngineApplyProfile,
   YrsResidentCaretSnapshot,
+  YrsResidentWorkerOpen,
   YrsResidentWorkerSnapshot,
   YrsSelection,
 } from './index';
@@ -126,6 +127,29 @@ export class ResidentEngineWorkerClient {
   /** The fonts revision this worker last applied (null before bootstrap). */
   syncedFontsRevision(): number | null {
     return this.appliedFontsRevision;
+  }
+
+  /**
+   * Hands the worker a seeded-but-unlaid-out document and lets it paginate.
+   * Unlike `bootstrap`, nothing on the main thread has lowered, measured or
+   * paginated it first, so this is the whole cost once rather than twice.
+   */
+  async open(
+    open: YrsResidentWorkerOpen,
+    layoutInput: string,
+    extras: string
+  ): Promise<ResidentEngineWorkerFrame> {
+    const fontsRevision = open.fontsRevision;
+    const response = await this.request(
+      { type: 'open', open, layoutInput, extras },
+      [open.state.buffer, ...open.fonts.map((font) => font.buffer)],
+      RESIDENT_ENGINE_WORKER_STARTUP_TIMEOUT_MS
+    );
+    const result = frameResult(response);
+    this.recordSync(response, fontsRevision);
+    this.ready = true;
+    this.revision = result.layoutRevision;
+    return result;
   }
 
   async bootstrap(
