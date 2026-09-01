@@ -1,0 +1,96 @@
+--- /Users/gianglh/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yrs-0.27.3/src/types/text.rs	2006-07-24 08:21:28
++++ /private/tmp/claude-501/-Users-gianglh-work-nexoffice/9281efa1-e87e-4cc7-a646-b7be8929e7ec/scratchpad/yrs-cursor/src/types/text.rs	2026-08-27 18:55:12
+@@ -155,6 +155,20 @@
+     }
+ }
+ 
++/// A reusable insertion point inside a [Text]; see [Text::cursor].
++///
++/// Opaque on purpose: it wraps the same internal position the non-cursor
++/// inserts build and discard on every call, so a cursor insert and an
++/// equivalent index insert produce identical blocks.
++pub struct TextCursor(ItemPosition);
++
++impl TextCursor {
++    /// The index this cursor currently sits at.
++    pub fn index(&self) -> u32 {
++        self.0.index
++    }
++}
++
+ pub trait Text: AsRef<Branch> + Sized {
+     /// Returns a number of characters visible in a current text data structure.
+     fn len<T: ReadTxn>(&self, _txn: &T) -> u32 {
+@@ -346,6 +360,62 @@
+             }
+         } else {
+             panic!("The type or the position doesn't exist!");
++        }
++    }
++
++    /// Opens a reusable insertion point at `index`.
++    ///
++    /// Every `insert*` call above walks the block list from the start of the
++    /// text to reach its index, so filling a text with N chunks costs
++    /// 0 + 1 + ... + N block visits. A cursor pays that walk once: each insert
++    /// through it leaves the position immediately after what it wrote, which is
++    /// where the next ascending insert belongs.
++    ///
++    /// The cursor borrows nothing, but it holds raw block pointers into the
++    /// document: it is only valid until the next structural change made by
++    /// anything other than its own `insert_*_at` calls, and only inside the
++    /// transaction it was opened in.
++    fn cursor(&self, txn: &mut TransactionMut, index: u32) -> Option<TextCursor> {
++        let this = BranchPtr::from(self.as_ref());
++        find_position(this, txn, index).map(TextCursor)
++    }
++
++    /// [Self::insert_with_attributes] through a cursor. Advances `cursor` past
++    /// the written chunk.
++    fn insert_with_attributes_at(
++        &self,
++        txn: &mut TransactionMut,
++        cursor: &mut TextCursor,
++        chunk: &str,
++        attributes: Attrs,
++    ) {
++        if chunk.is_empty() {
++            return;
++        }
++        let this = BranchPtr::from(self.as_ref());
++        let value = crate::block::PrelimString(chunk.into());
++        insert(this, txn, &mut cursor.0, value, attributes);
++    }
++
++    /// [Self::insert_embed_with_attributes] through a cursor. Advances `cursor`
++    /// past the written embed.
++    fn insert_embed_with_attributes_at<V>(
++        &self,
++        txn: &mut TransactionMut,
++        cursor: &mut TextCursor,
++        embed: V,
++        attributes: Attrs,
++    ) -> V::Return
++    where
++        V: Into<EmbedPrelim<V>> + Prelim,
++    {
++        let this = BranchPtr::from(self.as_ref());
++        let item = insert(this, txn, &mut cursor.0, embed.into(), attributes)
++            .expect("cannot insert empty value");
++        if let Ok(integrated) = item.try_into() {
++            integrated
++        } else {
++            panic!("Defect: unexpected returned integrated type")
+         }
+     }
+ 
+--- /Users/gianglh/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yrs-0.27.3/src/lib.rs	2006-07-24 08:21:28
++++ /private/tmp/claude-501/-Users-gianglh-work-nexoffice/9281efa1-e87e-4cc7-a646-b7be8929e7ec/scratchpad/yrs-cursor/src/lib.rs	2026-08-27 18:55:12
+@@ -695,6 +695,7 @@
+ pub use crate::types::map::MapPrelim;
+ pub use crate::types::map::MapRef;
+ pub use crate::types::text::Text;
++pub use crate::types::text::TextCursor;
+ pub use crate::types::text::TextPrelim;
+ pub use crate::types::text::TextRef;
+ #[cfg(feature = "weak")]

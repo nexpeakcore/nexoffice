@@ -14,6 +14,25 @@ export type ResidentEngineWorkerRequest =
       module: WebAssembly.Module;
     }
   | {
+      /**
+       * Opens the document in the worker, which then owns it: it seeds the
+       * replica, lowers, measures, paginates and builds the display list once.
+       *
+       * `bootstrap` below does the same work a second time, from a main-thread
+       * replica that has already done all of it — that duplicate is what makes
+       * a long document cost two of everything and what the bootstrap budget
+       * runs out of.
+       */
+      id: number;
+      type: 'open';
+      bytes: Uint8Array;
+      fonts: Uint8Array[];
+      fontsRevision: number;
+      /** The region layout request, as `layoutDocumentWithRegionsVoid` takes it. */
+      layoutInput: string;
+      extras: string;
+    }
+  | {
       id: number;
       type: 'bootstrap';
       snapshot: YrsResidentWorkerSnapshot;
@@ -93,6 +112,9 @@ export type ResidentEngineWorkerResponse =
       replayMs?: number;
       replayedPages?: number;
       layoutRevision?: number;
+      /** Wasm linear memory held in the worker thread, which the renderer's
+       * own process metrics cannot separate out. */
+      heapBytes?: number;
       /** The worker replica's yrs state vector after this operation, so the
        * next sync can ship a diff instead of the whole document state. */
       stateVector?: ArrayBuffer;

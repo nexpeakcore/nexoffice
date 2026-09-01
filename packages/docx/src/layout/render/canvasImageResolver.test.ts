@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createCanvasImageResolver } from './canvasImageResolver';
+import { memoryReport } from '../../diagnostics';
 
 /** Controllable stand-in for the DOM Image: tests decide when a load lands. */
 class FakeImage {
@@ -152,5 +153,41 @@ describe('createCanvasImageResolver', () => {
     loads = [];
     void resolve('blob:doc/broken');
     expect(loads).toHaveLength(0);
+  });
+
+  test('stops reporting its cache once disposed', async () => {
+    const resolve = createCanvasImageResolver(1024);
+    const pending = resolve('blob:doc/one');
+    const load = loads.find((candidate) => candidate.src === 'blob:doc/one');
+    if (load) {
+      load.image.naturalWidth = 8;
+      load.image.naturalHeight = 8;
+      load.image.onload?.();
+    }
+    await pending;
+    await flush();
+    expect(memoryReport().some((row) => row.label === 'image cache')).toBe(true);
+
+    resolve.dispose();
+    expect(memoryReport().some((row) => row.label === 'image cache')).toBe(false);
+  });
+
+  test('disposing a replaced resolver leaves the live one reporting', async () => {
+    // Both resolvers register under the same label, so an unregister that did
+    // not check identity would take the open document's reader with it.
+    const older = createCanvasImageResolver(1024);
+    const newer = createCanvasImageResolver(1024);
+    const pending = newer('blob:doc/two');
+    const load = loads.find((candidate) => candidate.src === 'blob:doc/two');
+    if (load) {
+      load.image.naturalWidth = 8;
+      load.image.naturalHeight = 8;
+      load.image.onload?.();
+    }
+    await pending;
+    await flush();
+
+    older.dispose();
+    expect(memoryReport().some((row) => row.label === 'image cache')).toBe(true);
   });
 });

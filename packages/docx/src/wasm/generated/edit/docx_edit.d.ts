@@ -215,6 +215,15 @@ export class EditSession {
      * Paginate and compose section/page regions inside the resident engine.
      */
     layout_document_with_regions_json(input: string): string;
+    /**
+     * The same pass without the measured blocks, for hosts that read them
+     * back out of this session rather than off the wire.
+     */
+    layout_document_with_regions_slim_json(input: string): string;
+    /**
+     * The pass alone, for hosts that want only the retained state.
+     */
+    layout_document_with_regions_void(input: string): void;
     layout_font_requirements_json(input: string): string;
     /**
      * Every tracked-change run/paragraph-mark revision across all stories,
@@ -490,6 +499,28 @@ export function clear_measure_fonts(): void;
 export function close_display_list(handle: number): void;
 
 /**
+ * Rust heap bytes currently allocated, or 0 in a build without the counter.
+ */
+export function heap_live_bytes(): number;
+
+/**
+ * Highest live figure since the last [`heap_reset_peak`], or 0 without it.
+ */
+export function heap_peak_bytes(): number;
+
+/**
+ * Restart the high-water mark so the next phase's peak is its own. Hosts call
+ * this at phase boundaries to attribute transient cost rather than carrying
+ * one session-wide maximum.
+ */
+export function heap_reset_peak(): void;
+
+/**
+ * Whether the figures above mean anything in this build.
+ */
+export function heap_stats_available(): boolean;
+
+/**
  * wasm wrapper over [`hit::hit_test_json`]: display-list JSON + page-local
  * point in, document position (or `null`) as JSON out.
  */
@@ -734,6 +765,8 @@ export interface InitOutput {
     readonly editsession_insert_watermark: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly editsession_layout_document_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly editsession_layout_document_with_regions_json: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly editsession_layout_document_with_regions_slim_json: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly editsession_layout_document_with_regions_void: (a: number, b: number, c: number) => [number, number];
     readonly editsession_layout_font_requirements_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly editsession_list_revisions: (a: number) => [number, number, number, number];
     readonly editsession_load_json: (a: number, b: number, c: number) => [number, number, number, number];
@@ -786,6 +819,10 @@ export interface InitOutput {
     readonly editsession_undo: (a: number) => number;
     readonly editsession_undo_depth: (a: number) => number;
     readonly editsession_yrs_blocks_for_story: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly heap_live_bytes: () => number;
+    readonly heap_reset_peak: () => void;
+    readonly heap_stats_available: () => number;
+    readonly heap_peak_bytes: () => number;
     readonly editsession_load: (a: number, b: number, c: number) => [number, number];
     readonly parse_docx_relationships: (a: number, b: number) => [number, number, number, number];
     readonly parse_docx_s2: (a: number, b: number) => [number, number, number, number];

@@ -17,6 +17,7 @@ import {
   type RetainedFrame,
 } from '../layout/render/frameDelta';
 import { GlyphCache } from '../layout/render/glyphCache';
+import { memoryTotalBytes } from '../diagnostics';
 import type {
   ResidentEngineWorkerRequest,
   ResidentEngineWorkerResponse,
@@ -75,6 +76,31 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
   }
   if (request.type === 'destroy') {
     destroySession();
+    return;
+  }
+  if (request.type === 'open') {
+    destroySession();
+    // The worker is the origin of this document, not a copy of it: it seeds
+    // once and nothing replays that work. `bootstrap` below exists for the
+    // path where a main-thread replica opened first, which costs the document
+    // twice over.
+    session = await createResidentEngineSession();
+    session.clearFonts();
+    for (const font of request.fonts) session.registerFont(font);
+    fontsRevision = request.fontsRevision;
+    session.seedDocx(request.bytes);
+    session.layoutDocumentWithRegionsVoid(request.layoutInput);
+    subscribe();
+    const started = performance.now();
+    const frame = session.buildDisplayListFrame(request.extras, 0);
+    await replyFrame(
+      request.id,
+      frame,
+      performance.now() - started,
+      pendingUpdates,
+      undefined,
+      started
+    );
     return;
   }
   if (request.type === 'bootstrap') {
@@ -232,7 +258,8 @@ function hydrate(snapshot: YrsResidentWorkerSnapshot) {
   for (const { story, env } of snapshot.renderInputs) session.yrsBlocksForStory(story, env);
   for (const input of snapshot.measureInputs) session.measureParagraphJson(input);
   if (snapshot.layoutWithRegions) {
-    session.layoutDocumentWithRegionsJson(snapshot.layoutInput);
+    // Only the retained state matters here; the envelope was always discarded.
+    session.layoutDocumentWithRegionsVoid(snapshot.layoutInput);
   } else {
     session.layoutDocumentJson(snapshot.layoutInput);
   }
@@ -336,6 +363,7 @@ async function replyFrame(
       replayMs,
       replayedPages,
       layoutRevision,
+      heapBytes: memoryTotalBytes(),
       ...(stateVector ? { stateVector } : {}),
     },
     [frame, ...updateBuffers, ...(stateVector ? [stateVector] : [])]

@@ -76,6 +76,7 @@ mod undo;
 pub mod canonical;
 pub mod engine;
 pub mod frame_delta;
+pub mod heap_stats;
 
 pub use canonical::{CanonicalItem, checksum, project_story, story_checksum, to_canonical_bytes};
 pub use ctx::{EditCtx, EditOrigin, SuggestCtx};

@@ -96,7 +96,12 @@ struct ResidentLayoutInput {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RegionLayoutOutput<'a> {
-    measured: &'a [MeasuredBlock],
+    /// Omitted for hosts that build their display list through this engine,
+    /// which already retains the measured blocks. It dominates the envelope
+    /// (696MB of 768MB on a 2000-page document) and a JS string cannot hold
+    /// that, so sending it to a host that discards it fails the whole open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    measured: Option<&'a [MeasuredBlock]>,
     options: &'a docx_layout::types::LayoutOptions,
     layout: &'a Layout,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,9 +114,10 @@ fn serialize_region_layout(
     layout: &Layout,
     headers_footers: Option<&serde_json::Value>,
     notes_converged: bool,
+    include_measured: bool,
 ) -> Result<String, String> {
     serde_json::to_string(&RegionLayoutOutput {
-        measured: &input.measured,
+        measured: include_measured.then_some(input.measured.as_slice()),
         options: &input.options,
         layout,
         headers_footers,
@@ -507,6 +513,55 @@ fn paragraph_identity(block: &LayoutBlock) -> Option<(&BlockId, Option<f64>)> {
     }
 }
 
+/// A block a converged suffix may keep. Everything such a block emits is keyed
+/// by an identity that survives the edit, and its only difference afterwards is
+/// that its absolute document positions have all moved by the same amount — so
+/// shifting the retained primitives is equivalent to rebuilding them.
+///
+/// Wider than [`paragraph_identity`], which answers the different question of
+/// which blocks the resident measurement mirror can reuse slot-for-slot.
+/// Floating tables and anchored images are excluded: they are placed against
+/// the page rather than the text stream, so an earlier edit can move them
+/// without moving their positions. A table admits only what it can carry — its
+/// cell text is keyed by the cell block, so one nested block without an
+/// identity would be left behind at its old position.
+fn suffix_identity(block: &LayoutBlock) -> Option<(&BlockId, Option<f64>)> {
+    match block {
+        LayoutBlock::Paragraph(paragraph)
+            if paragraph
+                .runs
+                .iter()
+                .all(|run| !matches!(run, Run::Unsupported)) =>
+        {
+            Some((&paragraph.id, paragraph.pm_start))
+        }
+        LayoutBlock::Table(table)
+            if table.floating.is_none()
+                && table.rows.iter().all(|row| {
+                    row.cells.iter().all(|cell| {
+                        cell.blocks
+                            .iter()
+                            .all(|block| suffix_identity(block).is_some())
+                    })
+                }) =>
+        {
+            Some((&table.id, table.pm_start))
+        }
+        LayoutBlock::Image(image)
+            if !image
+                .anchor
+                .as_ref()
+                .and_then(|anchor| anchor.is_anchored)
+                .unwrap_or(false) =>
+        {
+            Some((&image.id, image.pm_start))
+        }
+        LayoutBlock::PageBreak(block) => Some((&block.id, block.pm_start)),
+        LayoutBlock::ColumnBreak(block) => Some((&block.id, block.pm_start)),
+        _ => None,
+    }
+}
+
 fn resident_block_slots_match(previous: &LayoutBlock, next: &LayoutBlock) -> bool {
     match (paragraph_identity(previous), paragraph_identity(next)) {
         (Some((previous_id, _)), Some((next_id, _))) => {
@@ -517,28 +572,59 @@ fn resident_block_slots_match(previous: &LayoutBlock, next: &LayoutBlock) -> boo
     }
 }
 
-fn position_deltas(previous: &LayoutInput, next: &LayoutInput) -> HashMap<String, i64> {
-    previous
-        .measured
-        .iter()
-        .zip(&next.measured)
-        .filter_map(|(previous, next)| {
-            let (previous_id, previous_start) = paragraph_identity(&previous.block)?;
-            let (next_id, next_start) = paragraph_identity(&next.block)?;
-            let key = block_key(previous_id);
-            if key != block_key(next_id) {
-                return None;
+/// A table's own primitives carry its id, but the text inside its cells carries
+/// the cell paragraph's, so a shifted table needs a delta for every block it
+/// contains as well as for itself.
+fn collect_position_deltas(
+    previous: &LayoutBlock,
+    next: &LayoutBlock,
+    deltas: &mut HashMap<String, i64>,
+) {
+    let (Some((previous_id, previous_start)), Some((next_id, next_start))) =
+        (suffix_identity(previous), suffix_identity(next))
+    else {
+        return;
+    };
+    let key = block_key(previous_id);
+    if key != block_key(next_id) {
+        return;
+    }
+    if let (Some(previous_start), Some(next_start)) = (previous_start, next_start) {
+        let delta = next_start as i64 - previous_start as i64;
+        if delta != 0 {
+            deltas.insert(key, delta);
+        }
+    }
+    let (LayoutBlock::Table(previous), LayoutBlock::Table(next)) = (previous, next) else {
+        return;
+    };
+    for (previous_row, next_row) in previous.rows.iter().zip(&next.rows) {
+        for (previous_cell, next_cell) in previous_row.cells.iter().zip(&next_row.cells) {
+            for (previous_block, next_block) in previous_cell.blocks.iter().zip(&next_cell.blocks) {
+                collect_position_deltas(previous_block, next_block, deltas);
             }
-            let delta = next_start? as i64 - previous_start? as i64;
-            (delta != 0).then_some((key, delta))
-        })
-        .collect()
+        }
+    }
 }
 
+fn position_deltas(previous: &LayoutInput, next: &LayoutInput) -> HashMap<String, i64> {
+    let mut deltas = HashMap::new();
+    for (previous, next) in previous.measured.iter().zip(&next.measured) {
+        collect_position_deltas(&previous.block, &next.block, &mut deltas);
+    }
+    deltas
+}
+
+/// `first_dirty` is the first block the edit touched. Blocks before it are
+/// identical in content *and* position — nothing ahead of an edit moves — so
+/// they need no identity check and may be of any kind. From it onward every
+/// block must be one whose retained output can be shifted rather than rebuilt;
+/// see [`suffix_identity`].
 fn incremental_eligible(
     previous: &PaginationState,
     next: &LayoutInput,
     next_options_fingerprint: u64,
+    first_dirty: usize,
 ) -> bool {
     let Some(previous_input) = previous.input.as_ref() else {
         return false;
@@ -561,11 +647,16 @@ fn incremental_eligible(
             .measured
             .iter()
             .zip(&next.measured)
+            .skip(first_dirty)
             .all(|(previous, next)| {
-                paragraph_identity(&previous.block)
-                    .zip(paragraph_identity(&next.block))
-                    .is_some_and(|((previous_id, _), (next_id, _))| {
+                suffix_identity(&previous.block)
+                    .zip(suffix_identity(&next.block))
+                    .is_some_and(|((previous_id, previous_start), (next_id, next_start))| {
+                        // Positions are stripped before fingerprinting, so a
+                        // block that gained or lost one still looks unchanged.
+                        // Such a block cannot say how far it moved.
                         block_key(previous_id) == block_key(next_id)
+                            && previous_start.is_some() == next_start.is_some()
                     })
             })
 }
@@ -831,6 +922,32 @@ impl EngineSession {
     /// by the resident engine. The returned envelope is ready for the Rust
     /// display-list builder without host-side layout mutation.
     pub fn layout_document_with_regions_json(&self, input_json: &str) -> Result<String, String> {
+        self.region_layout_envelope(input_json, true)
+    }
+
+    /// The same pass, minus the measured blocks. Hosts that build their
+    /// display list through this engine read them out of retained state, so
+    /// shipping them is pure cost — and above roughly 1300 pages the envelope
+    /// outgrows the host string limit and the document fails to open at all.
+    pub fn layout_document_with_regions_slim_json(
+        &self,
+        input_json: &str,
+    ) -> Result<String, String> {
+        self.region_layout_envelope(input_json, false)
+    }
+
+    /// The pass alone, for hosts that want only the retained state. Building
+    /// an envelope nobody reads is what the resident worker used to do.
+    pub fn layout_document_with_regions_void(&self, input_json: &str) -> Result<(), String> {
+        self.layout_document_with_regions_value(input_json)
+            .map(drop)
+    }
+
+    fn region_layout_envelope(
+        &self,
+        input_json: &str,
+        include_measured: bool,
+    ) -> Result<String, String> {
         let notes_converged = self.layout_document_with_regions_value(input_json)?;
         let pagination = self.pagination.borrow();
         let regions_state = self.regions.borrow();
@@ -848,6 +965,7 @@ impl EngineSession {
                 .expect("layout retained after successful pagination"),
             state.headers_footers.as_ref(),
             notes_converged,
+            include_measured,
         )
     }
 
@@ -897,7 +1015,19 @@ impl EngineSession {
         } else {
             None
         };
-        self.layout_document_value(input.clone())?;
+        let refs = input
+            .measured
+            .iter()
+            .flat_map(|measured| collect_note_refs(std::slice::from_ref(&measured.block)))
+            .collect::<Vec<_>>();
+        // Pagination retains the arena, so the local copy is only needed again
+        // to re-run layout at a reserved note height. A document without notes
+        // never reaches that, and the arena is every measured block in the
+        // document — 696MB on the 2000-page fixture, against a 4GiB wasm32
+        // ceiling — so only a document with notes pays for a second one.
+        let has_notes = !refs.is_empty() || !notes.contents.is_empty();
+        let for_notes = has_notes.then(|| input.clone());
+        self.layout_document_value(input)?;
         let mut initial_layout = self
             .pagination
             .borrow()
@@ -905,11 +1035,6 @@ impl EngineSession {
             .clone()
             .expect("layout retained after successful pagination");
         apply_document_regions(&mut initial_layout, &regions);
-        let refs = input
-            .measured
-            .iter()
-            .flat_map(|measured| collect_note_refs(std::slice::from_ref(&measured.block)))
-            .collect::<Vec<_>>();
         let presentations = build_note_presentations(&refs, &initial_layout.pages, &regions);
         assign_note_presentations(&mut notes.contents, &presentations);
         if resident_body {
@@ -924,10 +1049,15 @@ impl EngineSession {
                     .expect("resident body required render environment"),
             )?;
         }
-        let base_input = input.clone();
+        // Cloned inside the closure, not before it: `stabilize_note_layout`
+        // returns without ever calling this when no note reserves space, and
+        // the arena is the whole document's measured blocks.
         let stabilized = stabilize_note_layout(
             |reserved| {
-                let mut pass = base_input.clone();
+                let mut pass = for_notes
+                    .as_ref()
+                    .expect("a reserved note height implies a note")
+                    .clone();
                 pass.options.footnote_reserved_heights = reservation_options(reserved);
                 let mut layout = docx_layout::place::layout_document(&mut pass)?;
                 apply_document_regions(&mut layout, &regions);
@@ -941,9 +1071,10 @@ impl EngineSession {
         .map_err(layout_error_message)?;
         let notes_converged = stabilized.converged;
         if !stabilized.reserved_heights.is_empty() {
-            input.options.footnote_reserved_heights =
+            let mut reserved = for_notes.expect("a reserved note height implies a note");
+            reserved.options.footnote_reserved_heights =
                 reservation_options(&stabilized.reserved_heights);
-            self.layout_document_value(input)?;
+            self.layout_document_value(reserved)?;
         }
         let mut pagination = self.pagination.borrow_mut();
         let layout = pagination
@@ -1186,7 +1317,7 @@ impl EngineSession {
                 .zip(&block_fingerprints)
                 .position(|(previous, next)| previous != next);
             if let Some(dirty_index) = first_dirty
-                && incremental_eligible(&previous, &input, input_options_fingerprint)
+                && incremental_eligible(&previous, &input, input_options_fingerprint, dirty_index)
             {
                 let previous_input = previous.input.as_ref().expect("eligibility checked input");
                 deltas = position_deltas(previous_input, &input);
@@ -2450,6 +2581,7 @@ mod tests {
                 pagination.layout.as_ref().unwrap(),
                 regions_state.as_ref().unwrap().headers_footers.as_ref(),
                 true,
+                true,
             )
             .unwrap()
         };
@@ -2460,6 +2592,131 @@ mod tests {
             fast_json, full_json,
             "resident region fast path state is byte-identical to a full pass"
         );
+    }
+
+    /// The resident input path on text the host currently refuses to send it.
+    /// `YrsInput` gates resident input on `/^[\x20-\x7e]+$/`, so Vietnamese —
+    /// and every other non-Latin-1 script — falls through to the full
+    /// compatibility relayout. The engine itself has no such rule: `apply_input`
+    /// rejects only empty text and paragraph breaks. This pins that the fast
+    /// path is byte-identical to a full pass on non-ASCII text, so the gate can
+    /// be widened against evidence rather than hope.
+    ///
+    /// The emoji case is the one with real teeth: yrs indexes text in UTF-16
+    /// code units, and an astral character is two of them.
+    #[test]
+    fn resident_region_fast_path_matches_a_full_pass_on_non_ascii_text() {
+        const FONT: &[u8] =
+            include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
+        for (label, seed, inserted, at, expected) in [
+            (
+                "vietnamese",
+                "Trình bày tài liệu",
+                "được đo",
+                5_u32,
+                "Trìnhđược đo bày tài liệu",
+            ),
+            (
+                "cjk",
+                "排版引擎测量文本",
+                "宽度决定",
+                4,
+                "排版引擎宽度决定测量文本",
+            ),
+            // Astral characters are two UTF-16 units each, which is what yrs
+            // indexes in — an offset computed per code point lands elsewhere.
+            ("astral", "before after", "🙂🚀", 6, "before🙂🚀 after"),
+            // Not normalised into a precomposed é, and it should not be:
+            // the engine stores what was typed.
+            (
+                "combining",
+                "cafe naive",
+                "\u{0301}",
+                4,
+                "cafe\u{0301} naive",
+            ),
+        ] {
+            docx_layout::clear_measure_fonts();
+            let font_id = docx_layout::register_measure_font(FONT).unwrap();
+            let engine = EngineSession::new(140);
+            engine
+                .doc()
+                .create_story("body", seed, "Normal", "left")
+                .unwrap();
+            let request = serde_json::json!({
+                "bodyStory": "body",
+                "regions": {"sections": [{
+                    "sectionId": "main",
+                    "properties": {
+                        "pageWidth": 4320, "pageHeight": 2880,
+                        "marginTop": 300, "marginRight": 300,
+                        "marginBottom": 300, "marginLeft": 300
+                    }
+                }]},
+                "measurement": {
+                    "fontChains": {"calibri|0|0": [font_id]},
+                    "defaults": {"fontSize": 11, "fontFamily": "Calibri"},
+                    "authoritativeShaping": true
+                },
+                "renderEnv": {}
+            });
+            engine
+                .layout_document_with_regions_json(&request.to_string())
+                .unwrap();
+            engine
+                .build_display_list_frame(
+                    &serde_json::json!({"fontChains": {"calibri|0|0": [font_id]}}).to_string(),
+                    0,
+                )
+                .unwrap();
+            engine
+                .doc()
+                .insert_text(
+                    &crate::EditCtx::local("", ""),
+                    crate::Position::new("body", at),
+                    inserted,
+                    crate::FormatPolicy::Inherit,
+                )
+                .unwrap();
+
+            let before = engine.stats();
+            let frame = engine.apply_and_layout("body", 1).unwrap();
+            let after = engine.stats();
+            assert_eq!(
+                engine.doc().paragraphs("body").unwrap()[0].text,
+                expected,
+                "{label}: the insertion landed at the wrong offset"
+            );
+            assert!(
+                !frame.is_empty(),
+                "{label}: resident input produced no frame"
+            );
+            assert_eq!(
+                after.resident_measure_calls,
+                before.resident_measure_calls + 1,
+                "{label}: only the dirty paragraph should re-measure"
+            );
+
+            let fast_json = {
+                let pagination = engine.pagination.borrow();
+                let regions_state = engine.regions.borrow();
+                serialize_region_layout(
+                    pagination.input.as_ref().unwrap(),
+                    pagination.layout.as_ref().unwrap(),
+                    regions_state.as_ref().unwrap().headers_footers.as_ref(),
+                    true,
+                    true,
+                )
+                .unwrap()
+            };
+            let full_json = engine
+                .layout_document_with_regions_json(&request.to_string())
+                .unwrap();
+            assert_eq!(
+                fast_json, full_json,
+                "{label}: resident state must be byte-identical to a full pass"
+            );
+        }
     }
 
     /// Compares resident and full region passes on a paragraph-heavy document.
@@ -2703,6 +2960,361 @@ mod tests {
                 .as_f64()
                 .unwrap()
                 > docx_layout::footnotes::FOOTNOTE_SEPARATOR_HEIGHT
+        );
+    }
+
+    /// Page ids carried by a FrameDelta v1's operation table, read straight
+    /// from the encoded bytes rather than from the state that produced them —
+    /// an assertion against the encoder's own bookkeeping proves nothing.
+    fn frame_page_ids(frame: &[u8]) -> std::collections::BTreeSet<u64> {
+        const HEADER: usize = 80;
+        const OP_BYTES: usize = 48;
+        let u32_at = |offset: usize| {
+            u32::from_le_bytes(frame[offset..offset + 4].try_into().unwrap()) as usize
+        };
+        assert_eq!(&frame[0..4], b"FDV1", "frame magic");
+        let operation_count = u32_at(52);
+        let operations_offset = u32_at(56);
+        assert_eq!(
+            operations_offset, HEADER,
+            "operation table follows the header"
+        );
+        (0..operation_count)
+            .map(|index| {
+                let at = operations_offset + index * OP_BYTES + 8;
+                u64::from_le_bytes(frame[at..at + 8].try_into().unwrap())
+            })
+            .collect()
+    }
+
+    /// A converged suffix holding blocks that are not plain paragraphs — a
+    /// table, a block image, a paragraph carrying an inline image, and a page
+    /// break. Only the leading paragraph's text changes; everything after it
+    /// keeps its content and moves by one document position.
+    fn mixed_pagination_input(first_text: &str, shifted_suffix: bool) -> String {
+        let paragraph = |index: usize, start: usize, text: &str| {
+            serde_json::json!({
+                "kind": "paragraph",
+                "id": format!("p{index}"),
+                "paraId": format!("para-{index}"),
+                "runs": [{
+                    "kind": "text", "text": text,
+                    "pmStart": start + 1, "pmEnd": start + 2
+                }],
+                "pmStart": start, "pmEnd": start + 2
+            })
+        };
+        let line = serde_json::json!({
+            "headRun": 0, "headChar": 0, "tailRun": 0, "tailChar": 1,
+            "width": 10, "ascent": 8, "descent": 2, "lineHeight": 20
+        });
+        let paragraph_extent =
+            serde_json::json!({ "kind": "paragraph", "lines": [line], "totalHeight": 20 });
+
+        let mut measured = Vec::new();
+        for index in 0..12 {
+            let shift = usize::from(shifted_suffix && index > 0);
+            let start = index * 2 + shift;
+            let text = if index == 0 { first_text } else { "x" };
+            measured.push(serde_json::json!({
+                "block": paragraph(index, start, text),
+                "measure": paragraph_extent
+            }));
+        }
+        let shift = usize::from(shifted_suffix);
+
+        // Non-floating table. Its cell text carries the cell paragraph's key,
+        // not the table's, so a shifted table needs deltas for both.
+        let table_start = 24 + shift;
+        measured.push(serde_json::json!({
+            "block": {
+                "kind": "table", "id": "t0",
+                "rows": [{ "id": "r0", "cells": [
+                    { "id": "c0", "blocks": [paragraph(90, table_start, "x")] }
+                ] }],
+                "columnWidths": [100],
+                "pmStart": table_start, "pmEnd": table_start + 2
+            },
+            "measure": {
+                "kind": "table", "columnWidths": [100],
+                "totalWidth": 100, "totalHeight": 20,
+                "rows": [{ "height": 20, "cells": [
+                    { "width": 100, "height": 20, "blocks": [paragraph_extent] }
+                ] }]
+            }
+        }));
+
+        // Inline (not anchored) image block.
+        let image_start = 26 + shift;
+        measured.push(serde_json::json!({
+            "block": {
+                "kind": "image", "id": "i0", "src": "embedded",
+                "width": 40, "height": 20,
+                "pmStart": image_start, "pmEnd": image_start + 1
+            },
+            "measure": { "kind": "image", "width": 40, "height": 20 }
+        }));
+
+        // Paragraph whose run is an inline image. Everything it emits carries
+        // the paragraph's key, so the paragraph's own delta covers it.
+        let inline_start = 28 + shift;
+        measured.push(serde_json::json!({
+            "block": {
+                "kind": "paragraph", "id": "p-inline", "paraId": "para-inline",
+                "runs": [{
+                    "kind": "image", "src": "embedded", "width": 12, "height": 12,
+                    "pmStart": inline_start + 1, "pmEnd": inline_start + 2
+                }],
+                "pmStart": inline_start, "pmEnd": inline_start + 2
+            },
+            "measure": { "kind": "paragraph", "lines": [line], "totalHeight": 20 }
+        }));
+
+        // Explicit page break. It places no fragment and paints nothing, but
+        // its block still has to be admissible or the suffix behind every one
+        // of them is unreachable — and a page-per-break document is exactly
+        // what a paginated export looks like.
+        let break_start = 30 + shift;
+        measured.push(serde_json::json!({
+            "block": {
+                "kind": "pageBreak", "id": "body:pageBreak:b15",
+                "pmStart": break_start, "pmEnd": break_start + 1
+            },
+            "measure": { "kind": "pageBreak" }
+        }));
+        measured.push(serde_json::json!({
+            "block": paragraph(16, break_start + 1, "x"),
+            "measure": paragraph_extent
+        }));
+
+        serde_json::json!({
+            "measured": measured,
+            "options": {
+                "pageSize": { "w": 200, "h": 120 },
+                "margins": { "top": 10, "right": 10, "bottom": 10, "left": 10 }
+            }
+        })
+        .to_string()
+    }
+
+    /// A table and an image sitting in the *prefix*, ahead of the edit. The
+    /// suffix that convergence retains is plain paragraphs, so this is the
+    /// shape incremental pagination is allowed to take.
+    fn prefix_furniture_input(edited_text: &str, shifted_suffix: bool) -> String {
+        let line = serde_json::json!({
+            "headRun": 0, "headChar": 0, "tailRun": 0, "tailChar": 1,
+            "width": 10, "ascent": 8, "descent": 2, "lineHeight": 20
+        });
+        let paragraph_extent =
+            serde_json::json!({ "kind": "paragraph", "lines": [line], "totalHeight": 20 });
+        let paragraph = |index: usize, start: usize, text: &str| {
+            serde_json::json!({
+                "block": {
+                    "kind": "paragraph",
+                    "id": format!("p{index}"),
+                    "paraId": format!("para-{index}"),
+                    "runs": [{
+                        "kind": "text", "text": text,
+                        "pmStart": start + 1, "pmEnd": start + 2
+                    }],
+                    "pmStart": start, "pmEnd": start + 2
+                },
+                "measure": paragraph_extent
+            })
+        };
+
+        const EDITED: usize = 8;
+        let mut measured = vec![paragraph(0, 0, "x")];
+        measured.push(serde_json::json!({
+            "block": {
+                "kind": "table", "id": "t0",
+                "rows": [{ "id": "r0", "cells": [
+                    { "id": "c0", "blocks": [paragraph(90, 2, "x")["block"]] }
+                ] }],
+                "columnWidths": [100],
+                "pmStart": 2, "pmEnd": 4
+            },
+            "measure": {
+                "kind": "table", "columnWidths": [100],
+                "totalWidth": 100, "totalHeight": 20,
+                "rows": [{ "height": 20, "cells": [
+                    { "width": 100, "height": 20, "blocks": [paragraph_extent] }
+                ] }]
+            }
+        }));
+        measured.push(serde_json::json!({
+            "block": {
+                "kind": "image", "id": "i0", "src": "embedded",
+                "width": 40, "height": 20, "pmStart": 4, "pmEnd": 5
+            },
+            "measure": { "kind": "image", "width": 40, "height": 20 }
+        }));
+        // A shape, which the suffix rule refuses outright. Only the fact that
+        // the prefix is exempt lets this document take the incremental path at
+        // all, so removing that exemption fails this test rather than merely
+        // making it redundant with its mixed-suffix sibling.
+        measured.push(serde_json::json!({
+            "block": {
+                "kind": "shape", "id": "s0", "shapeType": "rect",
+                "geometryPath": [], "children": [], "width": 40, "height": 20,
+                "pmStart": 5, "pmEnd": 6
+            },
+            "measure": { "kind": "shape", "width": 40, "height": 20 }
+        }));
+        for index in 4..17 {
+            let shift = usize::from(shifted_suffix && index > EDITED);
+            let start = 6 + (index - 4) * 2 + shift;
+            let text = if index == EDITED { edited_text } else { "x" };
+            measured.push(paragraph(index, start, text));
+        }
+
+        serde_json::json!({
+            "measured": measured,
+            "options": {
+                "pageSize": { "w": 200, "h": 120 },
+                "margins": { "top": 10, "right": 10, "bottom": 10, "left": 10 }
+            }
+        })
+        .to_string()
+    }
+
+    /// The case the eligibility rule now admits: furniture ahead of the edit,
+    /// paragraphs behind it. This one must actually take the incremental path
+    /// — its twin above stays on the full rebuild, so only this test can catch
+    /// a suffix that converges at the wrong positions.
+    #[test]
+    fn prefix_furniture_takes_the_incremental_path_and_matches_a_full_rebuild() {
+        let engine = EngineSession::new(22);
+        engine
+            .layout_document_json(&prefix_furniture_input("x", false))
+            .unwrap();
+        engine.build_display_list_frame("{}", 0).unwrap();
+        let before_pages = engine.display.borrow().pages.clone();
+        let before = engine.stats().incremental_pagination_calls;
+
+        let next_input = prefix_furniture_input("y", true);
+        let incremental = engine.layout_document_json(&next_input).unwrap();
+        let full = docx_layout::layout_to_json(&next_input).unwrap();
+        assert_eq!(
+            incremental, full,
+            "an incrementally paginated suffix must match a full rebuild"
+        );
+        assert_eq!(
+            engine.stats().incremental_pagination_calls,
+            before + 1,
+            "furniture confined to the prefix must not force a full pagination"
+        );
+
+        let frame = engine.build_display_list_frame("{}", 1).unwrap();
+        let retained = engine
+            .with_display_list(Clone::clone)
+            .expect("display list retained");
+        let fresh = {
+            let pagination = engine.pagination.borrow();
+            docx_layout::build_display_list_value_from_resident(
+                pagination.input.as_ref().unwrap(),
+                pagination.layout.as_ref().unwrap(),
+                "{}",
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            retained, fresh,
+            "the retained display list must equal a fresh build, positions included"
+        );
+
+        let after_pages = engine.display.borrow().pages.clone();
+        let changed: std::collections::BTreeSet<u64> = before_pages
+            .iter()
+            .zip(&after_pages)
+            .filter(|(before, after)| before != after)
+            .map(|(_, after)| after.page_id)
+            .chain(
+                after_pages
+                    .iter()
+                    .skip(before_pages.len())
+                    .map(|page| page.page_id),
+            )
+            .collect();
+        let announced = frame_page_ids(&frame);
+        assert!(
+            changed.is_subset(&announced),
+            "frame announced {announced:?} but these pages changed: {changed:?}"
+        );
+    }
+
+    /// Pins what a shifted suffix must produce when it holds tables and images
+    /// rather than only paragraphs.
+    ///
+    /// The paragraph-only twin above covers the same ground for paragraphs,
+    /// and that gap let a change ship internally that carried stale absolute
+    /// positions into the retained display input: the fingerprints that decide
+    /// what may be reused deliberately strip `pmStart`/`pmEnd`, so a block that
+    /// only *moved* looks unchanged. Nothing then compared the reused output
+    /// against a fresh one, and the frame silently under-reported its changed
+    /// pages. These assertions are what would have caught it.
+    #[test]
+    fn mixed_block_pagination_matches_a_full_rebuild_after_a_shift() {
+        let engine = EngineSession::new(21);
+        engine
+            .layout_document_json(&mixed_pagination_input("x", false))
+            .unwrap();
+        engine.build_display_list_frame("{}", 0).unwrap();
+        let before_pages = engine.display.borrow().pages.clone();
+        let before = engine.stats().incremental_pagination_calls;
+
+        let next_input = mixed_pagination_input("y", true);
+        let incremental = engine.layout_document_json(&next_input).unwrap();
+        let full = docx_layout::layout_to_json(&next_input).unwrap();
+        assert_eq!(
+            incremental, full,
+            "pagination over a shifted mixed suffix must match a full rebuild"
+        );
+        assert_eq!(
+            engine.stats().incremental_pagination_calls,
+            before + 1,
+            "a mixed suffix must take the incremental path, or the assertions \
+             below only re-check the full rebuild against itself"
+        );
+
+        let frame = engine.build_display_list_frame("{}", 1).unwrap();
+        let retained = engine
+            .with_display_list(Clone::clone)
+            .expect("display list retained");
+        let fresh = {
+            let pagination = engine.pagination.borrow();
+            docx_layout::build_display_list_value_from_resident(
+                pagination.input.as_ref().unwrap(),
+                pagination.layout.as_ref().unwrap(),
+                "{}",
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            retained, fresh,
+            "the retained display list must equal a fresh build, positions included"
+        );
+
+        // Every page the rebuild actually changed must appear in the frame's
+        // page operations. Under-reporting is what a stale-position reuse
+        // produces, and it renders as a page that silently never repaints.
+        let after_pages = engine.display.borrow().pages.clone();
+        let changed: std::collections::BTreeSet<u64> = before_pages
+            .iter()
+            .zip(&after_pages)
+            .filter(|(before, after)| before != after)
+            .map(|(_, after)| after.page_id)
+            .chain(
+                after_pages
+                    .iter()
+                    .skip(before_pages.len())
+                    .map(|page| page.page_id),
+            )
+            .collect();
+        let announced = frame_page_ids(&frame);
+        assert!(
+            changed.is_subset(&announced),
+            "frame announced {announced:?} but these pages changed: {changed:?}"
         );
     }
 
@@ -2979,5 +3591,67 @@ mod tests {
 
         assert_eq!(hit["region"], "body");
         assert!((target.3..=target.4).contains(&position));
+    }
+
+    /// The slim envelope drops the measured blocks and nothing else. They
+    /// dominate the payload — 696MB of 768MB on a 2000-page document, past
+    /// what a host string can hold — and hosts that build their display list
+    /// through this session read them out of retained state instead.
+    #[test]
+    fn slim_region_envelope_omits_measured_and_keeps_the_layout() {
+        const FONT: &[u8] =
+            include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
+        docx_layout::clear_measure_fonts();
+        let font_id = docx_layout::register_measure_font(FONT).unwrap();
+        let engine = EngineSession::new(140);
+        engine
+            .doc()
+            .create_story("body", "AlphaBravo", "Normal", "left")
+            .unwrap();
+        let request = serde_json::json!({
+            "bodyStory": "body",
+            "regions": {"sections": [{"sectionId": "main", "properties": {}}]},
+            "measurement": {
+                "fontChains": {"calibri|0|0": [font_id]},
+                "defaults": {"fontSize": 11, "fontFamily": "Calibri"},
+                "authoritativeShaping": true
+            },
+            "renderEnv": {}
+        })
+        .to_string();
+
+        let fat: serde_json::Value =
+            serde_json::from_str(&engine.layout_document_with_regions_json(&request).unwrap())
+                .unwrap();
+        let slim: serde_json::Value = serde_json::from_str(
+            &engine
+                .layout_document_with_regions_slim_json(&request)
+                .unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            fat.get("measured").is_some(),
+            "the full envelope carries them"
+        );
+        assert!(slim.get("measured").is_none(), "the slim envelope does not");
+        assert_eq!(fat["layout"], slim["layout"], "same pagination either way");
+        assert_eq!(fat["notesConverged"], slim["notesConverged"]);
+        assert!(
+            serde_json::to_string(&slim).unwrap().len()
+                < serde_json::to_string(&fat).unwrap().len()
+        );
+
+        // The pass alone lands the same retained state the envelopes read from.
+        engine
+            .layout_document_with_regions_void(&request)
+            .expect("void pass");
+        let after: serde_json::Value = serde_json::from_str(
+            &engine
+                .layout_document_with_regions_slim_json(&request)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(slim, after, "the void pass leaves the same layout behind");
     }
 }

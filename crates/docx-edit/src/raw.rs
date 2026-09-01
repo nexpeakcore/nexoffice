@@ -5,7 +5,8 @@ use std::sync::Arc;
 use yrs::types::Attrs;
 use yrs::types::text::YChange;
 use yrs::{
-    Any, Assoc, IndexedSequence, Map, MapPrelim, MapRef, Out, ReadTxn, Text, TransactionMut,
+    Any, Assoc, IndexedSequence, Map, MapPrelim, MapRef, Out, ReadTxn, Text, TextRef,
+    TransactionMut,
 };
 
 use crate::op::{OpError, OpResult};
@@ -94,17 +95,20 @@ fn apply_raw_ops_to_story(
     ops: Vec<RawOp>,
 ) -> OpResult<()> {
     let story = story_ref(txn, story_id).map_err(OpError::from)?;
+    let mut writer = StoryWriter::new();
     for op in ops {
         match op {
             RawOp::Insert { index, text, attrs } => {
                 guard_index(&story, txn, index)?;
-                story.insert_with_attributes(txn, index, &text, attrs);
+                writer.insert_text(&story, txn, index, &text, attrs)?;
             }
             RawOp::Delete { index, len } => {
+                writer.invalidate();
                 guard_range(&story, txn, index, len)?;
                 story.remove_range(txn, index, len);
             }
             RawOp::Format { index, len, attrs } => {
+                writer.invalidate();
                 guard_range(&story, txn, index, len)?;
                 if len > 0 {
                     story.format(txn, index, len, attrs);
@@ -117,14 +121,14 @@ fn apply_raw_ops_to_story(
                 attrs,
             } => {
                 guard_index(&story, txn, index)?;
-                let embed =
-                    story.insert_embed_with_attributes(txn, index, MapPrelim::default(), attrs);
+                let embed = writer.insert_embed(&story, txn, index, attrs)?;
                 embed.insert(txn, KIND_KEY, kind.as_str());
                 for (key, value) in payload {
                     embed.insert(txn, key, value);
                 }
             }
             RawOp::SetEmbedAttr { index, key, value } => {
+                writer.invalidate();
                 let embed = embed_at(&story, txn, index)?;
                 embed.insert(txn, key, value);
             }
@@ -135,6 +139,7 @@ fn apply_raw_ops_to_story(
                 date,
                 body,
             } => {
+                writer.invalidate();
                 if ranges.is_empty() {
                     return Err(OpError::InvalidComment(
                         "at least one anchored range is required".into(),
@@ -171,6 +176,7 @@ fn apply_raw_ops_to_story(
                 comment.insert(txn, "anchors", Any::Array(Arc::from(anchors)));
             }
             RawOp::RemoveComment { id } => {
+                writer.invalidate();
                 let comments = txn
                     .get_map(COMMENTS)
                     .expect("comments root is declared by EditingDoc::new");
@@ -181,6 +187,117 @@ fn apply_raw_ops_to_story(
         }
     }
     Ok(())
+}
+
+/// Where a run of ascending inserts is writing into a story.
+///
+/// Seeding a story is exactly such a run, and yrs reaches an insertion index
+/// by walking the block list from the story's start — so N chunks cost
+/// 0 + 1 + ... + N block visits. With the `yrs-cursor` feature this carries
+/// the position the write already left behind (see vendor/README.md); without
+/// it every insert walks, which is all upstream yrs 0.27 offers.
+#[cfg(feature = "yrs-cursor")]
+struct StoryWriter(Option<(yrs::TextCursor, u32)>);
+
+#[cfg(feature = "yrs-cursor")]
+impl StoryWriter {
+    fn new() -> Self {
+        Self(None)
+    }
+
+    /// Drop the cursor. Every op that is not an insert moves the story out
+    /// from under it.
+    fn invalidate(&mut self) {
+        self.0 = None;
+    }
+
+    /// The cursor to write at `index`, reopening it when it sits anywhere
+    /// else: a cursor only equals an index insert while it is at that index.
+    fn at(
+        &mut self,
+        story: &TextRef,
+        txn: &mut TransactionMut<'_>,
+        index: u32,
+    ) -> OpResult<&mut yrs::TextCursor> {
+        if !self.0.as_ref().is_some_and(|(_, at)| *at == index) {
+            let open = story
+                .cursor(txn, index)
+                .ok_or(OpError::OutOfBounds { index, len: index })?;
+            self.0 = Some((open, index));
+        }
+        Ok(&mut self.0.as_mut().expect("cursor opened above").0)
+    }
+
+    /// The index is tracked here rather than read back from the cursor:
+    /// `ItemPosition::forward` counts only `String` and `Embed` content, so it
+    /// misses the map-backed embeds this crate uses for pilcrows, while
+    /// `find_position` counts every non-format block. Ops already state
+    /// exactly how many story units they write.
+    fn insert_text(
+        &mut self,
+        story: &TextRef,
+        txn: &mut TransactionMut<'_>,
+        index: u32,
+        text: &str,
+        attrs: Attrs,
+    ) -> OpResult<()> {
+        let written = text.encode_utf16().count() as u32;
+        let at = self.at(story, txn, index)?;
+        story.insert_with_attributes_at(txn, at, text, attrs);
+        if let Some((_, at)) = self.0.as_mut() {
+            *at = index + written;
+        }
+        Ok(())
+    }
+
+    fn insert_embed(
+        &mut self,
+        story: &TextRef,
+        txn: &mut TransactionMut<'_>,
+        index: u32,
+        attrs: Attrs,
+    ) -> OpResult<MapRef> {
+        let at = self.at(story, txn, index)?;
+        let embed = story.insert_embed_with_attributes_at(txn, at, MapPrelim::default(), attrs);
+        if let Some((_, at)) = self.0.as_mut() {
+            *at = index + 1;
+        }
+        Ok(embed)
+    }
+}
+
+#[cfg(not(feature = "yrs-cursor"))]
+struct StoryWriter;
+
+#[cfg(not(feature = "yrs-cursor"))]
+impl StoryWriter {
+    fn new() -> Self {
+        Self
+    }
+
+    fn invalidate(&mut self) {}
+
+    fn insert_text(
+        &mut self,
+        story: &TextRef,
+        txn: &mut TransactionMut<'_>,
+        index: u32,
+        text: &str,
+        attrs: Attrs,
+    ) -> OpResult<()> {
+        story.insert_with_attributes(txn, index, text, attrs);
+        Ok(())
+    }
+
+    fn insert_embed(
+        &mut self,
+        story: &TextRef,
+        txn: &mut TransactionMut<'_>,
+        index: u32,
+        attrs: Attrs,
+    ) -> OpResult<MapRef> {
+        Ok(story.insert_embed_with_attributes(txn, index, MapPrelim::default(), attrs))
+    }
 }
 
 fn guard_index<T: ReadTxn>(story: &yrs::TextRef, txn: &T, index: u32) -> OpResult<()> {

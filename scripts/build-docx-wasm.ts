@@ -48,7 +48,18 @@ const MODULES: WasmModuleBuild[] = [
   // --locked must ride with the cargo pass-through here: wasm-pack forwards its
   // own trailing args verbatim once a `--` section exists, and cargo rejects a
   // stray `--` marker.
-  { crate: 'docx-edit', name: 'docx_edit', dir: 'edit', cargoArgs: ['--locked', '--features', 'wasm'] },
+  // `heap-stats` is deliberately absent. It installs a counting global
+  // allocator whose figures the process report renders, and it is the only way
+  // to see what a document occupies rather than the linear memory the
+  // allocator happens to hold — but it costs ~12x under wasm (measured: 220s
+  // against 18s to lay out 2000 pages) while being free natively. Add it here
+  // to build a diagnostic bundle; never ship one.
+  {
+    crate: 'docx-edit',
+    name: 'docx_edit',
+    dir: 'edit',
+    cargoArgs: ['--locked', '--features', 'wasm,yrs-cursor'],
+  },
   {
     crate: 'docx-parse',
     name: 'docx_parse',

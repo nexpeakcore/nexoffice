@@ -15,6 +15,10 @@ export type SpellCheckRequestWithoutId = SpellCheckRequest extends infer Request
 export interface SpellCheckResult {
   misspellings?: Misspelling[]
   suggestions?: string[]
+  /** The worker isolate's JS heap, where the ~40MB dictionary lives. The main
+   * thread's `performance.memory` covers its own isolate only, so this is the
+   * only way that memory can be told apart from the renderer's. */
+  heapBytes?: number
 }
 
 export type SpellCheckResponse =

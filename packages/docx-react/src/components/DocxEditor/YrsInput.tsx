@@ -39,6 +39,7 @@ import {
   yrsTableSelectionRange,
 } from './yrsCommands';
 import { InputOperationQueue } from './inputOperationQueue';
+import { isBatchableInputText, isResidentInputText } from './residentTextContract';
 import { paragraphVerticalMove, VerticalCaretGoal } from './verticalCaretGoal';
 import {
   shouldScrollCaretIntoView,
@@ -440,13 +441,7 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
         // a keystroke on table-heavy documents. The worker validates resident
         // state itself and the compatibility fallback below still rebuilds the
         // map when it actually needs display positions.
-        if (
-          !isSuggesting &&
-          applyResidentInput &&
-          /^[\x20-\x7e]+$/u.test(inputText) &&
-          !inputText.includes('\r') &&
-          !inputText.includes('\n')
-        ) {
+        if (!isSuggesting && applyResidentInput && isResidentInputText(inputText)) {
           const sticky = session.selection();
           const stickyCollapsed =
             sticky &&
@@ -468,7 +463,16 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
         }
         const current = ensureSelection();
         const map = current ? inputPositionMap(current.anchor.story) : null;
-        if (!current || !map) return;
+        if (!current || !map) {
+          // Dropping typed text without a trace is never acceptable. Until this
+          // path can place the text instead, make it loud.
+          // eslint-disable-next-line no-console
+          console.error(
+            `[nexoffice] dropped ${inputText.length} typed character(s): ` +
+              `${current ? 'no input position map' : 'no selection'}`
+          );
+          return;
+        }
         const selectedRange = toRange(current, map);
         const hasSelection =
           selectedRange.start.paraId !== selectedRange.end.paraId ||
@@ -518,11 +522,7 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
       };
 
       const canBatchResidentText =
-        !isSuggesting &&
-        Boolean(applyResidentInput) &&
-        /^[\x20-\x7e]+$/u.test(text) &&
-        !text.includes('\r') &&
-        !text.includes('\n');
+        !isSuggesting && Boolean(applyResidentInput) && isBatchableInputText(text);
       if (!canBatchResidentText) {
         // Seal any earlier text batch so a synchronous structural operation
         // remains an ordering barrier for later input.

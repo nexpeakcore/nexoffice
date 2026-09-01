@@ -408,7 +408,7 @@ pub fn layout_document_incremental(
         debug_assert_eq!(pages.len(), next_checkpoint.page_index);
         let reused_page_start = pages.len();
         pages.extend_from_slice(&previous_layout.pages[previous_checkpoint.page_index..]);
-        refresh_reused_paragraph_pages(&mut pages[reused_page_start..], &input.measured);
+        refresh_reused_pages(&mut pages[reused_page_start..], &input.measured);
         let page_shift =
             next_checkpoint.page_index as isize - previous_checkpoint.page_index as isize;
         checkpoints.extend(
@@ -681,39 +681,84 @@ fn block_id_key(id: &crate::types::BlockId) -> String {
     serde_json::to_string(id).expect("block ids always serialize")
 }
 
+fn block_id(block: &LayoutBlock) -> Option<&crate::types::BlockId> {
+    match block {
+        LayoutBlock::Paragraph(block) => Some(&block.id),
+        LayoutBlock::Table(block) => Some(&block.id),
+        LayoutBlock::Image(block) => Some(&block.id),
+        LayoutBlock::Shape(block) => Some(&block.id),
+        LayoutBlock::Chart(block) => Some(&block.id),
+        LayoutBlock::TextBox(block) => Some(&block.id),
+        LayoutBlock::SectionBreak(block) => Some(&block.id),
+        LayoutBlock::PageBreak(block) => Some(&block.id),
+        LayoutBlock::ColumnBreak(block) => Some(&block.id),
+        LayoutBlock::Unsupported => None,
+    }
+}
+
+fn fragment_block_id(fragment: &Fragment) -> &crate::types::BlockId {
+    match fragment {
+        Fragment::Paragraph(fragment) => &fragment.block_id,
+        Fragment::Table(fragment) => &fragment.block_id,
+        Fragment::Image(fragment) => &fragment.block_id,
+        Fragment::Shape(fragment) => &fragment.block_id,
+        Fragment::Chart(fragment) => &fragment.block_id,
+        Fragment::TextBox(fragment) => &fragment.block_id,
+    }
+}
+
 /// Retained suffix pages keep their geometry but absolute document positions move
-/// after an earlier edit. Refresh paragraph fragment ranges and resolved run
-/// slices from the new measured arena before the display list consumes them.
-fn refresh_reused_paragraph_pages(pages: &mut [crate::types::Page], measured: &[MeasuredBlock]) {
-    let paragraphs: std::collections::HashMap<_, _> = measured
+/// after an earlier edit. Refresh every fragment's document range — and, for a
+/// paragraph, its resolved run slices — from the new measured arena before the
+/// display list consumes them. A paragraph fragment covers a line range and has
+/// to recompute its range; every other kind spans its whole block.
+fn refresh_reused_pages(pages: &mut [crate::types::Page], measured: &[MeasuredBlock]) {
+    let blocks: std::collections::HashMap<_, _> = measured
         .iter()
-        .filter_map(|measured| match (&measured.block, &measured.measure) {
-            (LayoutBlock::Paragraph(block), BlockExtent::Paragraph(extent)) => {
-                Some((block_id_key(&block.id), (block, extent)))
-            }
-            _ => None,
-        })
+        .filter_map(|measured| Some((block_id_key(block_id(&measured.block)?), measured)))
         .collect();
     for page in pages {
         for fragment in &mut page.fragments {
-            let Fragment::Paragraph(fragment) = fragment else {
+            let Some(measured) = blocks.get(&block_id_key(fragment_block_id(fragment))) else {
                 continue;
             };
-            let Some((block, extent)) = paragraphs.get(&block_id_key(&fragment.block_id)) else {
-                continue;
-            };
-            (fragment.pm_start, fragment.pm_end) = get_paragraph_fragment_pm_range(
-                block,
-                extent,
-                fragment.from_line,
-                fragment.to_line,
-            );
-            fragment.resolved_lines = Some(build_resolved_lines(
-                block,
-                extent,
-                fragment.from_line,
-                fragment.to_line,
-            ));
+            match (fragment, &measured.block) {
+                (Fragment::Paragraph(fragment), LayoutBlock::Paragraph(block)) => {
+                    let BlockExtent::Paragraph(extent) = &measured.measure else {
+                        continue;
+                    };
+                    (fragment.pm_start, fragment.pm_end) = get_paragraph_fragment_pm_range(
+                        block,
+                        extent,
+                        fragment.from_line,
+                        fragment.to_line,
+                    );
+                    fragment.resolved_lines = Some(build_resolved_lines(
+                        block,
+                        extent,
+                        fragment.from_line,
+                        fragment.to_line,
+                    ));
+                }
+                (Fragment::Table(fragment), LayoutBlock::Table(block)) => {
+                    (fragment.pm_start, fragment.pm_end) = (block.pm_start, block.pm_end);
+                }
+                (Fragment::Image(fragment), LayoutBlock::Image(block)) => {
+                    (fragment.pm_start, fragment.pm_end) = (block.pm_start, block.pm_end);
+                }
+                (Fragment::Shape(fragment), LayoutBlock::Shape(block)) => {
+                    (fragment.pm_start, fragment.pm_end) = (block.pm_start, block.pm_end);
+                    (fragment.doc_start, fragment.doc_end) = (block.doc_start, block.doc_end);
+                }
+                (Fragment::Chart(fragment), LayoutBlock::Chart(block)) => {
+                    (fragment.pm_start, fragment.pm_end) = (block.pm_start, block.pm_end);
+                    (fragment.doc_start, fragment.doc_end) = (block.doc_start, block.doc_end);
+                }
+                (Fragment::TextBox(fragment), LayoutBlock::TextBox(block)) => {
+                    (fragment.pm_start, fragment.pm_end) = (block.pm_start, block.pm_end);
+                }
+                _ => {}
+            }
         }
     }
 }

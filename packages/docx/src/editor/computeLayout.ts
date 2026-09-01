@@ -11,7 +11,8 @@ import type { Document, NoteKind, SectionProperties } from '../types/document';
 import type { YrsRenderEnv, YrsSession } from '../yrs';
 
 interface ResidentRegionLayoutOutput {
-  measured: MeasuredBlock[];
+  /** Absent on the slim envelope; the session retains them instead. */
+  measured?: MeasuredBlock[];
   options: LayoutOptions;
   layout: Layout;
   headersFooters?: DisplayListHeadersFooters;
@@ -43,23 +44,32 @@ export interface ResidentRegionLayoutRequest {
 export interface ComputeLayoutInputs {
   document: Document | null;
   pageGap: number;
-  session: Pick<YrsSession, 'layoutDocumentWithRegionsJson'>;
+  session: Pick<YrsSession, 'layoutDocumentWithRegionsSlimJson'>;
   renderEnv: YrsRenderEnv;
   measurement: ResidentMeasurementConfig;
 }
 
 export interface LayoutComputation {
-  blocks: LayoutBlock[];
-  measures: BlockExtent[];
   layout: Layout;
   notesConverged: boolean;
+  /**
+   * Absent from a resident computation: the session that paginated the
+   * document retains the measured blocks and builds the display list from
+   * them, so shipping them back costs ~9x the rest of the envelope and, past
+   * roughly 1300 pages, exceeds the host string limit outright.
+   *
+   * Declared optional rather than removed so a consumer that reads them fails
+   * to typecheck instead of silently receiving nothing.
+   */
+  blocks?: LayoutBlock[];
+  measures?: BlockExtent[];
 }
 
 const kernelInputsByLayout = new WeakMap<
   Layout,
   {
-    measured: MeasuredBlock[];
-    options: LayoutOptions;
+    measured?: MeasuredBlock[];
+    options?: LayoutOptions;
     headersFooters?: DisplayListHeadersFooters;
   }
 >();
@@ -110,8 +120,8 @@ export function buildResidentRegionLayoutRequest(
 
 export function getLayoutKernelInputs(layout: Layout):
   | {
-      measured: MeasuredBlock[];
-      options: unknown;
+      measured?: MeasuredBlock[];
+      options?: unknown;
       headersFooters?: DisplayListHeadersFooters;
     }
   | undefined {
@@ -125,18 +135,26 @@ export function computeLayout(inputs: ComputeLayoutInputs): LayoutComputation {
     inputs.renderEnv
   );
   request.measurement = inputs.measurement;
+  // Slim: the measured blocks stay in the session that just paginated them,
+  // and the display list is built through that same session. Shipping them
+  // over costs ~9x the rest of the envelope and, past roughly 1300 pages,
+  // exceeds the host string limit outright.
   const output = JSON.parse(
-    inputs.session.layoutDocumentWithRegionsJson(JSON.stringify(request))
+    inputs.session.layoutDocumentWithRegionsSlimJson(JSON.stringify(request))
   ) as ResidentRegionLayoutOutput;
   kernelInputsByLayout.set(output.layout, {
-    measured: output.measured,
-    options: output.options,
+    ...(output.measured ? { measured: output.measured } : {}),
+    ...(output.options ? { options: output.options } : {}),
     ...(output.headersFooters ? { headersFooters: output.headersFooters } : {}),
   });
   return {
-    blocks: output.measured.map((item) => item.block),
-    measures: output.measured.map((item) => item.measure),
     layout: output.layout,
     notesConverged: output.notesConverged,
+    ...(output.measured
+      ? {
+          blocks: output.measured.map((item) => item.block),
+          measures: output.measured.map((item) => item.measure),
+        }
+      : {}),
   };
 }

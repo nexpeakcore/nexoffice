@@ -18,6 +18,7 @@
  * are local, so re-resolving costs decode time, never a fetch.
  */
 
+import { registerMemoryReader, unregisterMemoryReader } from '../../diagnostics';
 import type { ImageResolver } from './canvasBackend';
 
 /** Roughly a screenful of large photos; big enough that repaints never churn. */
@@ -43,11 +44,27 @@ function decodedSize(source: CanvasImageSource | null): number {
   return 0;
 }
 
+/** A resolver whose cache and diagnostics registration can be released. */
+export interface DisposableImageResolver extends ImageResolver {
+  /**
+   * Drops the cache and stops reporting its bytes. Without this the last
+   * resolver for a document keeps reporting up to the full budget after that
+   * document is closed, or replaced by a format that makes no resolver at all.
+   */
+  dispose(): void;
+}
+
 export function createCanvasImageResolver(
   budgetBytes: number = DEFAULT_BUDGET_BYTES
-): ImageResolver {
+): DisposableImageResolver {
   const cache = new Map<string, CacheEntry>();
   let cachedBytes = 0;
+
+  // A resolver is keyed to one document session, so the newest one made is the
+  // one holding the open document's bitmaps; an earlier session's resolver is
+  // unreachable by then and its entries are already collectable.
+  const readCachedBytes = (): number => cachedBytes;
+  registerMemoryReader('image cache', readCachedBytes);
 
   const drop = (key: string, entry: CacheEntry): void => {
     cache.delete(key);
@@ -70,7 +87,7 @@ export function createCanvasImageResolver(
     }
   };
 
-  return (relId: string) => {
+  const resolve = ((relId: string) => {
     if (!relId.startsWith('blob:') && !relId.startsWith('data:')) return null;
     const cached = cache.get(relId);
     if (cached) {
@@ -100,5 +117,13 @@ export function createCanvasImageResolver(
       trim(relId);
     });
     return entry.promise;
+  }) as DisposableImageResolver;
+
+  resolve.dispose = () => {
+    cache.clear();
+    cachedBytes = 0;
+    unregisterMemoryReader('image cache', readCachedBytes);
   };
+
+  return resolve;
 }

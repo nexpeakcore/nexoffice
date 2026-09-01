@@ -4,6 +4,7 @@ import type {
   YrsResidentWorkerSnapshot,
   YrsSelection,
 } from './index';
+import { registerMemoryReader } from '../diagnostics';
 import type { ResidentCaretPaintStyle } from './residentCaret';
 import type {
   ResidentEngineWorkerRequest,
@@ -24,6 +25,9 @@ export interface ResidentEngineWorkerFrame {
   replayMs: number;
   replayedPages: number;
   layoutRevision: number;
+  /** Wasm heap held in the worker thread, folded into the renderer process
+   * by Electron's metrics and only separable from here. */
+  heapBytes: number;
 }
 
 export interface ResidentEngineOffscreenPage {
@@ -264,6 +268,7 @@ export class ResidentEngineWorkerClient {
     const message: ResidentEngineWorkerRequest = { id, type: 'destroy' };
     this.worker.postMessage(message);
     this.worker.terminate();
+    forgetWorkerHeap();
     this.failAll(new Error('Resident engine worker was destroyed'));
     this.ready = false;
   }
@@ -297,6 +302,7 @@ export class ResidentEngineWorkerClient {
             this.ready = false;
             this.destroyed = true;
             this.worker.terminate();
+            forgetWorkerHeap();
           }, timeoutMs)
         : null;
       this.pending.set(id, { resolve, reject, timeout });
@@ -332,9 +338,25 @@ function snapshotTransfers(snapshot: YrsResidentWorkerSnapshot): Transferable[] 
   return [snapshot.state.buffer, ...snapshot.fonts.map((font) => font.buffer)];
 }
 
+// The worker reports its heap with every frame it returns, so the reader below
+// is a cache of the last report rather than a live probe: nothing on the main
+// thread can reach across into the worker's wasm memory to measure it.
+let workerHeapBytes = 0;
+registerMemoryReader('wasm · resident engine (worker)', () => workerHeapBytes);
+
+/**
+ * A terminated worker holds nothing. Without this the last frame's figure
+ * outlives the worker, so a main-thread fallback or a closed document keeps
+ * reporting memory that has already been released.
+ */
+function forgetWorkerHeap(): void {
+  workerHeapBytes = 0;
+}
+
 function frameResult(
   response: ResidentEngineWorkerResponse & { ok: true }
 ): ResidentEngineWorkerFrame {
+  if (response.heapBytes !== undefined) workerHeapBytes = response.heapBytes;
   if (!response.frame) throw new Error('Resident engine worker response omitted its FrameDelta');
   if (!response.caret) throw new Error('Resident engine worker response omitted its caret snapshot');
   if (response.selection === undefined) {
@@ -352,6 +374,7 @@ function frameResult(
     replayMs: response.replayMs ?? 0,
     replayedPages: response.replayedPages ?? 0,
     layoutRevision: response.layoutRevision ?? 0,
+    heapBytes: workerHeapBytes,
   };
 }
 

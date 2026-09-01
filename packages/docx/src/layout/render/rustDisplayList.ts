@@ -154,8 +154,12 @@ export interface DisplayListCommentThread {
 export interface DisplayListBuildInputs {
   /** Serialization contract version. Undefined reads as legacy version 0. */
   contractVersion?: number;
-  measured: MeasuredBlock[];
-  options: unknown;
+  /**
+   * Omitted when the engine building this list is the one that paginated it
+   * and still retains them. Required only by the stateless JSON builder.
+   */
+  measured?: MeasuredBlock[];
+  options?: unknown;
   layout: Layout;
   /** header/footer parts + section flags; omitted ⇒ body-only display list */
   headersFooters?: DisplayListHeadersFooters;
@@ -177,6 +181,18 @@ export interface DisplayListBuildInputs {
   /** Per-comment thread metadata for a11y announcements. Undefined = none. */
   commentThreads?: DisplayListCommentThread[];
 }
+
+/**
+ * What the stateless builder needs on top of the shared fields. The engine
+ * that paginated a document retains its measured blocks and reads them back
+ * itself; the stateless wasm cannot, so it has to be handed them. Spelling
+ * that out here is what stops a resident input — where `measured` is legally
+ * absent — from reaching a builder that cannot work without it.
+ */
+export type StatelessDisplayListBuildInputs = DisplayListBuildInputs & {
+  measured: MeasuredBlock[];
+  options: unknown;
+};
 
 /** Minimal engine surface, injectable so tests can fake the wasm module. */
 export interface RustDisplayListEngine {
@@ -219,10 +235,26 @@ export class RustDisplayListSourceError extends Error {
 
   constructor(stage: RustDisplayListSourceErrorStage, cause: unknown) {
     const detail = cause instanceof Error ? cause.message : String(cause);
-    super(`Rust display-list ${stage} failed: ${detail}`);
+    super(`Rust display-list ${stage} failed: ${detail}`, { cause });
     this.name = 'RustDisplayListSourceError';
     this.stage = stage;
   }
+}
+
+/**
+ * Whether a failure is only that the session went away underneath the build —
+ * the host swapped documents while this one was in flight. The next document's
+ * own build is already coming, so this is not something to show anyone.
+ *
+ * Matched by name rather than `instanceof`: the error crosses a package
+ * boundary, and two copies of a class do not compare equal.
+ */
+export function isSupersededSessionError(error: unknown): boolean {
+  for (let current = error, hops = 0; current instanceof Error && hops < 8; hops += 1) {
+    if (current.name === 'YrsSessionDestroyedError') return true;
+    current = current.cause;
+  }
+  return false;
 }
 
 /** Injectable display-list query surface with optional session handles. */
@@ -340,7 +372,7 @@ export function loadRustDisplayListQueryEngine(): Promise<RustDisplayListQueryEn
  * use `buildRustDisplayList`, which owns the process-wide cache.
  */
 export function encodeDisplayListInputs(
-  inputs: DisplayListBuildInputs,
+  inputs: StatelessDisplayListBuildInputs,
   cache?: WeakMap<object, string>
 ): string {
   const m = inputs.measured;
@@ -424,7 +456,7 @@ const measureFragmentCache = new WeakMap<object, string>();
  * caller is expected to fall back to the DOM painter.
  */
 export async function buildRustDisplayList(
-  inputs: DisplayListBuildInputs,
+  inputs: StatelessDisplayListBuildInputs,
   engine?: RustDisplayListEngine
 ): Promise<DisplayList> {
   let eng: RustDisplayListEngine;
@@ -464,8 +496,24 @@ export async function buildRustDisplayFrame(
     throw new RustDisplayListSourceError('load', error);
   }
   if (!eng.buildDisplayListFrame) {
+    // Only this branch needs the measured blocks, and only because the engine
+    // it falls back to does not retain them. Whether they are required is a
+    // property of the engine at hand, not of the call, so it is checked here
+    // rather than demanded of every caller.
+    if (!inputs.measured) {
+      throw new RustDisplayListSourceError(
+        'build',
+        new Error(
+          'this engine does not retain pagination, so it cannot build a display ' +
+            'list from a resident layout computed without measured blocks'
+        )
+      );
+    }
     return {
-      displayList: await buildRustDisplayList(inputs, eng),
+      displayList: await buildRustDisplayList(
+        inputs as StatelessDisplayListBuildInputs,
+        eng
+      ),
       frame: null,
       transport: 'json',
     };

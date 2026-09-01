@@ -29,6 +29,11 @@
       "types": "./dist/layout/pagination/index.d.mts",
       "import": "./dist/layout/pagination/index.mjs"
     },
+    "./diagnostics": {
+      "types": "./dist/diagnostics/index.d.mts",
+      "bun": "./src/diagnostics/index.ts",
+      "import": "./dist/diagnostics/index.mjs"
+    },
     "./layout/render": {
       "types": "./dist/layout/render/index.d.mts",
       "import": "./dist/layout/render/index.mjs"
@@ -120,6 +125,9 @@
   },
   "typesVersions": {
     "*": {
+      "diagnostics": [
+        "./dist/diagnostics/index.d.mts"
+      ],
       "docx": [
         "./dist/docx/index.d.mts"
       ],

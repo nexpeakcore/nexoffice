@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  buildRustDisplayList,
   buildRustDisplayFrame,
+  isSupersededSessionError,
   applyFrameDelta,
   applyFrameDeltaOwned,
   createCanvasImageResolver,
@@ -18,6 +18,9 @@ import {
   type RetainedFrame,
   type ResidentDisplayListQueryEngine,
 } from '@betteroffice/docx/layout/render';
+import type { DisplayListBuildInputs } from '@betteroffice/docx/layout/render';
+import { markHeapStage } from '@betteroffice/docx/diagnostics';
+import { workerServesEngine } from './residentWorkerLifecycle';
 import { getLayoutKernelInputs } from '@betteroffice/docx/editor';
 import {
   canUseResidentEngineWorker,
@@ -95,9 +98,25 @@ export interface ResidentFrameApplyResult {
   caretSynchronized: boolean;
 }
 
+/**
+ * Above this page count the resident worker is skipped. Workers are threads in
+ * this process, and the worker's bootstrap rebuilds the whole document — it
+ * reloads the CRDT, re-lowers every story, re-measures and re-paginates. On a
+ * long document that second copy does not finish inside the bootstrap timeout,
+ * so it costs the memory, gets terminated, and returns no frame. The threshold
+ * is set from the bootstrap budget rather than measured per machine: an
+ * 800-page pass already takes ~10s in wasm against a 15s timeout.
+ */
+const RESIDENT_WORKER_MAX_PAGES = 500;
+
 /** test seam: unit tests inject a fake engine/inputs-resolver instead of the wasm module */
 export interface RustDisplayListHookOverrides {
-  build?: typeof buildRustDisplayList;
+  /** Takes the resident input shape: a fake builder stands in for the whole
+   * build, so it is not bound by what the stateless one needs. */
+  build?: (
+    inputs: DisplayListBuildInputs,
+    engine?: RustDisplayListEngine
+  ) => Promise<DisplayList>;
   getInputs?: typeof getLayoutKernelInputs;
 }
 
@@ -382,6 +401,12 @@ export function useRustDisplayList(
         const worker = workerRef.current;
         const currentFrame = snapshotRef.current.frame;
         if (!worker || !worker.client.isReady() || !currentFrame) return null;
+        // Returning null here is what routes the edit to the compatibility
+        // path. A worker bootstrapped for a different engine must take that
+        // route: its reply is reported as applied, so accepting one would
+        // commit the keystroke to the previous document and drop it from this
+        // one.
+        if (!workerServesEngine(worker, residentEngine)) return null;
         const selection = worker.engine.selection();
         if (!selection) return null;
         paintedCaretMachine.noteInput(performance.now());
@@ -480,6 +505,7 @@ export function useRustDisplayList(
       paintedCaretMachine,
       publishQuerySnapshot,
       queryEpochGate,
+      residentEngine,
     ]
   );
 
@@ -539,13 +565,12 @@ export function useRustDisplayList(
       setLoading(false);
       return;
     }
-    const build = overrides?.build ?? buildRustDisplayList;
     // Merged doc-wide font chains from the Rust measure source (when active).
     // A non-empty map activates GlyphRun emission; absent ⇒ TextRunPrimitive.
     const fontChains = fontChainsProviderRef?.current?.();
     const buildInputs = {
-      measured: inputs.measured,
-      options: inputs.options,
+      ...(inputs.measured ? { measured: inputs.measured } : {}),
+      ...(inputs.options !== undefined ? { options: inputs.options } : {}),
       layout,
       ...(inputs.headersFooters ? { headersFooters: inputs.headersFooters } : {}),
       ...(fontChains ? { fontChains } : {}),
@@ -554,14 +579,16 @@ export function useRustDisplayList(
         : {}),
     };
     const workerEligible =
-      residentEngine !== null && workerFallbackEngineRef.current !== residentEngine;
+      residentEngine !== null &&
+      workerFallbackEngineRef.current !== residentEngine &&
+      layout.pages.length <= RESIDENT_WORKER_MAX_PAGES;
     // Cheap probe only: the full snapshot (document state, font bytes) is
     // built lazily below, and only for bootstrap/sync — steady-state frame
     // builds never encode state or copy fonts.
     const probe = workerEligible ? residentEngine.residentWorkerProbe() : null;
     const buildOnMainThread = () =>
       overrides?.build
-        ? build(buildInputs, engine ?? undefined).then((displayList) => ({
+        ? overrides.build(buildInputs, engine ?? undefined).then((displayList) => ({
             displayList,
             frame: null as RetainedFrame | null,
             caret: null as YrsResidentCaretSnapshot | null,
@@ -665,6 +692,17 @@ export function useRustDisplayList(
         pending = fallback(error);
       }
     } else {
+      // A worker outlives only the document it was bootstrapped for. Reaching
+      // the main-thread path means this document is not eligible for one — a
+      // different engine, a page count over the cutoff, or an earlier
+      // bootstrap failure — and leaving the previous document's worker in
+      // place would let `applyResidentInput` keep editing that document.
+      if (workerRef.current) {
+        workerRef.current.client.destroy();
+        workerRef.current = null;
+        setWorkerSurfacesActive(false);
+        setWorkerPresentationActive(false);
+      }
       pending = buildOnMainThread();
     }
     pending
@@ -675,6 +713,10 @@ export function useRustDisplayList(
         ) {
           return;
         }
+        // Marked only once this build is known to be the current one. A build
+        // for a replaced document finishing late would otherwise describe its
+        // own memory as the new document's opening phase.
+        markHeapStage('display');
         const nextSnapshot = createRustDisplayListSnapshot(
           result.displayList,
           result.frame,
@@ -699,7 +741,11 @@ export function useRustDisplayList(
       .catch((error) => {
         if (
           generation !== generationRef.current ||
-          contentEpoch !== contentEpochRef.current
+          contentEpoch !== contentEpochRef.current ||
+          // The session was destroyed under this build — the host swapped
+          // documents. Surfacing it would blame the document now opening for
+          // the previous one going away.
+          isSupersededSessionError(error)
         ) {
           return;
         }
@@ -928,6 +974,10 @@ export function useCanvasRenderer(
   // drops the previous document's decoded bitmaps instead of carrying them
   // for the editor's lifetime; the resolver also bounds itself by bytes.
   const resolveImage = useMemo(() => createCanvasImageResolver(), [engine]);
+  // The resolver reports its cache to the process report, so an unmounted or
+  // replaced one must stop: a DOCX closed, or replaced by a format that makes
+  // no resolver, would otherwise keep its bitmaps attributed to the renderer.
+  useEffect(() => () => resolveImage.dispose(), [resolveImage]);
   const status: UseCanvasRendererResult['status'] = error
     ? 'error'
     : loading || displayList == null
