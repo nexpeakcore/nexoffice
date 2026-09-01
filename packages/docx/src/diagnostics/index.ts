@@ -80,6 +80,11 @@ export interface HeapProbe {
 let probe: HeapProbe | null = null;
 let stages: HeapStage[] = [];
 let firstMarkAt = 0;
+// Labels already described for this document. These phases belong to opening
+// it, and the report says so; every later relayout marks the same labels again,
+// which grew the list without bound, made `total held` read an edit rather than
+// the open, and sent an IPC per keystroke to say so.
+const described = new Set<string>();
 const stageListeners = new Set<() => void>();
 
 /**
@@ -106,6 +111,11 @@ export function registerHeapProbe(next: HeapProbe | null): void {
  * mark unconditionally.
  */
 export function markHeapStage(label: string): void {
+  // A phase is described once per document. Tracked separately from the probe
+  // so a build without the counters still notifies for each phase of the open,
+  // and still stays quiet through the edits that follow.
+  if (described.has(label)) return;
+  described.add(label);
   // Listeners fire either way. They exist so a host re-sends its report at
   // phase boundaries, and a build without the counters still needs that: the
   // phases worth reporting are the ones that block the thread, and the figures
@@ -147,6 +157,7 @@ export function heapStages(): HeapStage[] {
 export function clearHeapStages(): void {
   stages = [];
   firstMarkAt = 0;
+  described.clear();
   try {
     probe?.resetPeak();
   } catch {
