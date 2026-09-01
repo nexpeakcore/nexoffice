@@ -14,17 +14,6 @@ import { useI18n } from '../i18n.js'
 
 const editorLocales = docxLocales as Record<string, PartialLocaleStrings>
 
-/**
- * The editor shows this while it has no display list, so its unmount is the
- * commit that puts the document's first pages on screen — which is what the
- * open measurement means by interactive, and is no longer something the main
- * thread's own idleness can stand in for.
- */
-function OpeningNotice({ children }: { children: React.ReactNode }) {
-  useEffect(() => noteDocumentContentPainted, [])
-  return <>{children}</>
-}
-
 export interface DocxEditorViewRef {
   save: () => Promise<ArrayBuffer | null>
   getText: () => string
@@ -224,12 +213,11 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
         showFileOpen={false}
         className="h-full w-full"
         loadingIndicator={
-          <OpeningNotice>
-            <div className="flex h-full items-center justify-center">
-              <span className="text-sm text-neutral-500">{t('editor.loading', { name: document.name })}</span>
-            </div>
-          </OpeningNotice>
+          <div className="flex h-full items-center justify-center">
+            <span className="text-sm text-neutral-500">{t('editor.loading', { name: document.name })}</span>
+          </div>
         }
+        onFirstPaint={noteDocumentContentPainted}
         onError={(err) => setError(err.message)}
       />
     )

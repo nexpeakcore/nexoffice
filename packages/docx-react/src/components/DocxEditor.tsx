@@ -9,7 +9,7 @@
  * - Loading states
  */
 
-import { useRef, useCallback, useState, useEffect, useMemo, forwardRef } from 'react';
+import { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo, forwardRef } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import type { Document, Theme } from '@betteroffice/docx/types/document';
 import type { YrsLoc, YrsSession, YrsStoryRange } from '@betteroffice/docx/yrs';
@@ -138,6 +138,13 @@ export interface DocxEditorProps {
   onError?: (error: Error) => void;
   /** Callback when fonts are loaded */
   onFontsLoaded?: () => void;
+  /**
+   * The document's first pages are on screen. Fires once per document, at the
+   * commit that paints them — which is what an open is finished at, and is
+   * not something a host can infer from this thread going idle, because the
+   * layout it is waiting for may be running on a worker.
+   */
+  onFirstPaint?: () => void;
   /** Color theme mode for UI styling. `'system'` follows the OS preference. */
   colorMode?: 'light' | 'dark' | 'system';
   /** Document theme schema object */
@@ -565,6 +572,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     onSelectionChange,
     onError,
     onFontsLoaded: onFontsLoadedCallback,
+    onFirstPaint,
     colorMode = 'light',
     theme,
     showToolbar = true,
@@ -708,6 +716,16 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   useEffect(() => {
     if (canvasRenderer.error) onError?.(canvasRenderer.error);
   }, [canvasRenderer.error, onError]);
+  // Fired from a layout effect so the host's timestamp belongs to the commit
+  // that paints, not to a frame after it.
+  const firstPaintSentRef = useRef(false);
+  const onFirstPaintRef = useRef(onFirstPaint);
+  onFirstPaintRef.current = onFirstPaint;
+  useLayoutEffect(() => {
+    if (firstPaintSentRef.current || !canvasRenderer.displayList) return;
+    firstPaintSentRef.current = true;
+    onFirstPaintRef.current?.();
+  }, [canvasRenderer.displayList]);
 
   const [yrsTrackedChangesResult, setYrsTrackedChangesResult] = useState<TrackedChangesResult>(
     () => ({
