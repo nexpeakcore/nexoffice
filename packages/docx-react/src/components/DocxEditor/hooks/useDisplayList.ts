@@ -29,6 +29,7 @@ import {
   sameYrsSelection,
   type ResidentCaretPaintStyle,
   type ResidentEngineOffscreenPage,
+  type YrsEngineApplyProfile,
   type YrsResidentCaretSnapshot,
   type YrsSelection,
   type YrsSession,
@@ -440,6 +441,11 @@ export function useRustDisplayList(
         const selection = worker.engine.selection();
         if (!selection) return declineResidentInput('no selection');
         const startedAt = performance.now();
+        // Profiling costs a few clock reads, so it is armed only after a
+        // keystroke has already been slow: the next one then says which phase
+        // spent the time, without every document paying to ask.
+        const profile = profileNextResidentInput;
+        profileNextResidentInput = false;
         paintedCaretMachine.noteInput(performance.now());
         const paintCaret = workerPresentationActiveRef.current;
         const paintToken = paintedCaretMachine.token();
@@ -452,14 +458,14 @@ export function useRustDisplayList(
                   operation.text,
                   selection,
                   currentFrame.frameEpoch,
-                  false,
+                  profile,
                   paintCaret
                 )
               : await worker.client.applyDelete(
                   operation.direction,
                   selection,
                   currentFrame.frameEpoch,
-                  false,
+                  profile,
                   paintCaret
                 );
         } finally {
@@ -1010,11 +1016,32 @@ function declineResidentInput(reason: string): null {
 /** A resident keystroke slower than one frame at 30Hz, with where it went. */
 const RESIDENT_INPUT_BUDGET_MS = 33;
 
+/** Armed by a slow keystroke so the next one reports its phases. */
+let profileNextResidentInput = false;
+
 function noteResidentInputCost(
   totalMs: number,
-  result: { engineMs?: number; workerTotalMs?: number; replayMs?: number; replayedPages?: number }
+  result: {
+    engineMs?: number;
+    workerTotalMs?: number;
+    replayMs?: number;
+    replayedPages?: number;
+    engineProfile?: YrsEngineApplyProfile;
+  }
 ): void {
+  const phases = result.engineProfile;
+  if (phases) {
+    const ms = (value: number): string => Math.round(value).toString();
+    console.warn(
+      `[CanvasRenderer] resident keystroke phases: edit ${ms(phases.editMs)}ms · ` +
+        `lower ${ms(phases.lowerMs)}ms · measure ${ms(phases.measureMs)}ms · ` +
+        `paginate ${ms(phases.paginateMs)}ms · display ${ms(phases.displayMs)}ms ` +
+        `(input ${ms(phases.displayInputMs)}, build ${ms(phases.displayBuildMs)}, ` +
+        `finalize ${ms(phases.displayFinalizeMs)}) · encode ${ms(phases.encodeMs)}ms`
+    );
+  }
   if (totalMs <= RESIDENT_INPUT_BUDGET_MS) return;
+  profileNextResidentInput = true;
   console.warn(
     `[CanvasRenderer] resident keystroke took ${Math.round(totalMs)}ms ` +
       `(worker ${Math.round(result.workerTotalMs ?? 0)}ms, of which engine ` +
