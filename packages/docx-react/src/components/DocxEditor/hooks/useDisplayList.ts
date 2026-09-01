@@ -707,13 +707,16 @@ export function useRustDisplayList(
     }
     pending
       .then((result) => {
-        markHeapStage('display');
         if (
           generation !== generationRef.current ||
           contentEpoch !== contentEpochRef.current
         ) {
           return;
         }
+        // Marked only once this build is known to be the current one. A build
+        // for a replaced document finishing late would otherwise describe its
+        // own memory as the new document's opening phase.
+        markHeapStage('display');
         const nextSnapshot = createRustDisplayListSnapshot(
           result.displayList,
           result.frame,
