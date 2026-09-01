@@ -174,6 +174,30 @@ export class ResidentEngineWorkerClient {
     return result;
   }
 
+  /**
+   * Re-paginates a document the worker already owns. No state travels: the
+   * worker's replica is kept current by `invalidate`, so only the region
+   * request goes over.
+   */
+  async relayout(
+    layoutInput: string,
+    extras: string,
+    expectedFrameEpoch: number,
+    paintCaret = false
+  ): Promise<ResidentEngineWorkerFrame> {
+    const response = await this.request({
+      type: 'relayout',
+      layoutInput,
+      extras,
+      expectedFrameEpoch,
+      paintCaret,
+    });
+    const result = frameResult(response);
+    this.ready = true;
+    this.revision = result.layoutRevision;
+    return result;
+  }
+
   async sync(
     snapshot: YrsResidentWorkerSnapshot,
     extras: string,

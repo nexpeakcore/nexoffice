@@ -137,6 +137,23 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
     return;
   }
   if (!session) throw new Error('Resident engine worker is not initialized');
+  if (request.type === 'relayout') {
+    session.layoutDocumentWithRegionsVoid(request.layoutInput);
+    layoutRevision += 1;
+    const started = performance.now();
+    const frame = session.buildDisplayListFrame(request.extras, request.expectedFrameEpoch);
+    await replyFrame(
+      request.id,
+      frame,
+      performance.now() - started,
+      pendingUpdates,
+      undefined,
+      started,
+      false,
+      request.paintCaret
+    );
+    return;
+  }
   if (request.type === 'sync') {
     unsubscribe?.();
     unsubscribe = null;

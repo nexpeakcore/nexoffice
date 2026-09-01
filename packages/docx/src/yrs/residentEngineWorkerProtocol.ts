@@ -44,6 +44,20 @@ export type ResidentEngineWorkerRequest =
       expectedFrameEpoch: number;
     }
   | {
+      /**
+       * Re-paginates what the worker already holds. Its replica is kept
+       * current by `applyUpdate`, so a document it opened never needs state
+       * shipped to it again — only the instruction to lay it out, and the
+       * region request in case the page setup changed.
+       */
+      id: number;
+      type: 'relayout';
+      layoutInput: string;
+      extras: string;
+      expectedFrameEpoch: number;
+      paintCaret: boolean;
+    }
+  | {
       id: number;
       type: 'sync';
       snapshot: YrsResidentWorkerSnapshot;
