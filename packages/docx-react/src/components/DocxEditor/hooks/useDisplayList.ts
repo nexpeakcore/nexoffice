@@ -138,6 +138,23 @@ const EMPTY_DISPLAY_LIST_SNAPSHOT: RustDisplayListSnapshot = {
   caret: null,
 };
 
+/**
+ * A document the worker is to lay out. Supplying this means the main thread
+ * has seeded a replica and built the region request but has deliberately not
+ * paginated, so there is no `Layout` on this side and never will be.
+ */
+export interface ResidentLayoutSource {
+  /** The main replica; its state seeds the worker, and it stays the peer. */
+  engine: YrsSession;
+  /** The region request, as `layoutDocumentWithRegionsVoid` takes it. */
+  layoutInput: string;
+  /**
+   * The worker died with the only layout there was. The host must paginate on
+   * this thread before anything can be painted again.
+   */
+  onWorkerLost: () => void;
+}
+
 // rebuilds the display list through the rust wasm engine after every layout
 // pass. dumb replay glue: the `{ measured, options, layout }` triple (plus the
 // kernel-recorded `headersFooters` payload when the document has HF parts) is
@@ -158,7 +175,11 @@ export function useRustDisplayList(
   // Changing the set rebuilds the display list so resolve/reopen — and the
   // "expanded resolved card re-tints its range" flow — repaint immediately.
   resolvedCommentIds?: ReadonlySet<number>,
-  engine?: RustDisplayListEngine | null
+  engine?: RustDisplayListEngine | null,
+  // Present when the document is the worker's to lay out: the main thread has
+  // seeded a replica and built the region request, and has deliberately not
+  // paginated. `layout` stays null for the life of such a document.
+  residentOpen?: ResidentLayoutSource | null
 ): UseRustDisplayListResult {
   const [snapshot, setSnapshot] = useState<RustDisplayListSnapshot>(EMPTY_DISPLAY_LIST_SNAPSHOT);
   const snapshotRef = useRef<RustDisplayListSnapshot>(EMPTY_DISPLAY_LIST_SNAPSHOT);
@@ -174,6 +195,11 @@ export function useRustDisplayList(
     client: ResidentEngineWorkerClient;
   } | null>(null);
   const workerFallbackEngineRef = useRef<YrsSession | null>(null);
+  // The engine whose document this worker opened, and therefore paginates.
+  // Distinct from `workerRef.current.engine`, which a bootstrapped worker also
+  // carries while the main thread keeps the authoritative layout.
+  const workerOwnedEngineRef = useRef<YrsSession | null>(null);
+  const workerLayoutInputRef = useRef<string | null>(null);
   const workerInputQueueRef = useRef<Promise<void>>(Promise.resolve());
   const suppressWorkerInvalidationRef = useRef(0);
   const [workerSurfacesActive, setWorkerSurfacesActive] = useState(false);
@@ -541,7 +567,13 @@ export function useRustDisplayList(
   );
 
   useEffect(() => {
-    if (!layout) {
+    // A document the worker owns has no main-thread layout and never will;
+    // the region request stands in for one as the build's trigger and input.
+    const owned =
+      residentOpen && workerFallbackEngineRef.current !== residentOpen.engine
+        ? residentOpen
+        : null;
+    if (!layout && !owned) {
       // layout reset (document change) — drop the stale pages
       generationRef.current++;
       contentEpochRef.current += 1;
@@ -557,28 +589,39 @@ export function useRustDisplayList(
     }
     queryEpochGate.invalidate();
     const contentEpoch = contentEpochRef.current;
-    const inputs = (overrides?.getInputs ?? getLayoutKernelInputs)(layout);
     const generation = ++generationRef.current;
-    if (!inputs) {
-      queryEpochGate.clear();
-      setError(new Error('No display-list inputs were recorded for the current layout.'));
-      setLoading(false);
-      return;
-    }
     // Merged doc-wide font chains from the Rust measure source (when active).
     // A non-empty map activates GlyphRun emission; absent ⇒ TextRunPrimitive.
     const fontChains = fontChainsProviderRef?.current?.();
-    const buildInputs = {
-      ...(inputs.measured ? { measured: inputs.measured } : {}),
-      ...(inputs.options !== undefined ? { options: inputs.options } : {}),
-      layout,
-      ...(inputs.headersFooters ? { headersFooters: inputs.headersFooters } : {}),
+    // Everything a session that paginated the document cannot know for itself.
+    // The owning-worker path sends only these; its own measured blocks,
+    // options, layout and header/footer measurements never leave it.
+    const frameExtras = {
       ...(fontChains ? { fontChains } : {}),
       ...(resolvedCommentIds && resolvedCommentIds.size > 0
         ? { resolvedCommentIds: [...resolvedCommentIds].sort((a, b) => a - b) }
         : {}),
     };
+    const inputs = layout ? (overrides?.getInputs ?? getLayoutKernelInputs)(layout) : undefined;
+    if (layout && !inputs) {
+      queryEpochGate.clear();
+      setError(new Error('No display-list inputs were recorded for the current layout.'));
+      setLoading(false);
+      return;
+    }
+    const buildInputs =
+      layout && inputs
+        ? {
+            ...(inputs.measured ? { measured: inputs.measured } : {}),
+            ...(inputs.options !== undefined ? { options: inputs.options } : {}),
+            layout,
+            ...(inputs.headersFooters ? { headersFooters: inputs.headersFooters } : {}),
+            ...frameExtras,
+          }
+        : null;
     const workerEligible =
+      !owned &&
+      layout !== null &&
       residentEngine !== null &&
       workerFallbackEngineRef.current !== residentEngine &&
       layout.pages.length <= RESIDENT_WORKER_MAX_PAGES;
@@ -586,8 +629,15 @@ export function useRustDisplayList(
     // built lazily below, and only for bootstrap/sync — steady-state frame
     // builds never encode state or copy fonts.
     const probe = workerEligible ? residentEngine.residentWorkerProbe() : null;
-    const buildOnMainThread = () =>
-      overrides?.build
+    const buildOnMainThread = () => {
+      if (!buildInputs) {
+        // Reached only after an owning worker died: nobody on this thread has
+        // a layout to build from, so the host has to paginate first.
+        return Promise.reject(
+          new Error('The display list has no layout to build from on this thread.')
+        );
+      }
+      return overrides?.build
         ? overrides.build(buildInputs, engine ?? undefined).then((displayList) => ({
             displayList,
             frame: null as RetainedFrame | null,
@@ -605,6 +655,7 @@ export function useRustDisplayList(
               caretPainted: false,
             })
           );
+    };
     const paintToken = paintedCaretMachine.token();
     let pending: Promise<{
       displayList: DisplayList;
@@ -614,7 +665,90 @@ export function useRustDisplayList(
       workerProduced: boolean;
       caretPainted: boolean;
     }>;
-    if (!overrides?.build && probe && canUseResidentEngineWorker()) {
+    if (owned) {
+      const hostEngine = owned.engine;
+      // Losing this worker loses the only layout there is. The host has to
+      // paginate on this thread before anything can be painted again, so tell
+      // it rather than silently falling back to a build with no inputs.
+      const lost = (cause: unknown) => {
+        const nextError =
+          cause instanceof Error
+            ? cause
+            : new Error(`Resident engine worker failed: ${String(cause)}`);
+        console.error(
+          '[CanvasRenderer] The worker that owned this document is gone; the main thread has to lay it out',
+          nextError
+        );
+        workerFallbackEngineRef.current = hostEngine;
+        workerOwnedEngineRef.current = null;
+        workerLayoutInputRef.current = null;
+        if (workerRef.current?.engine === hostEngine) {
+          workerRef.current.client.destroy();
+          workerRef.current = null;
+        }
+        setWorkerSurfacesActive(false);
+        setWorkerPresentationActive(false);
+        owned.onWorkerLost();
+        throw nextError;
+      };
+      try {
+        if (workerRef.current?.engine !== hostEngine) {
+          workerRef.current?.client.destroy();
+          workerRef.current = {
+            engine: hostEngine,
+            client: new ResidentEngineWorkerClient(),
+          };
+          workerOwnedEngineRef.current = null;
+          workerLayoutInputRef.current = null;
+        }
+        const worker = workerRef.current!.client;
+        const extras = encodeDisplayListFrameExtras(frameExtras);
+        const opening = workerOwnedEngineRef.current !== hostEngine;
+        const previousFrame = opening ? null : snapshotRef.current.frame;
+        const paintCaret =
+          !opening &&
+          workerPresentationActiveRef.current &&
+          paintedCaretMachine.shouldPaint(performance.now());
+        const workerFrame = opening
+          ? worker.open(hostEngine.residentWorkerOpen(), owned.layoutInput, extras)
+          : workerLayoutInputRef.current !== owned.layoutInput
+            ? worker.relayout(
+                owned.layoutInput,
+                extras,
+                previousFrame?.frameEpoch ?? 0,
+                paintCaret
+              )
+            : worker.buildFrame(extras, previousFrame?.frameEpoch ?? 0, paintCaret);
+        workerOwnedEngineRef.current = hostEngine;
+        workerLayoutInputRef.current = owned.layoutInput;
+        pending = workerFrame
+          .then((result) => {
+            const delta = decodeFrameDelta(result.frame);
+            const nextFrame = applyFrameDelta(previousFrame, delta);
+            return {
+              displayList: nextFrame.displayList,
+              frame: nextFrame,
+              caret: residentCaretForSelection(
+                result.caret,
+                result.selection,
+                hostEngine.selection(),
+                nextFrame
+              ),
+              queryEngine: null,
+              workerProduced: true,
+              caretPainted: result.caretPainted,
+            };
+          })
+          .catch(lost);
+      } catch (error) {
+        pending = Promise.reject(error);
+        try {
+          lost(error);
+        } catch {
+          // `lost` rethrows so the promise chain above reports it once.
+        }
+      }
+    } else if (!overrides?.build && probe && canUseResidentEngineWorker()) {
       const hostEngine = residentEngine;
       if (!hostEngine) throw new Error('Resident worker snapshot requires a host engine');
       const fallback = (cause: unknown) => {
@@ -644,7 +778,7 @@ export function useRustDisplayList(
           };
         }
         const worker = workerRef.current.client;
-        const extras = encodeDisplayListFrameExtras(buildInputs);
+        const extras = encodeDisplayListFrameExtras(buildInputs ?? frameExtras);
         const bootstrapping = worker.layoutRevision() === 0;
         const previousFrame = bootstrapping ? null : snapshotRef.current.frame;
         // On a fresh client both hints are null, so a bootstrap snapshot is
@@ -730,7 +864,7 @@ export function useRustDisplayList(
         setError(null);
         setLoading(false);
         const workerProduced = Boolean(
-          result.workerProduced && probe && workerRef.current?.client.isReady()
+          result.workerProduced && (owned || probe) && workerRef.current?.client.isReady()
         );
         setWorkerSurfacesActive(workerProduced);
         applyPaintedCaretReply(
@@ -758,6 +892,7 @@ export function useRustDisplayList(
       });
   }, [
     layout,
+    residentOpen,
     overrides,
     fontChainsProviderRef,
     resolvedCommentIds,

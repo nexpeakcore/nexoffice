@@ -429,8 +429,18 @@ export function encodeDisplayListInputs(
 }
 
 /** Display-only fields sent to an engine that already retains pagination. */
-export function encodeDisplayListFrameExtras(inputs: DisplayListBuildInputs): string {
-  const extras: Omit<DisplayListBuildInputs, 'measured' | 'options' | 'layout'> = {};
+/**
+ * The build inputs a session that paginated the document cannot supply for
+ * itself. It keeps its own measured blocks, options and layout, so those never
+ * travel.
+ */
+export type DisplayListFrameExtras = Omit<
+  DisplayListBuildInputs,
+  'measured' | 'options' | 'layout'
+>;
+
+export function encodeDisplayListFrameExtras(inputs: DisplayListFrameExtras): string {
+  const extras: DisplayListFrameExtras = {};
   if (inputs.contractVersion !== undefined) extras.contractVersion = inputs.contractVersion;
   if (inputs.headersFooters !== undefined) extras.headersFooters = inputs.headersFooters;
   if (inputs.fontChains !== undefined) extras.fontChains = inputs.fontChains;
