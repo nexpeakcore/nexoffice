@@ -9,7 +9,7 @@ import {
 } from '@betteroffice/docx-fonts'
 import { en as docxEn, locales as docxLocales, type PartialLocaleStrings } from '@betteroffice/docx-i18n'
 import { countCharacters, countWords, type EditorStats } from '../services/textStats.js'
-import { expectDocumentContent, noteDocumentContentPainted } from '../services/diagnostics.js'
+import { noteDocumentContentPainted } from '../services/diagnostics.js'
 import { useI18n } from '../i18n.js'
 
 const editorLocales = docxLocales as Record<string, PartialLocaleStrings>
@@ -73,7 +73,6 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
   function DocxEditorView({ document, onChange, onPrintRequest }, ref) {
     const { locale, t } = useI18n()
     const editorRef = useRef<DocxEditorRef>(null)
-    useEffect(expectDocumentContent, [])
     const measurementFontProvider = useMemo<BundledFontProvider>(
       () => ({
         resolve(family, bold, italic) {

@@ -81,7 +81,10 @@ export function clearDocumentProfile(): void {
 export function noteDocumentOpened(opened: OpenedDocument, kind: DocumentProfile['kind']): void {
   openEpoch += 1
   contentPaintedAt = null
-  awaitingContent = false
+  // Set here rather than by the editor itself: the editor view is loaded on
+  // demand, so it mounts after this measurement has already started and would
+  // register its promise too late to be waited for.
+  awaitingContent = REPORTS_FIRST_PAINT.has(kind)
   openedAt = performance.now()
   profile = { kind, name: opened.name, bytes: opened.data.byteLength }
   const next: OpenPhaseTimings = {}
@@ -101,18 +104,8 @@ export function noteDocumentOpened(opened: OpenedDocument, kind: DocumentProfile
 let contentPaintedAt: number | null = null;
 let awaitingContent = false;
 
-/**
- * Declare that this editor will report when its content lands. Registered on
- * mount, so it is in place before {@link trackOpenSettle} sees its first
- * frame. An editor that never reports leaves the open measurement without an
- * `interactive` figure rather than with a wrong one.
- */
-export function expectDocumentContent(): () => void {
-  awaitingContent = true;
-  return () => {
-    awaitingContent = false;
-  };
-}
+/** Editors that report their first paint; the rest settle on frames alone. */
+const REPORTS_FIRST_PAINT: ReadonlySet<DocumentProfile['kind']> = new Set(['docx'])
 
 /** The editor's first content is on screen. */
 export function noteDocumentContentPainted(): void {

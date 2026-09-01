@@ -426,15 +426,20 @@ export function useRustDisplayList(
       const run = async (): Promise<ResidentFrameApplyResult | null> => {
         const worker = workerRef.current;
         const currentFrame = snapshotRef.current.frame;
-        if (!worker || !worker.client.isReady() || !currentFrame) return null;
+        if (!worker) return declineResidentInput('no worker');
+        if (!worker.client.isReady()) return declineResidentInput('worker not ready');
+        if (!currentFrame) return declineResidentInput('no retained frame');
         // Returning null here is what routes the edit to the compatibility
         // path. A worker bootstrapped for a different engine must take that
         // route: its reply is reported as applied, so accepting one would
         // commit the keystroke to the previous document and drop it from this
         // one.
-        if (!workerServesEngine(worker, residentEngine)) return null;
+        if (!workerServesEngine(worker, residentEngine)) {
+          return declineResidentInput('worker serves another document');
+        }
         const selection = worker.engine.selection();
-        if (!selection) return null;
+        if (!selection) return declineResidentInput('no selection');
+        const startedAt = performance.now();
         paintedCaretMachine.noteInput(performance.now());
         const paintCaret = workerPresentationActiveRef.current;
         const paintToken = paintedCaretMachine.token();
@@ -460,7 +465,8 @@ export function useRustDisplayList(
         } finally {
           residentPaintInflightRef.current -= 1;
         }
-        if (!result.applied) return null;
+        if (!result.applied) return declineResidentInput('the worker could not apply it');
+        noteResidentInputCost(performance.now() - startedAt, result);
         const delta = decodeFrameDelta(result.frame);
         suppressWorkerInvalidationRef.current += 1;
         try {
@@ -709,9 +715,15 @@ export function useRustDisplayList(
           !opening &&
           workerPresentationActiveRef.current &&
           paintedCaretMachine.shouldPaint(performance.now());
+        const repaginating = !opening && workerLayoutInputRef.current !== owned.layoutInput;
+        if (repaginating) {
+          // Not a keystroke's cost. Seeing this per keystroke means something
+          // is rebuilding the region request every pass.
+          console.warn('[CanvasRenderer] the region request changed; repaginating the document');
+        }
         const workerFrame = opening
           ? worker.open(hostEngine.residentWorkerOpen(), owned.layoutInput, extras)
-          : workerLayoutInputRef.current !== owned.layoutInput
+          : repaginating
             ? worker.relayout(
                 owned.layoutInput,
                 extras,
@@ -970,6 +982,45 @@ function residentDisplayListQueryEngine(
       ? (engine as ResidentDisplayListQueryEngine)
       : undefined;
   return isDisplayListQuerySourceDead(resident) ? undefined : resident;
+}
+
+/**
+ * A keystroke the worker did not take. The compatibility path then runs a full
+ * pagination on this thread, so on a long document one declined keystroke is
+ * seconds — the difference is too large to leave silent, and the reason is not
+ * recoverable after the fact.
+ *
+ * Reported once per reason per session: the interesting fact is that a reason
+ * is occurring at all, and a per-keystroke log on a document that declines
+ * every keystroke would bury it.
+ */
+const declinedResidentInputReasons = new Set<string>();
+
+function declineResidentInput(reason: string): null {
+  if (!declinedResidentInputReasons.has(reason)) {
+    declinedResidentInputReasons.add(reason);
+    console.warn(
+      `[CanvasRenderer] a keystroke took the compatibility path: ${reason}. ` +
+        'That path repaginates the whole document on this thread.'
+    );
+  }
+  return null;
+}
+
+/** A resident keystroke slower than one frame at 30Hz, with where it went. */
+const RESIDENT_INPUT_BUDGET_MS = 33;
+
+function noteResidentInputCost(
+  totalMs: number,
+  result: { engineMs?: number; workerTotalMs?: number; replayMs?: number; replayedPages?: number }
+): void {
+  if (totalMs <= RESIDENT_INPUT_BUDGET_MS) return;
+  console.warn(
+    `[CanvasRenderer] resident keystroke took ${Math.round(totalMs)}ms ` +
+      `(worker ${Math.round(result.workerTotalMs ?? 0)}ms, of which engine ` +
+      `${Math.round(result.engineMs ?? 0)}ms and replay ${Math.round(result.replayMs ?? 0)}ms ` +
+      `over ${result.replayedPages ?? 0} pages)`
+  );
 }
 
 function isWorkerHostEngine(
