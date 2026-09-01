@@ -36,6 +36,7 @@
     "dist"
   ],
   "scripts": {
+    "build:js": "tsup --no-dts",
     "build": "tsup",
     "typecheck": "tsc --noEmit -p ."
   },

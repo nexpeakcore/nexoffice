@@ -7,7 +7,7 @@
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "bun run --cwd .. build:packages:js && electron-vite dev",
     "start": "electron-vite preview",
     "build": "bun run typecheck && electron-vite build",
     "typecheck": "tsc --noEmit",

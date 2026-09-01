@@ -258,6 +258,17 @@ function createWindow(): BrowserWindow {
     window.webContents.send(IPC.closeRequest)
   })
 
+  // Renderer console into the dev server's terminal. Diagnosing the editor
+  // otherwise means asking whoever is testing to open devtools and read it
+  // back, which loses everything that happened before they thought to look.
+  if (isDev) {
+    window.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+      if (level < 2) return
+      const where = sourceId ? ` (${sourceId}:${line})` : ''
+      console[level === 2 ? 'warn' : 'error'](`[renderer] ${message}${where}`)
+    })
+  }
+
   window.webContents.on('unresponsive', () => {
     rendererUnresponsive = true
   })
