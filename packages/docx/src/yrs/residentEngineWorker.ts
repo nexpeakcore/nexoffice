@@ -78,6 +78,31 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
     destroySession();
     return;
   }
+  if (request.type === 'open') {
+    destroySession();
+    // The worker is the origin of this document, not a copy of it: it seeds
+    // once and nothing replays that work. `bootstrap` below exists for the
+    // path where a main-thread replica opened first, which costs the document
+    // twice over.
+    session = await createResidentEngineSession();
+    session.clearFonts();
+    for (const font of request.fonts) session.registerFont(font);
+    fontsRevision = request.fontsRevision;
+    session.seedDocx(request.bytes);
+    session.layoutDocumentWithRegionsVoid(request.layoutInput);
+    subscribe();
+    const started = performance.now();
+    const frame = session.buildDisplayListFrame(request.extras, 0);
+    await replyFrame(
+      request.id,
+      frame,
+      performance.now() - started,
+      pendingUpdates,
+      undefined,
+      started
+    );
+    return;
+  }
   if (request.type === 'bootstrap') {
     destroySession();
     // The worker is a genuine yrs peer. Reusing the main replica's client id

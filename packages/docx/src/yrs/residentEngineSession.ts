@@ -11,7 +11,16 @@ import type {
 } from '../collaboration/types';
 import { createEditSession, preloadEditWasm } from './wasm/index';
 
-export type ResidentEngineSession = Pick<
+/**
+ * Seeding without the host envelope the full session builds: the worker owns
+ * the replica, not the metadata the host renders around it.
+ */
+export interface ResidentEngineSeeding {
+  seedDocx(bytes: Uint8Array): void;
+}
+
+export type ResidentEngineSession = ResidentEngineSeeding &
+  Pick<
   YrsSession,
   | 'applyDelete'
   | 'applyDeleteProfiled'
@@ -35,8 +44,8 @@ export type ResidentEngineSession = Pick<
   | 'residentCaretSnapshot'
   | 'selection'
   | 'setSelection'
-  | 'yrsBlocksForStory'
->;
+    | 'yrsBlocksForStory'
+  >;
 
 export async function createResidentEngineSession(): Promise<ResidentEngineSession> {
   await preloadEditWasm();
@@ -70,6 +79,9 @@ export async function createResidentEngineSession(): Promise<ResidentEngineSessi
     registerFont: (bytes) => session.register_measure_font(bytes),
     clearFonts: () => session.clear_measure_fonts(),
     encodeStateVector: () => session.encode_state_vector(),
+    seedDocx: (bytes) => {
+      session.seed_from_docx(bytes);
+    },
     measureParagraphJson: (input) => session.measure_paragraph_json(input),
     layoutDocumentJson: (input) => session.layout_document_json(input),
     layoutFontRequirementsJson: (input) => session.layout_font_requirements_json(input),
