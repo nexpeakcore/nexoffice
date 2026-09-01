@@ -34,11 +34,11 @@ export function useScrollPageInfo({
     if (!scrollContainerEl) return;
 
     const handleScroll = () => {
-      const layout = pagedEditorRef.current?.getLayout();
-      if (!layout || layout.pages.length === 0) return;
+      const pageHeights = pagedEditorRef.current?.getPageHeights();
+      if (!pageHeights || pageHeights.length === 0) return;
 
       const scrollTop = scrollContainerEl.scrollTop;
-      const totalPages = layout.pages.length;
+      const totalPages = pageHeights.length;
       const pageGap = 24; // DEFAULT_PAGE_GAP from PagedEditor
       const paddingTop = 24; // top padding in paged-editor__pages
 
@@ -46,8 +46,8 @@ export function useScrollPageInfo({
       let accumulatedY = paddingTop;
       let currentPage = 1;
 
-      for (let i = 0; i < layout.pages.length; i++) {
-        const pageHeight = layout.pages[i].size.h;
+      for (let i = 0; i < pageHeights.length; i++) {
+        const pageHeight = pageHeights[i];
         const pageEnd = accumulatedY + pageHeight;
         if (viewportCenter < pageEnd) {
           currentPage = i + 1;

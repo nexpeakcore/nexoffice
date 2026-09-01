@@ -1,6 +1,6 @@
 /** Resident Rust layout scheduling and React paint-state publication. */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type { LayoutBlock, Layout } from '@betteroffice/docx/layout/pagination';
 import { markHeapStage } from '@betteroffice/docx/diagnostics';
@@ -93,6 +93,8 @@ export interface UseLayoutPipelineOptions {
 
 export interface UseLayoutPipelineReturn {
   layout: Layout | null;
+  /** Page heights in order — the shell's scroll geometry, without fragments. */
+  pageHeights: readonly number[];
   layoutUpdateOrigin: LayoutUpdateOrigin;
   runLayoutPipeline: () => void;
   scheduleLayout: (origin?: LayoutUpdateOrigin) => void;
@@ -145,6 +147,18 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
   deferLayoutPassRef.current = deferLayoutPass;
   displayPositionToYrsLocRef.current = displayPositionToYrsLoc;
   yrsLocToDisplayPositionRef.current = yrsLocToDisplayPosition;
+
+  /**
+   * Page heights alone, which is all the shell's scroll geometry reads from a
+   * layout. Kept as its own value so the viewport can be sized by whichever
+   * side paginated — the worker owns the fragments, and shipping them back
+   * only to sum their page heights would be the whole envelope for a number
+   * per page.
+   */
+  const pageHeights = useMemo(
+    () => (layout ? layout.pages.map((page) => page.size.h) : []),
+    [layout]
+  );
 
   // Total-pages notifier — fires only when count changes (including N → 0).
   const lastTotalPagesRef = useRef<number>(0);
@@ -301,7 +315,10 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
 
         const vp = viewportLayoutRef.current;
         if (vp) {
-          const mh = viewportMinHeightPx(newLayout, pageGap);
+          const mh = viewportMinHeightPx(
+            newLayout.pages.map((page) => page.size.h),
+            pageGap
+          );
           vp.style.minHeight = `${mh}px`;
           vp.style.marginBottom = zoom !== 1 ? `${mh * (zoom - 1)}px` : '';
         }
@@ -499,6 +516,7 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
 
   return {
     layout,
+    pageHeights,
     layoutUpdateOrigin: layoutUpdateOriginRef.current,
     runLayoutPipeline,
     scheduleLayout,

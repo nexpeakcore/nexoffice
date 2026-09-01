@@ -1,4 +1,3 @@
-import type { Layout } from '@betteroffice/docx/layout/pagination';
 import { VIEWPORT_PADDING_BOTTOM, VIEWPORT_PADDING_TOP } from './styles';
 
 export function runAfterFrames(fn: () => void, signal: AbortSignal): void {
@@ -18,9 +17,9 @@ export function runAfterFrames(fn: () => void, signal: AbortSignal): void {
 }
 
 /** Min-height of the zoom/viewport wrapper: top + bottom padding plus the page stack. */
-export function viewportMinHeightPx(layout: Layout, pageGap: number): number {
-  const n = layout.pages.length;
-  const pagesHeight = layout.pages.reduce((sum, page) => sum + page.size.h, 0);
+export function viewportMinHeightPx(pageHeights: readonly number[], pageGap: number): number {
+  const n = pageHeights.length;
+  const pagesHeight = pageHeights.reduce((sum, height) => sum + height, 0);
   return (
     pagesHeight + Math.max(0, n - 1) * pageGap + VIEWPORT_PADDING_TOP + VIEWPORT_PADDING_BOTTOM
   );

@@ -120,7 +120,7 @@
     },
     "desktop": {
       "name": "nexoffice-desktop",
-      "version": "1.0.3",
+      "version": "1.1.4",
       "devDependencies": {
         "@betteroffice/docx": "workspace:*",
         "@betteroffice/docx-fonts": "workspace:*",

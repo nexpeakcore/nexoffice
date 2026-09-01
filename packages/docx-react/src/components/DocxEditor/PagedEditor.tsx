@@ -379,6 +379,8 @@ export interface PagedEditorRef {
   applyYrsCommand(command: YrsEditorCommand): boolean;
   /** Get current layout. */
   getLayout(): Layout | null;
+  /** Page heights in order — the shell's scroll geometry, without fragments. */
+  getPageHeights(): readonly number[];
   /** Force re-layout. */
   relayout(): void;
   /** Scroll the visible pages to bring a display position into view. */
@@ -652,6 +654,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
     );
     const {
       layout,
+      pageHeights,
       layoutUpdateOrigin,
       runLayoutPipeline,
       scheduleLayout,
@@ -1651,6 +1654,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       ref,
       yrsInputRef,
       layout,
+      pageHeights,
       runLayoutPipeline,
       scrollToPositionImpl,
       scrollToParaIdImpl,
@@ -1679,9 +1683,10 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
     // the layout pipeline does mid-pipeline (needed for scroll-restore math
     // before React commits).
     const totalHeight = useMemo(() => {
-      if (!layout) return DEFAULT_PAGE_HEIGHT_PX + VIEWPORT_PADDING_TOP + VIEWPORT_PADDING_BOTTOM;
-      return viewportMinHeightPx(layout, pageGap);
-    }, [layout, pageGap]);
+      if (pageHeights.length === 0)
+        return DEFAULT_PAGE_HEIGHT_PX + VIEWPORT_PADDING_TOP + VIEWPORT_PADDING_BOTTOM;
+      return viewportMinHeightPx(pageHeights, pageGap);
+    }, [pageHeights, pageGap]);
 
     // Canvas path: the painted `.layout-run-image` the DOM overlay measures is
     // parked, so `selectedImageInfo` never populates. Derive the selected image
