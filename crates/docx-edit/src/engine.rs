@@ -3654,4 +3654,82 @@ mod tests {
         .unwrap();
         assert_eq!(slim, after, "the void pass leaves the same layout behind");
     }
+    /// What a resident worker pays to take a document over, measured the two
+    /// ways it can: replaying the main thread's recorded lowering before the
+    /// region layout (what `bootstrap` does), against letting the region
+    /// layout lower and measure on its own (what `open` does).
+    ///
+    /// Measured on `heavy-300p.docx`: replay 207.8ms against layout-alone
+    /// 205.7ms, so the replay costs 2.0ms — the region layout reuses the
+    /// lowered story the replay just cached, and paying for it twice is the
+    /// same as paying for it once.
+    ///
+    /// The section here is synthetic (one page size, one font, no headers,
+    /// footers or notes), so the absolute figures are a floor for that
+    /// document, not what the app pays to open it.
+    ///
+    /// Ignored — it wants a real document and reports rather than asserts:
+    ///   cargo test -p betteroffice-docx-edit --release --lib worker_takeover \
+    ///     -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx"]
+    fn worker_takeover_cost() {
+        const FONT: &[u8] =
+            include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        let bytes = std::fs::read(&path).expect("fixture");
+        docx_layout::clear_measure_fonts();
+        let font_id = docx_layout::register_measure_font(FONT).unwrap();
+        let request = serde_json::json!({
+            "bodyStory": "body",
+            "options": {"pageGap": 24},
+            "regions": {
+                "sections": [{
+                    "sectionId": "main",
+                    "pageSize": {"w": 816, "h": 1056},
+                    "margins": {"top": 96, "right": 96, "bottom": 96, "left": 96,
+                                "header": 48, "footer": 48}
+                }]
+            },
+            "notes": {"contents": []},
+            "measurement": {
+                "fontChains": {"liberation sans|0|0": [font_id]},
+                "defaults": {"fontSize": 24, "fontFamily": "Liberation Sans"},
+                "authoritativeShaping": true
+            },
+            "renderEnv": {}
+        })
+        .to_string();
+
+        let seeded = |client_id: u64| {
+            let engine = EngineSession::new(client_id);
+            crate::seed_from_docx(engine.doc(), &bytes).expect("seed");
+            engine
+        };
+
+        let engine = seeded(1);
+        let started = std::time::Instant::now();
+        let lowered_json = engine
+            .lower_story_json("body", &RenderEnv::default())
+            .unwrap();
+        let lowering = started.elapsed();
+        engine.layout_document_with_regions_void(&request).unwrap();
+        let replay_then_layout = started.elapsed();
+
+        let engine = seeded(2);
+        let started = std::time::Instant::now();
+        engine.layout_document_with_regions_void(&request).unwrap();
+        let layout_only = started.elapsed();
+
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+        println!("lowered blocks   {} bytes", lowered_json.len());
+        println!("replay + layout  {:>9.1}ms", ms(replay_then_layout));
+        println!("  of which lower {:>9.1}ms", ms(lowering));
+        println!("layout alone     {:>9.1}ms", ms(layout_only));
+        println!(
+            "replay costs     {:>9.1}ms",
+            ms(replay_then_layout) - ms(layout_only)
+        );
+    }
 }
