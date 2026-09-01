@@ -9,9 +9,21 @@ import {
 } from '@betteroffice/docx-fonts'
 import { en as docxEn, locales as docxLocales, type PartialLocaleStrings } from '@betteroffice/docx-i18n'
 import { countCharacters, countWords, type EditorStats } from '../services/textStats.js'
+import { expectDocumentContent, noteDocumentContentPainted } from '../services/diagnostics.js'
 import { useI18n } from '../i18n.js'
 
 const editorLocales = docxLocales as Record<string, PartialLocaleStrings>
+
+/**
+ * The editor shows this while it has no display list, so its unmount is the
+ * commit that puts the document's first pages on screen — which is what the
+ * open measurement means by interactive, and is no longer something the main
+ * thread's own idleness can stand in for.
+ */
+function OpeningNotice({ children }: { children: React.ReactNode }) {
+  useEffect(() => noteDocumentContentPainted, [])
+  return <>{children}</>
+}
 
 export interface DocxEditorViewRef {
   save: () => Promise<ArrayBuffer | null>
@@ -72,6 +84,7 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
   function DocxEditorView({ document, onChange, onPrintRequest }, ref) {
     const { locale, t } = useI18n()
     const editorRef = useRef<DocxEditorRef>(null)
+    useEffect(expectDocumentContent, [])
     const measurementFontProvider = useMemo<BundledFontProvider>(
       () => ({
         resolve(family, bold, italic) {
@@ -211,9 +224,11 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
         showFileOpen={false}
         className="h-full w-full"
         loadingIndicator={
-          <div className="flex h-full items-center justify-center">
-            <span className="text-sm text-neutral-500">{t('editor.loading', { name: document.name })}</span>
-          </div>
+          <OpeningNotice>
+            <div className="flex h-full items-center justify-center">
+              <span className="text-sm text-neutral-500">{t('editor.loading', { name: document.name })}</span>
+            </div>
+          </OpeningNotice>
         }
         onError={(err) => setError(err.message)}
       />

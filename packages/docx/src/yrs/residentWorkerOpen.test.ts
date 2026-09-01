@@ -7,7 +7,7 @@ import { buildResidentRegionLayoutRequest } from '../editor/computeLayout';
 import { applyFrameDelta, decodeFrameDelta } from '../layout/render/frameDelta';
 import type { Layout } from '../layout/pagination';
 import { preloadEditWasm } from '../wasm/edit';
-import { createYrsSession, type YrsSession } from './index';
+import { createYrsSession } from './index';
 
 const WASM = resolve(import.meta.dir, '../wasm/generated/edit/docx_edit_bg.wasm');
 const DOCX = resolve(import.meta.dir, '__fixtures__/titlepg-first-footer.docx');
