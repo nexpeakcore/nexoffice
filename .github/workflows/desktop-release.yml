@@ -103,7 +103,7 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
           node scripts/notarize-dmg.mjs
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-installers
           retention-days: 14
@@ -155,7 +155,7 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
         run: bun run dist:win
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-installer
           retention-days: 14
