@@ -315,31 +315,10 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
 
       const computeInputs = { document, pageGap, session, renderEnv, measurement };
 
-      // The worker can lay this document out for itself. Handing it over means
-      // this thread never lowers, measures or paginates it — the duplicate
-      // that makes a long document cost two of everything.
-      if (!residentLayoutLostRef.current && canUseResidentEngineWorker()) {
-        const layoutInput = JSON.stringify({ ...request, measurement });
-        layoutUpdateOriginRef.current = layoutUpdateOrigin;
-        onResidentLayoutSourceRef.current?.({
-          engine: session,
-          layoutInput,
-          onWorkerLost: () => {
-            // Nothing on this thread has a layout to paint from. Take the
-            // document back and paginate here from the next pass on.
-            residentLayoutLostRef.current = true;
-            onResidentLayoutSourceRef.current?.(null);
-            scheduleLayoutRef.current?.();
-          },
-        });
-        syncCoordinator.onLayoutComplete(currentEpoch);
-        return;
-      }
-
-      // Step 4+: paint + scroll/events with the computed values.
-      const applyComputation = (computation: LayoutComputation) => {
-        const { layout: newLayout } = computation;
-
+      // Where the reader is now, so the next geometry commit can put them
+      // back. Both branches capture it: a worker-owned relayout moves the page
+      // stack exactly as a local pagination pass does.
+      const captureScrollAnchor = () => {
         const pagesEl = pagesContainerRef.current;
         const scrollParent =
           getScrollContainer() ?? (pagesEl ? findVerticalScrollParentOrRoot(pagesEl) : null);
@@ -365,8 +344,22 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
                   ),
                 }
             : null;
-
         viewportAnchorCaptureReadyRef.current = false;
+        return { anchor, scrollParent };
+      };
+
+      const holdScroll = (captured: ReturnType<typeof captureScrollAnchor>) => {
+        if (captured.scrollParent?.isConnected && captured.anchor) {
+          scrollRestoreController.capture(captured.anchor);
+        } else {
+          scrollRestoreController.cancel();
+        }
+      };
+
+      // Step 4+: paint + scroll/events with the computed values.
+      const applyComputation = (computation: LayoutComputation) => {
+        const { layout: newLayout } = computation;
+        const captured = captureScrollAnchor();
         layoutUpdateOriginRef.current = layoutUpdateOrigin;
         setLayout(newLayout);
 
@@ -379,11 +372,7 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
           vp.style.minHeight = `${mh}px`;
           vp.style.marginBottom = zoom !== 1 ? `${mh * (zoom - 1)}px` : '';
         }
-        if (scrollParent?.isConnected && anchor) {
-          scrollRestoreController.capture(anchor);
-        } else {
-          scrollRestoreController.cancel();
-        }
+        holdScroll(captured);
 
         const totalTime = performance.now() - pipelineStart;
         if (totalTime > 2000) {
@@ -393,6 +382,28 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
           );
         }
       };
+
+      // The worker can lay this document out for itself. Handing it over means
+      // this thread never lowers, measures or paginates it — the duplicate
+      // that makes a long document cost two of everything.
+      if (!residentLayoutLostRef.current && canUseResidentEngineWorker()) {
+        const layoutInput = JSON.stringify({ ...request, measurement });
+        layoutUpdateOriginRef.current = layoutUpdateOrigin;
+        holdScroll(captureScrollAnchor());
+        onResidentLayoutSourceRef.current?.({
+          engine: session,
+          layoutInput,
+          onWorkerLost: () => {
+            // Nothing on this thread has a layout to paint from. Take the
+            // document back and paginate here from the next pass on.
+            residentLayoutLostRef.current = true;
+            onResidentLayoutSourceRef.current?.(null);
+            scheduleLayoutRef.current?.();
+          },
+        });
+        syncCoordinator.onLayoutComplete(currentEpoch);
+        return;
+      }
 
       // Every pagination pass performs a full relayout.
       try {
