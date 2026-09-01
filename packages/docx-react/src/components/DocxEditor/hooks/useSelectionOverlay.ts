@@ -169,9 +169,11 @@ export function useSelectionOverlay(opts: UseSelectionOverlayOptions): UseSelect
     return () => observer.disconnect();
   }, [containerRef, syncCoordinator, updateSelectionOverlay]);
 
+  // A new layout is the repaint signal where this thread paginates. Where a
+  // worker owns the layout there is none, and a new frame says the same thing.
   useEffect(() => {
-    if (layout) updateSelectionOverlay();
-  }, [layout, updateSelectionOverlay]);
+    if (layout || displayListFrameEpoch !== null) updateSelectionOverlay();
+  }, [layout, displayListFrameEpoch, updateSelectionOverlay]);
 
   const authoritativeRect = residentCaretAuthoritative ? residentCaret?.caretRect : null;
   const authoritativeNewer = Boolean(

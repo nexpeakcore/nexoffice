@@ -1019,6 +1019,11 @@ export interface UseCanvasRendererResult {
     layout: Layout | null,
     engine?: (RustDisplayListEngine & { outlineGlyphJson?: GlyphOutlineProvider }) | null
   ) => void;
+  /** Hand the document to a worker to lay out, instead of paginating here. */
+  onResidentLayoutSource: (
+    source: ResidentLayoutSource | null,
+    engine?: (RustDisplayListEngine & { outlineGlyphJson?: GlyphOutlineProvider }) | null
+  ) => void;
   /** media resolver for CanvasPagesView */
   resolveImage: ImageResolver;
   /** Rust display-list query facade for adapter interactions. */
@@ -1073,16 +1078,54 @@ export function useCanvasRenderer(
   resolvedCommentIds?: ReadonlySet<number>
 ): UseCanvasRendererResult {
   const [layout, setLayout] = useState<Layout | null>(null);
+  const [residentOpen, setResidentOpen] = useState<ResidentLayoutSource | null>(null);
+  const residentOpenRef = useRef<ResidentLayoutSource | null>(null);
+  residentOpenRef.current = residentOpen;
   const [engine, setEngine] = useState<
     (RustDisplayListEngine & { outlineGlyphJson?: GlyphOutlineProvider }) | null
   >(null);
+  // The document is the worker's to lay out. Publishing a source also clears
+  // any layout this thread happens to be holding: the two are alternatives,
+  // and keeping a stale one around would paint the previous document.
+  const onResidentLayoutSource = useCallback(
+    (
+      next: ResidentLayoutSource | null,
+      nextEngine?: (RustDisplayListEngine & { outlineGlyphJson?: GlyphOutlineProvider }) | null
+    ) => {
+      // Each pipeline pass builds its own request object. Holding the
+      // previous one when it says the same thing keeps the build effect —
+      // and the query epoch it invalidates — from re-running for nothing.
+      setResidentOpen((previous) => {
+        const same =
+          previous !== null &&
+          next !== null &&
+          previous.engine === next.engine &&
+          previous.layoutInput === next.layoutInput;
+        const kept = same ? previous : next;
+        residentOpenRef.current = kept;
+        return kept;
+      });
+      if (next) {
+        setLayout(null);
+        setEngine(nextEngine ?? null);
+      }
+    },
+    []
+  );
   const onLayoutComputed = useCallback(
     (
       next: Layout | null,
       nextEngine?: (RustDisplayListEngine & { outlineGlyphJson?: GlyphOutlineProvider }) | null
     ) => {
+      if (next) {
+        setResidentOpen(null);
+        residentOpenRef.current = null;
+      }
       setLayout(next);
-      setEngine(nextEngine ?? null);
+      // A worker-owned document reports no layout here every pass. Dropping
+      // the engine on that would cut the resident input path loose from the
+      // replica the worker is a peer of.
+      if (next || !residentOpenRef.current) setEngine(nextEngine ?? null);
     },
     []
   );
@@ -1104,7 +1147,14 @@ export function useCanvasRenderer(
     notifyCaretInput,
     notifyCaretInputDispatched,
     notifyCaretInterrupt,
-  } = useRustDisplayList(layout, undefined, fontChainsProviderRef, resolvedCommentIds, engine);
+  } = useRustDisplayList(
+    layout,
+    undefined,
+    fontChainsProviderRef,
+    resolvedCommentIds,
+    engine,
+    residentOpen
+  );
   // Keyed on the engine session (a per-document-load identity), so a reload
   // drops the previous document's decoded bitmaps instead of carrying them
   // for the editor's lifetime; the resolver also bounds itself by bytes.
@@ -1182,6 +1232,7 @@ export function useCanvasRenderer(
     status,
     error,
     onLayoutComputed,
+    onResidentLayoutSource,
     resolveImage,
     queries: geometryReady ? snapshotQueries : null,
     resolveQueries,

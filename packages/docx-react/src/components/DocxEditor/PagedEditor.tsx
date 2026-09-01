@@ -93,6 +93,7 @@ import {
 import { useLayoutPipeline } from './hooks/useLayoutPipeline';
 import type { ResidentFrameApplyResult } from './hooks/useDisplayList';
 import type { ResolveDisplayListQueries } from './hooks/displayListQueryEpochGate';
+import type { ResidentLayoutSource } from './hooks/useDisplayList';
 import { useRustMeasurement, type RustFontChainsProvider } from './hooks/useRustMeasurement';
 import type { YrsCoreSession } from './hooks/useYrsCoreSession';
 import { useSelectionOverlay } from './hooks/useSelectionOverlay';
@@ -278,6 +279,11 @@ export interface PagedEditorProps {
   onTotalPagesChange?: (totalPages: number) => void;
   /** Layout of each pass (null on reset) — canvas renderer plumbing. */
   onLayoutComputed?: (layout: Layout | null, engine?: YrsSession | null) => void;
+  /** Hands the document to a worker to lay out instead of paginating here. */
+  onResidentLayoutSource?: (
+    source: ResidentLayoutSource | null,
+    engine?: YrsSession | null
+  ) => void;
   /** One-call resident body-text edit supplied by the canvas frame owner. */
   applyResidentInput?: (text: string) => Promise<ResidentFrameApplyResult | null>;
   /** One-call resident body-text deletion supplied by the canvas frame owner. */
@@ -479,6 +485,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       onYrsTrackedChangesChange,
       onTotalPagesChange,
       onLayoutComputed,
+      onResidentLayoutSource,
       applyResidentInput,
       applyResidentDelete,
       hyperlinkPopupData,
@@ -652,6 +659,11 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       (nextLayout: Layout | null) => onLayoutComputed?.(nextLayout, yrsCore.session),
       [onLayoutComputed, yrsCore.session]
     );
+    const handleResidentLayoutSource = useCallback(
+      (source: ResidentLayoutSource | null) =>
+        onResidentLayoutSource?.(source, yrsCore.session),
+      [onResidentLayoutSource, yrsCore.session]
+    );
     const {
       layout,
       pageHeights,
@@ -678,6 +690,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       getScrollContainer,
       onTotalPagesChange,
       onLayoutComputed: publishResidentLayout,
+      onResidentLayoutSource: handleResidentLayoutSource,
       onAnchorPositionsChange,
     });
     runLayoutPipelineRef.current = yrsCore.session ? runLayoutPipeline : null;
