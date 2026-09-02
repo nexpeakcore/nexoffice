@@ -442,6 +442,7 @@ export function useRustDisplayList(
         if (!selection) return declineResidentInput('no selection');
         const startedAt = performance.now();
         const queuedAhead = worker.client.inFlight();
+        const stalled = watchMainThreadStall();
         // Profiling costs a few clock reads, so it is armed only after a
         // keystroke has already been slow: the next one then says which phase
         // spent the time, without every document paying to ask.
@@ -473,7 +474,7 @@ export function useRustDisplayList(
           residentPaintInflightRef.current -= 1;
         }
         if (!result.applied) return declineResidentInput('the worker could not apply it');
-        noteResidentInputCost(performance.now() - startedAt, result, queuedAhead);
+        noteResidentInputCost(performance.now() - startedAt, result, queuedAhead, stalled());
         const appliedAt = performance.now();
         const delta = decodeFrameDelta(result.frame);
         const decodedAt = performance.now();
@@ -1031,6 +1032,31 @@ const RESIDENT_INPUT_BUDGET_MS = 33;
 let profileNextResidentInput = false;
 
 /**
+ * The longest stretch this thread went without running a task while something
+ * was in flight. A round trip is only as quick as the thread that has to send
+ * it and receive it, so a worker that answers in 250ms inside a keystroke that
+ * takes two seconds means this thread was not free — and this says for how
+ * long, which the round trip itself cannot.
+ */
+function watchMainThreadStall(): () => number {
+  let longest = 0;
+  let last = performance.now();
+  let stopped = false;
+  const tick = (): void => {
+    if (stopped) return;
+    const now = performance.now();
+    longest = Math.max(longest, now - last);
+    last = now;
+    setTimeout(tick, 0);
+  };
+  setTimeout(tick, 0);
+  return () => {
+    stopped = true;
+    return longest;
+  };
+}
+
+/**
  * What this thread spends turning the worker's reply into painted pages. The
  * worker's own figure stops at the reply, so a keystroke that is slow while
  * the worker is fast has spent its time here — and the next keystroke waits
@@ -1062,7 +1088,8 @@ function noteResidentInputCost(
     replayedPages?: number;
     engineProfile?: YrsEngineApplyProfile;
   },
-  queuedAhead: number
+  queuedAhead: number,
+  stalledMs: number
 ): void {
   const phases = result.engineProfile;
   if (phases) {
@@ -1083,7 +1110,8 @@ function noteResidentInputCost(
       `${Math.round(result.engineMs ?? 0)}ms and replay ${Math.round(result.replayMs ?? 0)}ms ` +
       `over ${result.replayedPages ?? 0} pages, after waiting ` +
       `${Math.round(result.workerQueuedMs ?? 0)}ms for its turn there; ` +
-      `${queuedAhead} answered request(s) were outstanding)`
+      `${queuedAhead} answered request(s) were outstanding). ` +
+      `This thread went ${Math.round(stalledMs)}ms without running a task.`
   );
 }
 
