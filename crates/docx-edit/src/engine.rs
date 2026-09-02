@@ -3788,6 +3788,87 @@ mod tests {
         assert_eq!(slim, after, "the void pass leaves the same layout behind");
     }
 
+    /// What opening a document costs, split the way the worker does it.
+    /// `frame` is the interesting one: it is the whole document's display list,
+    /// built once, and the page window only narrows what is then encoded.
+    ///
+    /// Run it the way the product is built. `yrs-cursor` is off by default, so
+    /// without it this measures a seeding path nothing ships — 2061ms against
+    /// 280ms on the fixture, which is enough to point the whole investigation
+    /// at the wrong phase.
+    ///
+    ///   cargo test -p betteroffice-docx-edit --release --features yrs-cursor \
+    ///     --lib open_cost -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx"]
+    fn open_cost() {
+        const FONT: &[u8] =
+            include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        let bytes = std::fs::read(&path).expect("fixture");
+        docx_layout::clear_measure_fonts();
+        let font_id = docx_layout::register_measure_font(FONT).unwrap();
+        let request = serde_json::json!({
+            "bodyStory": "body",
+            "options": {"pageGap": 24},
+            "regions": {
+                "sections": [{
+                    "sectionId": "main",
+                    "pageSize": {"w": 816, "h": 1056},
+                    "margins": {"top": 96, "right": 96, "bottom": 96, "left": 96,
+                                "header": 48, "footer": 48}
+                }]
+            },
+            "notes": {"contents": []},
+            "measurement": {
+                "fontChains": {"calibri|0|0": [font_id], "calibri|0|1": [font_id],
+                               "calibri|1|0": [font_id]},
+                "defaults": {"fontSize": 24, "fontFamily": "Calibri"},
+                "authoritativeShaping": true
+            },
+            "renderEnv": {}
+        })
+        .to_string();
+
+        let elapsed = |at: std::time::Instant| at.elapsed().as_secs_f64() * 1000.0;
+        let engine = EngineSession::new(3002);
+        let started = std::time::Instant::now();
+        crate::seed_from_docx(engine.doc(), &bytes).expect("seed");
+        let seed_ms = elapsed(started);
+
+        let started = std::time::Instant::now();
+        engine.layout_document_with_regions_void(&request).unwrap();
+        let layout_ms = elapsed(started);
+
+        // The window the first frame carries, as the host now sends it.
+        engine.set_page_window(Some(0..12));
+        let mut phases = [0.0_f64; 3];
+        let mut phase = 0;
+        let mut at = std::time::Instant::now();
+        let frame_started = at;
+        let bytes = engine
+            .build_display_list_frame_observed("{}", 0, &mut || {
+                if phase < phases.len() {
+                    phases[phase] = at.elapsed().as_secs_f64() * 1000.0;
+                }
+                at = std::time::Instant::now();
+                phase += 1;
+            })
+            .unwrap();
+        let encode_ms = at.elapsed().as_secs_f64() * 1000.0;
+        let frame_ms = elapsed(frame_started);
+
+        println!("seed             {seed_ms:>8.1}ms");
+        println!("layout           {layout_ms:>8.1}ms");
+        println!("frame            {frame_ms:>8.1}ms");
+        println!("  display input  {:>8.1}ms", phases[0]);
+        println!("  display build  {:>8.1}ms", phases[1]);
+        println!("  finalize       {:>8.1}ms", phases[2]);
+        println!("  encode         {encode_ms:>8.1}ms");
+        println!("frame bytes      {:>8} KB", bytes.len() / 1024);
+    }
+
     /// What one keystroke costs a document that is already open, split by
     /// phase. `measure` is the interesting one: a keystroke changes one
     /// paragraph, so anything it spends proportional to the document is spent

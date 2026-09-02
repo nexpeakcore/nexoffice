@@ -1,4 +1,9 @@
 import {
+  nextPageWindow,
+  PAGE_WINDOW_MIN_PAGES,
+  type PageWindowRange,
+} from './pageWindow';
+import {
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -83,40 +88,7 @@ export function CanvasPagedArea({
   );
 }
 
-// Pages within this many pages of the viewport keep live bitmaps and the
-// positioned a11y mirror; everything farther keeps its canvas ELEMENT (stable
-// identity, exact geometry for pointer routing/overlays/scroll math) but
-// releases its backing store and drops to a text-only outline mirror. Page
-// structure and accessible text are never windowed away.
-const PAGE_WINDOW_BUFFER = 2;
-// Documents at or below this page count never window — zero behavior change
-// for short documents.
-const PAGE_WINDOW_MIN_PAGES = 4;
-// A page already mounted stays mounted until it drifts one page beyond the
-// mount band, so slow scrolling at a boundary cannot thrash mount/unmount.
-const PAGE_WINDOW_HYSTERESIS = 1;
 
-interface PageWindowRange {
-  start: number;
-  end: number;
-}
-
-function nextPageWindow(
-  previous: PageWindowRange | null,
-  firstVisible: number,
-  lastVisible: number,
-  totalPages: number
-): PageWindowRange {
-  const mountStart = Math.max(0, firstVisible - PAGE_WINDOW_BUFFER);
-  const mountEnd = Math.min(totalPages - 1, lastVisible + PAGE_WINDOW_BUFFER);
-  if (!previous) return { start: mountStart, end: mountEnd };
-  const keepStart = Math.max(0, mountStart - PAGE_WINDOW_HYSTERESIS);
-  const keepEnd = Math.min(totalPages - 1, mountEnd + PAGE_WINDOW_HYSTERESIS);
-  const start = Math.min(mountStart, Math.max(previous.start, keepStart));
-  const end = Math.max(mountEnd, Math.min(previous.end, keepEnd));
-  if (start === previous.start && end === previous.end) return previous;
-  return { start, end };
-}
 
 /** Replays display-list pages to canvas with accessibility mirrors. */
 export function CanvasPagesView({

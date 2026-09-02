@@ -120,6 +120,11 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
     progress('layingOut');
     session.layoutDocumentWithRegionsVoid(request.layoutInput);
     progress('laidOut');
+    // A document opens at its first page, so the first frame carries those.
+    // The view widens this the moment it knows its own viewport.
+    if (request.open.pageWindow) {
+      session.setPageWindow(request.open.pageWindow.start, request.open.pageWindow.count);
+    }
     const laidOutAt = performance.now();
     layoutRevision = 1;
     subscribe();

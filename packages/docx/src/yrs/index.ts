@@ -465,6 +465,13 @@ export interface YrsResidentWorkerOpen {
   fonts: Uint8Array[];
   /** Monotonic revision of the resident font set (bumped by register/clear). */
   fontsRevision: number;
+  /**
+   * Pages the first frame should carry content for. The view corrects this as
+   * soon as it knows its own viewport; without it the first frame is built for
+   * every page in the document, which on a long one costs more than laying the
+   * document out did.
+   */
+  pageWindow?: { start: number; count: number };
 }
 
 /**

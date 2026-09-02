@@ -1,3 +1,4 @@
+import { openingPageWindow } from '../pageWindow';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   buildRustDisplayFrame,
@@ -799,7 +800,11 @@ export function useRustDisplayList(
           console.warn('[CanvasRenderer] the region request changed; repaginating the document');
         }
         const workerFrame = opening
-          ? worker.open(hostEngine.residentWorkerOpen(), owned.layoutInput, extras)
+          ? worker.open(
+              { ...hostEngine.residentWorkerOpen(), pageWindow: openingPageWindow() },
+              owned.layoutInput,
+              extras
+            )
           : repaginating
             ? worker.relayout(
                 owned.layoutInput,
