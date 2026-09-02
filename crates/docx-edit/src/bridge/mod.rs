@@ -170,7 +170,6 @@ fn lower_story<T: ReadTxn>(
                         paragraph_drawings,
                         &values,
                         attributes,
-                        txn,
                         story_id,
                         env,
                         paragraph_pm_start,
@@ -1717,12 +1716,11 @@ fn push_text_chunks(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn flush_paragraph_parts<T: ReadTxn>(
+fn flush_paragraph_parts(
     mut raw_runs: Vec<RawRun>,
     drawings: Vec<DrawingMarker>,
     values: &BTreeMap<String, Any>,
     pilcrow_attributes: Option<&Attrs>,
-    txn: &T,
     story_id: &str,
     env: &RenderEnv,
     paragraph_pm_start: u64,
@@ -1734,7 +1732,6 @@ fn flush_paragraph_parts<T: ReadTxn>(
             raw_runs,
             values,
             pilcrow_attributes,
-            txn,
             story_id,
             env,
             paragraph_pm_start,
@@ -1759,7 +1756,6 @@ fn flush_paragraph_parts<T: ReadTxn>(
                 segment,
                 values,
                 pilcrow_attributes,
-                txn,
                 story_id,
                 env,
                 paragraph_pm_start + u64::from(segment_start),
@@ -1780,7 +1776,6 @@ fn flush_paragraph_parts<T: ReadTxn>(
             raw_runs,
             values,
             pilcrow_attributes,
-            txn,
             story_id,
             env,
             paragraph_pm_start + u64::from(segment_start),
@@ -1792,11 +1787,10 @@ fn flush_paragraph_parts<T: ReadTxn>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn flush_paragraph<T: ReadTxn>(
+fn flush_paragraph(
     mut raw_runs: Vec<RawRun>,
     values: &BTreeMap<String, Any>,
     pilcrow_attributes: Option<&Attrs>,
-    txn: &T,
     story_id: &str,
     env: &RenderEnv,
     paragraph_pm_start: u64,
