@@ -92,6 +92,7 @@ struct RegionFastPathState {
 struct ResidentLayoutInput {
     input: LayoutInput,
     block_fingerprints: Vec<u64>,
+    content_fingerprints: Vec<u64>,
 }
 
 #[derive(Serialize)]
@@ -299,6 +300,10 @@ struct PaginationState {
     layout: Option<Layout>,
     checkpoints: Vec<LayoutCheckpoint>,
     block_fingerprints: Vec<u64>,
+    /// Block content hashes, position-stripped, parallel to `block_fingerprints`
+    /// — which despite its name covers the block *and* its measurement. Empty
+    /// when the last pass did not compute them, so it is a cache, not a fact.
+    content_fingerprints: Vec<u64>,
     options_fingerprint: u64,
     rebuilt_page_start: usize,
     rebuilt_page_end: usize,
@@ -422,12 +427,37 @@ pub struct EngineSession {
 }
 
 fn hash_bytes(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    fold_bytes(0xcbf2_9ce4_8422_2325_u64, bytes)
+}
+
+fn fold_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
     for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
+}
+
+/// Folds a serializer's output into an FNV-1a state as it is produced, so
+/// hashing a block never materializes its JSON. Same bytes, same hash, without
+/// the buffer: a keystroke fingerprints megabytes of blocks.
+struct HashWriter(u64);
+
+impl std::io::Write for HashWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = fold_bytes(self.0, bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn hash_json<T: Serialize + ?Sized>(value: &T) -> Result<u64, String> {
+    let mut writer = HashWriter(0xcbf2_9ce4_8422_2325_u64);
+    serde_json::to_writer(&mut writer, value).map_err(|error| format!("fingerprint: {error}"))?;
+    Ok(writer.0)
 }
 
 fn strip_absolute_positions(value: &mut serde_json::Value) {
@@ -453,9 +483,7 @@ fn measured_fingerprint(measured: &MeasuredBlock) -> Result<u64, String> {
     let mut value = serde_json::to_value(measured)
         .map_err(|error| format!("fingerprint measured block: {error}"))?;
     strip_absolute_positions(&mut value);
-    serde_json::to_vec(&value)
-        .map(|bytes| hash_bytes(&bytes))
-        .map_err(|error| format!("fingerprint measured block: {error}"))
+    hash_json(&value)
 }
 
 fn measured_fingerprints(input: &LayoutInput) -> Result<Vec<u64>, String> {
@@ -466,9 +494,7 @@ fn block_fingerprint(block: &LayoutBlock) -> Result<u64, String> {
     let mut value = serde_json::to_value(block)
         .map_err(|error| format!("fingerprint layout block: {error}"))?;
     strip_absolute_positions(&mut value);
-    serde_json::to_vec(&value)
-        .map(|bytes| hash_bytes(&bytes))
-        .map_err(|error| format!("fingerprint layout block: {error}"))
+    hash_json(&value)
 }
 
 fn value_block_key(value: &serde_json::Value) -> Option<String> {
@@ -1298,7 +1324,7 @@ impl EngineSession {
     /// and `apply_input`.
     fn layout_document_value(&self, input: LayoutInput) -> Result<(), String> {
         let block_fingerprints = measured_fingerprints(&input)?;
-        self.layout_document_value_with_fingerprints(input, block_fingerprints)
+        self.layout_document_value_with_fingerprints(input, block_fingerprints, Vec::new())
     }
 
     /// Paginate a resident measured arena whose clean block fingerprints were
@@ -1308,6 +1334,7 @@ impl EngineSession {
         &self,
         mut input: LayoutInput,
         block_fingerprints: Vec<u64>,
+        content_fingerprints: Vec<u64>,
     ) -> Result<(), String> {
         if block_fingerprints.len() != input.measured.len() {
             return Err("resident pagination fingerprints do not match measured blocks".to_owned());
@@ -1369,6 +1396,7 @@ impl EngineSession {
         pagination.layout = Some(run.layout);
         pagination.checkpoints = run.checkpoints;
         pagination.block_fingerprints = block_fingerprints;
+        pagination.content_fingerprints = content_fingerprints;
         pagination.options_fingerprint = input_options_fingerprint;
         pagination.rebuilt_page_start = run.rebuilt_page_start;
         pagination.rebuilt_page_end = run.rebuilt_page_end;
@@ -1478,7 +1506,7 @@ impl EngineSession {
             &mut LayoutBlock,
         ) -> Result<BlockExtent, String>,
     ) -> Result<ResidentLayoutInput, String> {
-        let (previous, previous_fingerprints) = {
+        let (previous, previous_fingerprints, previous_content) = {
             let pagination = self.pagination.borrow();
             (
                 pagination
@@ -1486,6 +1514,7 @@ impl EngineSession {
                     .clone()
                     .ok_or_else(|| "resident pagination input is not built".to_owned())?,
                 pagination.block_fingerprints.clone(),
+                pagination.content_fingerprints.clone(),
             )
         };
         let paragraph_merge = blocks.len().checked_add(1) == Some(previous.measured.len());
@@ -1496,14 +1525,22 @@ impl EngineSession {
             return Err("resident pagination fingerprints are not built".to_owned());
         }
 
+        // Retained from last pass when it left one, so a keystroke hashes each
+        // block once rather than re-deriving what an unchanged block hashed to.
+        let previous_content = (previous_content.len() == previous.measured.len())
+            .then_some(previous_content)
+            .unwrap_or_else(|| vec![0; previous.measured.len()]);
         let mut previous_blocks = previous
             .measured
             .into_iter()
             .zip(previous_fingerprints)
+            .zip(previous_content)
+            .map(|((measured, fingerprint), content)| (measured, fingerprint, content))
             .peekable();
         let mut skipped_merged_paragraph = false;
         let mut measured = Vec::with_capacity(blocks.len());
         let mut block_fingerprints = Vec::with_capacity(blocks.len());
+        let mut content_fingerprints = Vec::with_capacity(blocks.len());
         let mut resident_measure_calls = 0_u64;
         let mut resident_reused_blocks = 0_u64;
         for (block_index, mut next_block) in blocks.into_iter().enumerate() {
@@ -1525,12 +1562,17 @@ impl EngineSession {
             {
                 return Err("resident plain-text input changed stable block identity".to_owned());
             }
-            let (previous_measured, previous_fingerprint) = previous_entry;
+            let (previous_measured, previous_fingerprint, previous_content) = previous_entry;
+            let next_content = block_fingerprint(&next_block)?;
+            let previous_content = match previous_content {
+                0 => block_fingerprint(&previous_measured.block)?,
+                cached => cached,
+            };
             let (Some((next_id, _)), Some((previous_id, _))) = (
                 paragraph_identity(&next_block),
                 paragraph_identity(&previous_measured.block),
             ) else {
-                if block_fingerprint(&next_block)? != block_fingerprint(&previous_measured.block)? {
+                if next_content != previous_content {
                     return Err(
                         "resident plain-text input changed a non-paragraph block".to_owned()
                     );
@@ -1540,6 +1582,7 @@ impl EngineSession {
                     measure: previous_measured.measure,
                 });
                 block_fingerprints.push(previous_fingerprint);
+                content_fingerprints.push(next_content);
                 resident_reused_blocks = resident_reused_blocks.wrapping_add(1);
                 continue;
             };
@@ -1547,12 +1590,13 @@ impl EngineSession {
             if key != block_key(previous_id) {
                 return Err("resident plain-text input changed stable block identity".to_owned());
             }
-            if block_fingerprint(&next_block)? == block_fingerprint(&previous_measured.block)? {
+            if next_content == previous_content {
                 measured.push(MeasuredBlock {
                     block: next_block,
                     measure: previous_measured.measure,
                 });
                 block_fingerprints.push(previous_fingerprint);
+                content_fingerprints.push(next_content);
                 resident_reused_blocks = resident_reused_blocks.wrapping_add(1);
                 continue;
             }
@@ -1564,10 +1608,11 @@ impl EngineSession {
                 measure,
             };
             block_fingerprints.push(measured_fingerprint(&measured_block)?);
+            content_fingerprints.push(block_fingerprint(&measured_block.block)?);
             measured.push(measured_block);
             resident_measure_calls = resident_measure_calls.wrapping_add(1);
         }
-        if let Some((removed, _)) = previous_blocks.next() {
+        if let Some((removed, _, _)) = previous_blocks.next() {
             if !paragraph_merge
                 || skipped_merged_paragraph
                 || paragraph_identity(&removed.block).is_none()
@@ -1594,6 +1639,7 @@ impl EngineSession {
                 options: previous.options,
             },
             block_fingerprints,
+            content_fingerprints,
         })
     }
 
@@ -1612,7 +1658,11 @@ impl EngineSession {
             return self.build_display_list_frame(&extras, expected_frame_epoch);
         }
         let resident = self.resident_layout_input(story)?;
-        self.layout_document_value_with_fingerprints(resident.input, resident.block_fingerprints)?;
+        self.layout_document_value_with_fingerprints(
+            resident.input,
+            resident.block_fingerprints,
+            resident.content_fingerprints,
+        )?;
         let extras = self
             .display
             .borrow()
@@ -1706,7 +1756,11 @@ impl EngineSession {
             Err(_) => return Ok(false),
         };
         phase(RegionResidentPhase::Measured);
-        self.layout_document_value_with_fingerprints(resident.input, resident.block_fingerprints)?;
+        self.layout_document_value_with_fingerprints(
+            resident.input,
+            resident.block_fingerprints,
+            resident.content_fingerprints,
+        )?;
         let mut pagination = self.pagination.borrow_mut();
         let layout = pagination
             .layout
@@ -1790,6 +1844,7 @@ impl EngineSession {
             self.layout_document_value_with_fingerprints(
                 resident.input,
                 resident.block_fingerprints,
+                resident.content_fingerprints,
             )?;
             let finished = now();
             profile.paginate_ms = finished - started;
@@ -3680,6 +3735,101 @@ mod tests {
         .unwrap();
         assert_eq!(slim, after, "the void pass leaves the same layout behind");
     }
+
+    /// What one keystroke costs a document that is already open, split by
+    /// phase. `measure` is the interesting one: a keystroke changes one
+    /// paragraph, so anything it spends proportional to the document is spent
+    /// deciding that the rest did not change.
+    ///
+    ///   cargo test -p betteroffice-docx-edit --release --lib keystroke_cost \
+    ///     -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx"]
+    fn keystroke_cost() {
+        const FONT: &[u8] =
+            include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        let bytes = std::fs::read(&path).expect("fixture");
+        docx_layout::clear_measure_fonts();
+        let font_id = docx_layout::register_measure_font(FONT).unwrap();
+        let request = serde_json::json!({
+            "bodyStory": "body",
+            "options": {"pageGap": 24},
+            "regions": {
+                "sections": [{
+                    "sectionId": "main",
+                    "pageSize": {"w": 816, "h": 1056},
+                    "margins": {"top": 96, "right": 96, "bottom": 96, "left": 96,
+                                "header": 48, "footer": 48}
+                }]
+            },
+            "notes": {"contents": []},
+            "measurement": {
+                "fontChains": {"calibri|0|0": [font_id], "calibri|0|1": [font_id],
+                               "calibri|1|0": [font_id]},
+                "defaults": {"fontSize": 24, "fontFamily": "Calibri"},
+                "authoritativeShaping": true
+            },
+            "renderEnv": {}
+        })
+        .to_string();
+
+        let engine = EngineSession::new(3001);
+        crate::seed_from_docx(engine.doc(), &bytes).expect("seed");
+        engine.layout_document_with_regions_void(&request).unwrap();
+        engine.build_display_list_frame("{}", 0).unwrap();
+
+        // A caret near the end, where a reader of a long document usually is.
+        let caret = engine
+            .doc()
+            .story_len("body")
+            .expect("story len")
+            .saturating_sub(1);
+        let blocks = engine.stats().lowered_block_count;
+
+        let mut totals = EngineApplyProfile::default();
+        const KEYSTROKES: usize = 8;
+        for _ in 0..KEYSTROKES {
+            engine
+                .doc()
+                .insert_text(
+                    &crate::EditCtx::local("", ""),
+                    crate::Position::new("body", caret),
+                    "x",
+                    crate::format::FormatPolicy::Inherit,
+                )
+                .expect("insert");
+            let mut clock = || {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs_f64()
+                    * 1000.0
+            };
+            let (_, profile) = engine
+                .apply_and_layout_profiled("body", 0, &mut clock)
+                .expect("apply");
+            totals.lower_ms += profile.lower_ms;
+            totals.measure_ms += profile.measure_ms;
+            totals.paginate_ms += profile.paginate_ms;
+            totals.display_ms += profile.display_ms;
+            totals.encode_ms += profile.encode_ms;
+        }
+        let per = |value: f64| value / KEYSTROKES as f64;
+        let stats = engine.stats();
+        println!("blocks           {blocks}");
+        println!("lower            {:>7.1}ms", per(totals.lower_ms));
+        println!("measure          {:>7.1}ms", per(totals.measure_ms));
+        println!("paginate         {:>7.1}ms", per(totals.paginate_ms));
+        println!("display          {:>7.1}ms", per(totals.display_ms));
+        println!("encode           {:>7.1}ms", per(totals.encode_ms));
+        println!(
+            "measured blocks  {} of {} reused",
+            stats.resident_measure_calls, stats.resident_reused_blocks
+        );
+    }
+
     /// What a resident worker pays to take a document over, measured the two
     /// ways it can: replaying the main thread's recorded lowering before the
     /// region layout (what `bootstrap` does), against letting the region
