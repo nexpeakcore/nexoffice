@@ -127,6 +127,30 @@ export type ResidentEngineWorkerRequestWithoutId = ResidentEngineWorkerRequest e
     : never
   : never;
 
+/**
+ * How far a long request has got. Opening a document is one message but many
+ * steps, and the host cannot otherwise tell a worker that is busy from one that
+ * is broken: a worker inside a wasm call answers nothing at all.
+ */
+export type ResidentEngineWorkerStage =
+  /** The request reached the worker thread — it exists and is running. */
+  | 'received'
+  /** The wasm module instantiated and a session exists. */
+  | 'sessionReady'
+  /** The document state is loaded and its fonts are registered. */
+  | 'stateLoaded'
+  /** Lowering, measuring and pagination have begun — one long wasm call
+   * during which the worker cannot answer anything, however healthy. */
+  | 'layingOut'
+  /** That call returned; the display list frame is being built. */
+  | 'laidOut';
+
+/** A sign of life, not a result: the request it names is still running. */
+export interface ResidentEngineWorkerProgress {
+  id: number;
+  progress: ResidentEngineWorkerStage;
+}
+
 export type ResidentEngineWorkerResponse =
   | {
       id: number;
@@ -160,3 +184,8 @@ export type ResidentEngineWorkerResponse =
       error: string;
       residentUnavailable?: boolean;
     };
+
+/** Everything the worker posts back: a result, or word that it is still going. */
+export type ResidentEngineWorkerMessage =
+  | ResidentEngineWorkerResponse
+  | ResidentEngineWorkerProgress;

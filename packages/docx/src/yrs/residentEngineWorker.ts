@@ -21,6 +21,7 @@ import { memoryTotalBytes } from '../diagnostics';
 import type {
   ResidentEngineWorkerRequest,
   ResidentEngineWorkerResponse,
+  ResidentEngineWorkerStage,
 } from './residentEngineWorkerProtocol';
 import {
   residentCaretDeviceRect,
@@ -92,11 +93,15 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
   }
   if (request.type === 'open') {
     destroySession();
+    const progress = (stage: ResidentEngineWorkerStage) =>
+      scope.postMessage({ id: request.id, progress: stage });
+    progress('received');
     // The worker is the origin of this document's layout, not a copy of it:
     // it lowers, measures and paginates once and nothing replays that work.
     // `bootstrap` below exists for the path where a main-thread replica laid
     // the document out first, which costs the document twice over.
     session = await createResidentEngineSession();
+    progress('sessionReady');
     session.loadState(request.open.state);
     session.clearFonts();
     for (const font of request.open.fonts) session.registerFont(font);
@@ -104,9 +109,13 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
     if (request.open.selection) {
       session.setSelection(request.open.selection.anchor, request.open.selection.head);
     }
+    progress('stateLoaded');
     // No render or measure inputs to replay: lowering and measuring happen
-    // here, inside this one region layout, and nowhere else.
+    // here, inside this one region layout, and nowhere else. Nothing can be
+    // said while it runs, so the host is told before and after.
+    progress('layingOut');
     session.layoutDocumentWithRegionsVoid(request.layoutInput);
+    progress('laidOut');
     layoutRevision = 1;
     subscribe();
     const started = performance.now();
@@ -123,13 +132,19 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
   }
   if (request.type === 'bootstrap') {
     destroySession();
+    const progress = (stage: ResidentEngineWorkerStage) =>
+      scope.postMessage({ id: request.id, progress: stage });
+    progress('received');
     // The worker is a genuine yrs peer. Reusing the main replica's client id
     // makes a fast structural input race overlap one client's clock range and
     // corrupt the update; a fresh id lets yrs merge queued/local operations
     // safely while the main replica applies worker updates with local origin.
     session = await createResidentEngineSession();
+    progress('sessionReady');
     hydrate(request.snapshot);
+    progress('stateLoaded');
     subscribe();
+    progress('layingOut');
     const started = performance.now();
     const frame = session.buildDisplayListFrame(request.extras, request.expectedFrameEpoch);
     await replyFrame(
