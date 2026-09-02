@@ -118,7 +118,7 @@ for (const character of text) {
     key: character,
   });
   await session.send('Input.dispatchKeyEvent', { type: 'keyUp', key: character });
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await new Promise((resolve) => setTimeout(resolve, Number(process.argv[4] ?? 1500)));
 }
 
 await new Promise((resolve) => setTimeout(resolve, 1500));

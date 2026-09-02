@@ -140,6 +140,18 @@ const EMPTY_DISPLAY_LIST_SNAPSHOT: RustDisplayListSnapshot = {
 };
 
 /**
+ * Raised when a worker that owned a document's layout is gone. It is not a
+ * failure to report: the host has been told to paginate on this thread, and
+ * that build is what paints.
+ */
+class ResidentLayoutHandedBackError extends Error {
+  constructor() {
+    super('the document went back to the main thread to be laid out');
+    this.name = 'ResidentLayoutHandedBackError';
+  }
+}
+
+/**
  * A document the worker is to lay out. Supplying this means the main thread
  * has seeded a replica and built the region request but has deliberately not
  * paginated, so there is no `Layout` on this side and never will be.
@@ -687,14 +699,10 @@ export function useRustDisplayList(
       // Losing this worker loses the only layout there is. The host has to
       // paginate on this thread before anything can be painted again, so tell
       // it rather than silently falling back to a build with no inputs.
-      const lost = (cause: unknown) => {
-        const nextError =
-          cause instanceof Error
-            ? cause
-            : new Error(`Resident engine worker failed: ${String(cause)}`);
+      const lost = (cause: unknown): never => {
         console.error(
           '[CanvasRenderer] The worker that owned this document is gone; the main thread has to lay it out',
-          nextError
+          cause
         );
         workerFallbackEngineRef.current = hostEngine;
         workerOwnedEngineRef.current = null;
@@ -706,7 +714,10 @@ export function useRustDisplayList(
         setWorkerSurfacesActive(false);
         setWorkerPresentationActive(false);
         owned.onWorkerLost();
-        throw nextError;
+        // Not the document's failure: the host has been told to paginate on
+        // this thread, and that build is what paints. Reporting an error here
+        // would replace a document that is about to appear with a dead end.
+        throw new ResidentLayoutHandedBackError();
       };
       try {
         if (workerRef.current?.engine !== hostEngine) {
@@ -771,12 +782,7 @@ export function useRustDisplayList(
           })
           .catch(lost);
       } catch (error) {
-        pending = Promise.reject(error);
-        try {
-          lost(error);
-        } catch {
-          // `lost` rethrows so the promise chain above reports it once.
-        }
+        pending = (async () => lost(error))();
       }
     } else if (!overrides?.build && probe && canUseResidentEngineWorker()) {
       const hostEngine = residentEngine;
@@ -909,7 +915,10 @@ export function useRustDisplayList(
           // The session was destroyed under this build — the host swapped
           // documents. Surfacing it would blame the document now opening for
           // the previous one going away.
-          isSupersededSessionError(error)
+          isSupersededSessionError(error) ||
+          // The document went back to this thread to be laid out; the build
+          // that replaces this one is already scheduled.
+          error instanceof ResidentLayoutHandedBackError
         ) {
           return;
         }
