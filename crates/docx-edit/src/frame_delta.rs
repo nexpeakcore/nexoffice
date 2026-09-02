@@ -6,6 +6,7 @@
 //! counts and byte lengths; the browser decoder rejects any mismatch before a
 //! page reaches canvas replay.
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
@@ -56,6 +57,11 @@ pub struct FramePageSnapshot {
     /// identity is unchanged — cloning a snapshot never copies the id array.
     pub primitive_ids: Rc<[u64]>,
     pub positions: Vec<PrimitivePositionSnapshot>,
+    /// The host was sent this page's geometry without its content, because the
+    /// page was outside the window it asked for. A page that crosses the
+    /// window boundary has to be prepared afresh even when pagination left it
+    /// alone: what the host holds is changing, not what the page says.
+    pub stripped: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -78,7 +84,7 @@ pub struct FrameEpochs {
 #[derive(Debug)]
 struct PreparedPage<'a> {
     snapshot: FramePageSnapshot,
-    page: &'a DisplayPage,
+    page: Cow<'a, DisplayPage>,
     is_new: bool,
     moved: bool,
 }
@@ -120,7 +126,20 @@ pub fn encode_frame_delta(
     full: bool,
     next_page_id: &mut u64,
 ) -> Result<(Vec<u8>, Vec<FramePageSnapshot>), String> {
-    encode_frame_delta_inner(list, previous, epochs, full, next_page_id, None)
+    encode_frame_delta_inner(list, previous, epochs, full, next_page_id, None, None)
+}
+
+/// [`encode_frame_delta`] sending only the window's pages whole; the rest
+/// travel as geometry without content.
+pub fn encode_frame_delta_windowed(
+    list: &DisplayList,
+    previous: &[FramePageSnapshot],
+    epochs: FrameEpochs,
+    full: bool,
+    next_page_id: &mut u64,
+    window: Option<Range<usize>>,
+) -> Result<(Vec<u8>, Vec<FramePageSnapshot>), String> {
+    encode_frame_delta_inner(list, previous, epochs, full, next_page_id, None, window)
 }
 
 /// Incremental encoder that fully prepares only display-rebuilt pages. Clean
@@ -141,6 +160,27 @@ pub fn encode_frame_delta_incremental(
         false,
         next_page_id,
         Some(rebuilt_pages),
+        None,
+    )
+}
+
+/// [`encode_frame_delta_incremental`] sending only the window's pages whole.
+pub fn encode_frame_delta_incremental_windowed(
+    list: &DisplayList,
+    previous: &[FramePageSnapshot],
+    epochs: FrameEpochs,
+    next_page_id: &mut u64,
+    rebuilt_pages: Range<usize>,
+    window: Option<Range<usize>>,
+) -> Result<(Vec<u8>, Vec<FramePageSnapshot>), String> {
+    encode_frame_delta_inner(
+        list,
+        previous,
+        epochs,
+        false,
+        next_page_id,
+        Some(rebuilt_pages),
+        window,
     )
 }
 
@@ -151,8 +191,15 @@ fn encode_frame_delta_inner(
     full: bool,
     next_page_id: &mut u64,
     rebuilt_pages: Option<Range<usize>>,
+    window: Option<Range<usize>>,
 ) -> Result<(Vec<u8>, Vec<FramePageSnapshot>), String> {
-    let prepared = prepare_pages(list, previous, next_page_id, rebuilt_pages.as_ref())?;
+    let prepared = prepare_pages(
+        list,
+        previous,
+        next_page_id,
+        rebuilt_pages.as_ref(),
+        window.as_ref(),
+    )?;
     let next_ids: HashSet<u64> = prepared.iter().map(|page| page.snapshot.page_id).collect();
     let previous_by_id: HashMap<u64, &FramePageSnapshot> =
         previous.iter().map(|old| (old.page_id, old)).collect();
@@ -196,7 +243,7 @@ fn encode_frame_delta_inner(
     let mut strings = BTreeSet::new();
     for op in &ops {
         if let PageOp::Upsert(page) = op {
-            collect_page_strings(page.page, &mut strings)?;
+            collect_page_strings(&page.page, &mut strings)?;
         }
     }
     let strings: Vec<String> = strings.into_iter().collect();
@@ -252,7 +299,7 @@ fn encode_frame_delta_inner(
                 }
 
                 let payload_offset = out.len();
-                encode_page(page.page, &string_ids, &mut out)?;
+                encode_page(&page.page, &string_ids, &mut out)?;
                 let payload_len = out.len() - payload_offset;
                 patch_u32(
                     &mut out,
@@ -397,11 +444,27 @@ fn encode_frame_delta_inner(
     Ok((out, next_snapshots))
 }
 
+/// A page's geometry without its content: what the host is sent for a page it
+/// is not looking at. Everything interaction and scrolling read off a page —
+/// its size, its section and page-number state, its bounds — stays; only the
+/// primitives, which are all of the weight, go.
+fn strip_page(page: &DisplayPage) -> DisplayPage {
+    DisplayPage {
+        primitives: Vec::new(),
+        page_borders: Vec::new(),
+        header: None,
+        footer: None,
+        note_areas: Vec::new(),
+        ..page.clone()
+    }
+}
+
 fn prepare_pages<'a>(
     list: &'a DisplayList,
     previous: &[FramePageSnapshot],
     next_page_id: &mut u64,
     rebuilt_pages: Option<&Range<usize>>,
+    window: Option<&Range<usize>>,
 ) -> Result<Vec<PreparedPage<'a>>, String> {
     let anchors = page_anchors(list);
     // Anchors are unique within one snapshot list (page_anchors suffixes an
@@ -451,9 +514,18 @@ fn prepare_pages<'a>(
                 .ok_or_else(|| "FrameDelta page id space exhausted".to_owned())?;
             (*next_page_id, true, false)
         };
+        let stripped = window.is_some_and(|window| !window.contains(&index));
+        let page: Cow<'a, DisplayPage> = if stripped {
+            Cow::Owned(strip_page(page))
+        } else {
+            Cow::Borrowed(page)
+        };
+        let page = &page;
         let positions = primitive_positions(page);
-        let full_prepare =
-            is_new || rebuilt_pages.is_none_or(|rebuilt_pages| rebuilt_pages.contains(&index));
+        let window_changed = matched.is_some_and(|old| old.stripped != stripped);
+        let full_prepare = is_new
+            || window_changed
+            || rebuilt_pages.is_none_or(|rebuilt_pages| rebuilt_pages.contains(&index));
         let (fingerprint, visual_fingerprint, primitive_ids) = if full_prepare {
             let hashes = hash_page(page)?;
             let primitive_ids: Rc<[u64]> = primitive_ids(page, page_id).into();
@@ -480,8 +552,9 @@ fn prepare_pages<'a>(
                 page_index,
                 primitive_ids,
                 positions,
+                stripped,
             },
-            page,
+            page: page.clone(),
             is_new,
             moved,
         });
@@ -1154,6 +1227,84 @@ mod tests {
         primitive["fragmentDocStart"] = serde_json::json!(doc_start - 1);
         primitive["fragmentDocEnd"] = serde_json::json!(doc_start + 5);
         serde_json::from_value(value).unwrap()
+    }
+
+    /// Every page reaches the host, so scroll geometry and pointer routing see
+    /// the whole document; only the content of pages nobody is reading stops
+    /// crossing.
+    #[test]
+    fn a_window_sends_geometry_for_the_pages_outside_it() {
+        let list = list_pages(&[("P1", "one"), ("P2", "two"), ("P3", "three")]);
+        let epochs = FrameEpochs {
+            doc_epoch: 1,
+            layout_epoch: 1,
+            frame_epoch: 1,
+            base_frame_epoch: 0,
+        };
+        let mut next_id = 0;
+        let (whole, _) = encode_frame_delta(&list, &[], epochs, true, &mut next_id).unwrap();
+        let mut next_id = 0;
+        let (windowed, snapshots) =
+            encode_frame_delta_windowed(&list, &[], epochs, true, &mut next_id, Some(1..2))
+                .unwrap();
+
+        assert!(
+            windowed.len() < whole.len(),
+            "a window must weigh less than the whole document: {} against {}",
+            windowed.len(),
+            whole.len()
+        );
+        assert_eq!(
+            snapshots
+                .iter()
+                .map(|page| page.stripped)
+                .collect::<Vec<_>>(),
+            vec![true, false, true],
+            "only the window's page keeps its content"
+        );
+        assert_eq!(snapshots.len(), 3, "every page still reaches the host");
+    }
+
+    /// A page crossing the boundary has to be prepared afresh even when
+    /// pagination left it alone: what the host holds is changing.
+    #[test]
+    fn moving_the_window_resends_the_pages_that_crossed_it() {
+        let list = list_pages(&[("P1", "one"), ("P2", "two"), ("P3", "three")]);
+        let epochs = FrameEpochs {
+            doc_epoch: 1,
+            layout_epoch: 1,
+            frame_epoch: 1,
+            base_frame_epoch: 0,
+        };
+        let mut next_id = 0;
+        let (_, first) =
+            encode_frame_delta_windowed(&list, &[], epochs, true, &mut next_id, Some(0..1))
+                .unwrap();
+        let epochs = FrameEpochs {
+            base_frame_epoch: 1,
+            frame_epoch: 2,
+            ..epochs
+        };
+        let (_, second) =
+            encode_frame_delta_windowed(&list, &first, epochs, false, &mut next_id, Some(2..3))
+                .unwrap();
+
+        assert_eq!(
+            second.iter().map(|page| page.stripped).collect::<Vec<_>>(),
+            vec![true, true, false]
+        );
+        assert_ne!(
+            first[0].fingerprint, second[0].fingerprint,
+            "the page that left the window is not what the host was holding"
+        );
+        assert_ne!(
+            first[2].fingerprint, second[2].fingerprint,
+            "the page that entered it is not either"
+        );
+        assert_eq!(
+            first[0].page_id, second[0].page_id,
+            "a page keeps its identity across a window move"
+        );
     }
 
     fn u32_at(bytes: &[u8], offset: usize) -> u32 {

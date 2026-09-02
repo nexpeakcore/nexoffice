@@ -31,7 +31,8 @@ use yrs::Subscription;
 use crate::EditingDoc;
 use crate::bridge::{BridgeError, RenderEnv, yrs_doc_to_layout_blocks};
 use crate::frame_delta::{
-    FrameEpochs, FramePageSnapshot, encode_frame_delta, encode_frame_delta_incremental,
+    FrameEpochs, FramePageSnapshot, encode_frame_delta_incremental_windowed,
+    encode_frame_delta_windowed,
 };
 
 #[derive(Debug)]
@@ -322,6 +323,11 @@ struct DisplayState {
     extras_json: Option<String>,
     incremental_display_builds: u64,
     rebuilt_display_pages: u64,
+    /// The pages the host is looking at. Pages outside it are sent as
+    /// geometry without content: the host keeps every page, so scrolling and
+    /// pointer routing are unaffected, but a document's weight stops being
+    /// something both sides carry in full. `None` sends everything.
+    page_window: Option<std::ops::Range<usize>>,
 }
 
 /// Engine observability snapshot.
@@ -1833,6 +1839,17 @@ impl EngineSession {
     /// Build the retained display list and return a binary FrameDelta v1.
     /// `expected_frame_epoch` is the last frame the host actually applied. A
     /// mismatch automatically widens to a full recovery frame.
+    /// The pages the host is looking at, so pages outside them travel as
+    /// geometry alone. Every page still reaches the host, so scroll geometry
+    /// and pointer routing see the whole document; what stops crossing is the
+    /// content of pages nobody is reading. `None` sends everything.
+    ///
+    /// The next frame carries the change: a page entering the window arrives
+    /// with its content, one leaving is replaced by its geometry.
+    pub fn set_page_window(&self, window: Option<std::ops::Range<usize>>) {
+        self.display.borrow_mut().page_window = window;
+    }
+
     pub fn build_display_list_frame(
         &self,
         extras_json: &str,
@@ -1930,6 +1947,7 @@ impl EngineSession {
         // Split borrows: the encoder reads the retained list and the previous
         // snapshots in place — no per-frame deep clone of the snapshot set.
         let display = &mut *display;
+        let window = display.page_window.clone();
         let previous_pages = &display.pages;
         let list = display
             .list
@@ -1943,15 +1961,23 @@ impl EngineSession {
         };
         let (bytes, pages) =
             if incremental_build && !full && previous_pages.len() == list.pages.len() {
-                encode_frame_delta_incremental(
+                encode_frame_delta_incremental_windowed(
                     list,
                     previous_pages,
                     epochs,
                     &mut next_page_id,
                     rebuilt_page_start..rebuilt_page_end,
+                    window,
                 )?
             } else {
-                encode_frame_delta(list, previous_pages, epochs, full, &mut next_page_id)?
+                encode_frame_delta_windowed(
+                    list,
+                    previous_pages,
+                    epochs,
+                    full,
+                    &mut next_page_id,
+                    window,
+                )?
             };
         display.pages = pages;
         display.next_page_id = next_page_id;

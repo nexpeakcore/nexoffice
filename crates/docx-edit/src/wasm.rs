@@ -1110,6 +1110,18 @@ impl EditSession {
             .map_err(|error| JsValue::from_str(&error))
     }
 
+    /// The page range the host is looking at. Pages outside it travel as
+    /// geometry alone, so a long document's weight stops being something both
+    /// threads carry in full. A negative count clears the window and sends
+    /// every page whole.
+    pub fn set_page_window(&self, start: i32, count: i32) {
+        let window = (start >= 0 && count >= 0).then(|| {
+            let start = start as usize;
+            start..start.saturating_add(count as usize)
+        });
+        self.engine.set_page_window(window);
+    }
+
     /// Binary FrameDelta v1 display output. The returned `Vec<u8>` is exposed
     /// by wasm-bindgen as a transferable-friendly `Uint8Array`.
     pub fn build_display_list_frame(
