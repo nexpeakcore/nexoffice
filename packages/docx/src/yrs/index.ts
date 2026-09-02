@@ -32,6 +32,7 @@ export {
   type ResidentEngineWorkerFrame,
   type ResidentEngineOffscreenPage,
 } from './residentEngineWorkerClient';
+export type { YrsOpenProfile } from './residentEngineWorkerProtocol';
 export {
   residentCaretSnapshotForFrame,
   residentCaretDeviceRect,

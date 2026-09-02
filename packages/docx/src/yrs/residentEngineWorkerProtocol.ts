@@ -145,6 +145,24 @@ export type ResidentEngineWorkerStage =
   /** That call returned; the display list frame is being built. */
   | 'laidOut';
 
+/**
+ * Where opening a document went, measured in the worker that does the work.
+ *
+ * A keystroke has had a phase breakdown for a while, which is the only reason
+ * its cost could be attributed and cut. Opening had none: the host could see
+ * that a document took seconds and not which part of it did.
+ */
+export interface YrsOpenProfile {
+  /** Instantiating the editing core and creating a session. */
+  sessionMs: number;
+  /** Decoding the document state and registering its fonts. */
+  loadMs: number;
+  /** Lowering, measuring and paginating the whole document. */
+  layoutMs: number;
+  /** Building the first display list and encoding its frame. */
+  frameMs: number;
+}
+
 /** A sign of life, not a result: the request it names is still running. */
 export interface ResidentEngineWorkerProgress {
   id: number;
@@ -164,6 +182,8 @@ export type ResidentEngineWorkerResponse =
       /** The worker clock when the request arrived, for host-side comparison. */
       workerArrivedAt?: number;
       engineProfile?: YrsEngineApplyProfile;
+      /** Present on the reply to `open` and `bootstrap`. */
+      openProfile?: YrsOpenProfile;
       caret?: YrsResidentCaretSnapshot;
       selection?: YrsSelection | null;
       /** The presented frame carries the worker-painted caret line. */

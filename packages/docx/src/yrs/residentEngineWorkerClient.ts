@@ -13,6 +13,7 @@ import type {
   ResidentEngineWorkerRequestWithoutId,
   ResidentEngineWorkerResponse,
   ResidentEngineWorkerStage,
+  YrsOpenProfile,
 } from './residentEngineWorkerProtocol';
 import { residentWorkerSilenceBudgetMs } from './residentWorkerDeadline';
 
@@ -24,6 +25,8 @@ export interface ResidentEngineWorkerFrame {
   /** How long the request waited inside the worker before it was handled. */
   workerQueuedMs: number;
   engineProfile?: YrsEngineApplyProfile;
+  /** Present on the reply to `open` and `bootstrap`. */
+  openProfile?: YrsOpenProfile;
   caret: YrsResidentCaretSnapshot;
   selection: YrsSelection | null;
   /** The presented frame carries the worker-painted caret line. */
@@ -465,6 +468,7 @@ function frameResult(
     workerTotalMs: response.workerTotalMs ?? 0,
     workerQueuedMs: response.workerQueuedMs ?? 0,
     engineProfile: response.engineProfile,
+    openProfile: response.openProfile,
     caret: response.caret,
     selection: response.selection,
     caretPainted: response.caretPainted ?? false,
