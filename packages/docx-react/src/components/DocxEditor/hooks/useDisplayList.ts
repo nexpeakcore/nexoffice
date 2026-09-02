@@ -441,6 +441,7 @@ export function useRustDisplayList(
         const selection = worker.engine.selection();
         if (!selection) return declineResidentInput('no selection');
         const startedAt = performance.now();
+        const queuedAhead = worker.client.inFlight();
         // Profiling costs a few clock reads, so it is armed only after a
         // keystroke has already been slow: the next one then says which phase
         // spent the time, without every document paying to ask.
@@ -472,7 +473,7 @@ export function useRustDisplayList(
           residentPaintInflightRef.current -= 1;
         }
         if (!result.applied) return declineResidentInput('the worker could not apply it');
-        noteResidentInputCost(performance.now() - startedAt, result);
+        noteResidentInputCost(performance.now() - startedAt, result, queuedAhead);
         const delta = decodeFrameDelta(result.frame);
         suppressWorkerInvalidationRef.current += 1;
         try {
@@ -721,6 +722,13 @@ export function useRustDisplayList(
           !opening &&
           workerPresentationActiveRef.current &&
           paintedCaretMachine.shouldPaint(performance.now());
+        if (!opening && residentPaintInflightRef.current > 0) {
+          // A rebuild queued behind a keystroke delays the keystroke's own
+          // reply by however long it takes, and the worker answers in order.
+          console.warn(
+            '[CanvasRenderer] a display-list rebuild was queued while a keystroke was in flight'
+          );
+        }
         const repaginating = !opening && workerLayoutInputRef.current !== owned.layoutInput;
         if (repaginating) {
           // Not a keystroke's cost. Seeing this per keystroke means something
@@ -1027,7 +1035,8 @@ function noteResidentInputCost(
     replayMs?: number;
     replayedPages?: number;
     engineProfile?: YrsEngineApplyProfile;
-  }
+  },
+  queuedAhead: number
 ): void {
   const phases = result.engineProfile;
   if (phases) {
@@ -1046,7 +1055,8 @@ function noteResidentInputCost(
     `[CanvasRenderer] resident keystroke took ${Math.round(totalMs)}ms ` +
       `(worker ${Math.round(result.workerTotalMs ?? 0)}ms, of which engine ` +
       `${Math.round(result.engineMs ?? 0)}ms and replay ${Math.round(result.replayMs ?? 0)}ms ` +
-      `over ${result.replayedPages ?? 0} pages)`
+      `over ${result.replayedPages ?? 0} pages; ${queuedAhead} request(s) were already ` +
+      `waiting on the worker)`
   );
 }
 

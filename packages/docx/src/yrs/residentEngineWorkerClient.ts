@@ -227,6 +227,11 @@ export class ResidentEngineWorkerClient {
     return result;
   }
 
+  /** Requests posted and not yet answered — what a new one waits behind. */
+  inFlight(): number {
+    return this.pending.size;
+  }
+
   async applyInput(
     text: string,
     selection: YrsSelection,
