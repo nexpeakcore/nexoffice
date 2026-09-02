@@ -3789,8 +3789,22 @@ mod tests {
     }
 
     /// What opening a document costs, split the way the worker does it.
-    /// `frame` is the interesting one: it is the whole document's display list,
-    /// built once, and the page window only narrows what is then encoded.
+    ///
+    /// `frame` is the interesting one, and inside it `display input`, which on
+    /// the fixture is 578ms of a 639ms frame. It is not building anything: it
+    /// converts the engine's typed document into the display list's own
+    /// `*In` mirror of the same shapes by serializing it to JSON and parsing it
+    /// back. Attributed once, so the next person need not:
+    ///
+    ///   layout           10,866 KB parsed in 13.8ms  (serde skips what the
+    ///                                                 mirror does not declare)
+    ///   2753 blocks      107,091 KB in 552.8ms       (serialize 155, parse 410)
+    ///     of which block   9,194 KB
+    ///     of which measure 97,897 KB                 (91% — typeset advances)
+    ///
+    /// So the cost is not spread across the 87 mirror types: it is the `measure`
+    /// field of every block. `MeasureIn` and its extents mirror `BlockExtent`,
+    /// which already derives `Deserialize` — 78 mentions to move over.
     ///
     /// Run it the way the product is built. `yrs-cursor` is off by default, so
     /// without it this measures a seeding path nothing ships — 2061ms against
