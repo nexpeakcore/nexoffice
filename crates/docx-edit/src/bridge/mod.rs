@@ -162,10 +162,13 @@ fn lower_story<T: ReadTxn>(
                     at_block_boundary = false;
                 }
                 Out::YMap(pilcrow) if is_pilcrow(&pilcrow, txn) => {
+                    // One read of the pilcrow's properties serves the paragraph
+                    // and the section break that may follow it.
+                    let values = pilcrow_values(&pilcrow, txn);
                     let paragraph_blocks = flush_paragraph_parts(
                         paragraph_runs,
                         paragraph_drawings,
-                        &pilcrow,
+                        &values,
                         attributes,
                         txn,
                         story_id,
@@ -177,7 +180,6 @@ fn lower_story<T: ReadTxn>(
                     pm_cursor = paragraph_pm_start + u64::from(paragraph_pm_units) + 2;
                     blocks.extend(paragraph_blocks);
                     // Section properties emit a break after the paragraph.
-                    let values = pilcrow_values(&pilcrow, txn);
                     if let Some(section_break) = section_break_block(&values, &mut section_margins)
                     {
                         blocks.push(LayoutBlock::SectionBreak(section_break));
@@ -1718,7 +1720,7 @@ fn push_text_chunks(
 fn flush_paragraph_parts<T: ReadTxn>(
     mut raw_runs: Vec<RawRun>,
     drawings: Vec<DrawingMarker>,
-    pilcrow: &MapRef,
+    values: &BTreeMap<String, Any>,
     pilcrow_attributes: Option<&Attrs>,
     txn: &T,
     story_id: &str,
@@ -1730,7 +1732,7 @@ fn flush_paragraph_parts<T: ReadTxn>(
     if drawings.is_empty() {
         return vec![LayoutBlock::Paragraph(flush_paragraph(
             raw_runs,
-            pilcrow,
+            values,
             pilcrow_attributes,
             txn,
             story_id,
@@ -1755,7 +1757,7 @@ fn flush_paragraph_parts<T: ReadTxn>(
             }
             blocks.push(LayoutBlock::Paragraph(flush_paragraph(
                 segment,
-                pilcrow,
+                values,
                 pilcrow_attributes,
                 txn,
                 story_id,
@@ -1776,7 +1778,7 @@ fn flush_paragraph_parts<T: ReadTxn>(
         }
         blocks.push(LayoutBlock::Paragraph(flush_paragraph(
             raw_runs,
-            pilcrow,
+            values,
             pilcrow_attributes,
             txn,
             story_id,
@@ -1792,7 +1794,7 @@ fn flush_paragraph_parts<T: ReadTxn>(
 #[allow(clippy::too_many_arguments)]
 fn flush_paragraph<T: ReadTxn>(
     mut raw_runs: Vec<RawRun>,
-    pilcrow: &MapRef,
+    values: &BTreeMap<String, Any>,
     pilcrow_attributes: Option<&Attrs>,
     txn: &T,
     story_id: &str,
@@ -1801,14 +1803,15 @@ fn flush_paragraph<T: ReadTxn>(
     paragraph_pm_units: u32,
     list_state: &mut ListState,
 ) -> ParagraphBlock {
-    let values = pilcrow_values(pilcrow, txn);
     let para_id = value_string(values.get("paraId")).unwrap_or_default();
-    let generated_prefix = format!("{story_id}:p");
+    // Peeled rather than formatted: the prefix is built once per paragraph in a
+    // document, and a lowering pass rebuilds every paragraph.
     let para_id_is_generated = para_id
-        .strip_prefix(&generated_prefix)
+        .strip_prefix(story_id)
+        .and_then(|rest| rest.strip_prefix(":p"))
         .is_some_and(|suffix| suffix.parse::<usize>().is_ok());
-    let style_id = paragraph_style_id(&values);
-    let defaults = paragraph_run_defaults(&values);
+    let style_id = paragraph_style_id(values);
+    let defaults = paragraph_run_defaults(values);
 
     for run in &mut raw_runs {
         apply_run_defaults(&mut run.formatting, &defaults);
@@ -1829,7 +1832,7 @@ fn flush_paragraph<T: ReadTxn>(
         para_id: (!para_id.is_empty() && !para_id_is_generated).then_some(para_id),
         runs,
         attrs: Some(lower_paragraph_attrs(
-            &values,
+            values,
             pilcrow_attributes,
             env,
             list_state,
@@ -3198,6 +3201,58 @@ mod tests {
     use crate::{EditCtx, FormatPolicy, Position, RawOp, SimpleFormat, StoryRange};
 
     const DATE: &str = "2026-07-13T12:00:00Z";
+
+    /// Where lowering a whole story spends its time. A keystroke re-lowers
+    /// everything, so each part here is paid on every key.
+    ///
+    ///   cargo test -p betteroffice-docx-edit --release --lib lowering_cost \
+    ///     -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx"]
+    fn lowering_cost() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        let bytes = std::fs::read(&path).expect("fixture");
+        let doc = EditingDoc::new(4001);
+        crate::seed_from_docx(&doc, &bytes).expect("seed");
+        let env = RenderEnv::default();
+
+        let elapsed = |started: std::time::Instant| started.elapsed().as_secs_f64() * 1000.0;
+        const ROUNDS: usize = 5;
+        let (mut diff_ms, mut comments_ms, mut whole_ms) = (0.0, 0.0, 0.0);
+        let mut diff_entries = 0;
+        let mut block_count = 0;
+        for _ in 0..ROUNDS {
+            let txn = doc.yrs_doc().transact();
+            let story = story_ref(&txn, "body").unwrap();
+            let started = std::time::Instant::now();
+            let entries: Vec<_> = story.diff(&txn, YChange::identity);
+            diff_ms += elapsed(started);
+            diff_entries = entries.len();
+            drop(entries);
+
+            let started = std::time::Instant::now();
+            let intervals = resolve_comment_intervals(&txn, "body", &env).unwrap();
+            comments_ms += elapsed(started);
+            drop(intervals);
+            drop(txn);
+
+            let started = std::time::Instant::now();
+            let blocks = yrs_doc_to_layout_blocks(&doc, "body", &env).unwrap();
+            whole_ms += elapsed(started);
+            block_count = blocks.len();
+        }
+        let per = |value: f64| value / ROUNDS as f64;
+        println!("blocks              {block_count}");
+        println!("diff entries        {diff_entries}");
+        println!("yrs diff walk       {:>7.1}ms", per(diff_ms));
+        println!("comment intervals   {:>7.1}ms", per(comments_ms));
+        println!("whole lowering      {:>7.1}ms", per(whole_ms));
+        println!(
+            "building blocks     {:>7.1}ms",
+            per(whole_ms) - per(diff_ms) - per(comments_ms)
+        );
+    }
 
     fn any_map(entries: impl IntoIterator<Item = (&'static str, Any)>) -> Any {
         Any::Map(Arc::new(
