@@ -29,7 +29,7 @@ use serde::Serialize;
 use yrs::Subscription;
 
 use crate::EditingDoc;
-use crate::bridge::{BridgeError, RenderEnv, yrs_doc_to_layout_blocks};
+use crate::bridge::{BridgeError, RenderEnv, yrs_doc_to_lowered_blocks};
 use crate::frame_delta::{
     FrameEpochs, FramePageSnapshot, encode_frame_delta_incremental_windowed,
     encode_frame_delta_windowed,
@@ -40,6 +40,9 @@ struct LoweredStory {
     doc_epoch: u64,
     env: RenderEnv,
     blocks: Vec<LayoutBlock>,
+    /// Cheap identity per block, from the yrs data it was lowered from. `None`
+    /// where the block has no such identity — see `LoweredBlocks`.
+    content_keys: Vec<Option<u64>>,
     /// Lazily serialized layout blocks.
     serialized_blocks: Option<String>,
 }
@@ -88,11 +91,20 @@ struct RegionFastPathState {
     notes_clear: bool,
 }
 
+/// How a block is recognised across two lowering passes. The tag matters: a
+/// key describes the data a block was lowered from, a fingerprint the block
+/// itself, and the two are never equal for the same block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockIdentity {
+    Key(u64),
+    Fingerprint(u64),
+}
+
 #[derive(Debug)]
 struct ResidentLayoutInput {
     input: LayoutInput,
     block_fingerprints: Vec<u64>,
-    content_fingerprints: Vec<u64>,
+    content_keys: Vec<Option<BlockIdentity>>,
 }
 
 #[derive(Serialize)]
@@ -300,10 +312,10 @@ struct PaginationState {
     layout: Option<Layout>,
     checkpoints: Vec<LayoutCheckpoint>,
     block_fingerprints: Vec<u64>,
-    /// Block content hashes, position-stripped, parallel to `block_fingerprints`
-    /// — which despite its name covers the block *and* its measurement. Empty
-    /// when the last pass did not compute them, so it is a cache, not a fact.
-    content_fingerprints: Vec<u64>,
+    /// Per-block identity retained from the last pass, parallel to
+    /// `block_fingerprints` — which despite its name covers the block *and* its
+    /// measurement. Empty when the last pass left none, so it is a cache.
+    content_keys: Vec<Option<BlockIdentity>>,
     options_fingerprint: u64,
     rebuilt_page_start: usize,
     rebuilt_page_end: usize,
@@ -733,6 +745,16 @@ impl EngineSession {
         env: &RenderEnv,
         read: impl FnOnce(&[LayoutBlock]) -> T,
     ) -> Result<T, BridgeError> {
+        self.with_lowered_story_keyed(story, env, |blocks, _| read(blocks))
+    }
+
+    /// Runs a callback with resident lowered blocks and their content keys.
+    pub fn with_lowered_story_keyed<T>(
+        &self,
+        story: &str,
+        env: &RenderEnv,
+        read: impl FnOnce(&[LayoutBlock], &[Option<u64>]) -> T,
+    ) -> Result<T, BridgeError> {
         let epoch = self.doc_epoch();
         let is_hit = self
             .render
@@ -742,7 +764,7 @@ impl EngineSession {
             .is_some_and(|cached| cached.doc_epoch == epoch && cached.env == *env);
 
         if !is_hit {
-            let blocks = yrs_doc_to_layout_blocks(&self.doc, story, env)?;
+            let lowered = yrs_doc_to_lowered_blocks(&self.doc, story, env)?;
             let mut render = self.render.borrow_mut();
             render.cache_misses = render.cache_misses.wrapping_add(1);
             render.stories.insert(
@@ -750,7 +772,8 @@ impl EngineSession {
                 LoweredStory {
                     doc_epoch: epoch,
                     env: env.clone(),
-                    blocks,
+                    blocks: lowered.blocks,
+                    content_keys: lowered.keys,
                     serialized_blocks: None,
                 },
             );
@@ -764,7 +787,7 @@ impl EngineSession {
             .stories
             .get(story)
             .expect("resident story exists after lowering");
-        Ok(read(&cached.blocks))
+        Ok(read(&cached.blocks, &cached.content_keys))
     }
 
     /// Serializes resident lowered blocks.
@@ -1334,7 +1357,7 @@ impl EngineSession {
         &self,
         mut input: LayoutInput,
         block_fingerprints: Vec<u64>,
-        content_fingerprints: Vec<u64>,
+        content_keys: Vec<Option<BlockIdentity>>,
     ) -> Result<(), String> {
         if block_fingerprints.len() != input.measured.len() {
             return Err("resident pagination fingerprints do not match measured blocks".to_owned());
@@ -1396,7 +1419,7 @@ impl EngineSession {
         pagination.layout = Some(run.layout);
         pagination.checkpoints = run.checkpoints;
         pagination.block_fingerprints = block_fingerprints;
-        pagination.content_fingerprints = content_fingerprints;
+        pagination.content_keys = content_keys;
         pagination.options_fingerprint = input_options_fingerprint;
         pagination.rebuilt_page_start = run.rebuilt_page_start;
         pagination.rebuilt_page_end = run.rebuilt_page_end;
@@ -1465,31 +1488,35 @@ impl EngineSession {
             .get(story)
             .map(|story| story.env.clone())
             .ok_or_else(|| format!("resident render environment missing for story {story:?}"))?;
-        let blocks = self
-            .with_lowered_story(story, &env, <[LayoutBlock]>::to_vec)
+        let (blocks, keys) = self
+            .with_lowered_story_keyed(story, &env, |blocks, keys| (blocks.to_vec(), keys.to_vec()))
             .map_err(|error| error.to_string())?;
         after_lower();
-        self.resident_layout_input_from_blocks(blocks, &mut |_, key, previous_block, next_block| {
-            let mut envelope = self
-                .measurement_envelope_for_block(key, previous_block)
-                .ok_or_else(|| {
-                    format!("resident measurement template missing for block {key:?}")
-                })?;
-            let fields = envelope
-                .as_object_mut()
-                .ok_or_else(|| "resident measurement envelope is not an object".to_owned())?;
-            fields.insert(
-                "block".to_owned(),
-                serde_json::to_value(&*next_block)
-                    .map_err(|error| format!("serialize dirty paragraph: {error}"))?,
-            );
-            let envelope_json = serde_json::to_string(&envelope)
-                .map_err(|error| format!("serialize measurement envelope: {error}"))?;
-            let extent_json = docx_layout::measure_paragraph_json_resident(&envelope_json)?;
-            let extent: ParagraphExtent = serde_json::from_str(&extent_json)
-                .map_err(|error| format!("parse resident paragraph extent: {error}"))?;
-            Ok(BlockExtent::Paragraph(extent))
-        })
+        self.resident_layout_input_from_blocks(
+            blocks,
+            keys,
+            &mut |_, key, previous_block, next_block| {
+                let mut envelope = self
+                    .measurement_envelope_for_block(key, previous_block)
+                    .ok_or_else(|| {
+                        format!("resident measurement template missing for block {key:?}")
+                    })?;
+                let fields = envelope
+                    .as_object_mut()
+                    .ok_or_else(|| "resident measurement envelope is not an object".to_owned())?;
+                fields.insert(
+                    "block".to_owned(),
+                    serde_json::to_value(&*next_block)
+                        .map_err(|error| format!("serialize dirty paragraph: {error}"))?,
+                );
+                let envelope_json = serde_json::to_string(&envelope)
+                    .map_err(|error| format!("serialize measurement envelope: {error}"))?;
+                let extent_json = docx_layout::measure_paragraph_json_resident(&envelope_json)?;
+                let extent: ParagraphExtent = serde_json::from_str(&extent_json)
+                    .map_err(|error| format!("parse resident paragraph extent: {error}"))?;
+                Ok(BlockExtent::Paragraph(extent))
+            },
+        )
     }
 
     /// Shared dirty-block walk over a freshly lowered story: fingerprint-clean
@@ -1499,6 +1526,7 @@ impl EngineSession {
     fn resident_layout_input_from_blocks(
         &self,
         blocks: Vec<LayoutBlock>,
+        keys: Vec<Option<u64>>,
         measure_dirty: &mut dyn FnMut(
             usize,
             &str,
@@ -1506,7 +1534,10 @@ impl EngineSession {
             &mut LayoutBlock,
         ) -> Result<BlockExtent, String>,
     ) -> Result<ResidentLayoutInput, String> {
-        let (previous, previous_fingerprints, previous_content) = {
+        if keys.len() != blocks.len() {
+            return Err("resident lowering did not key every block".to_owned());
+        }
+        let (previous, previous_fingerprints, previous_keys) = {
             let pagination = self.pagination.borrow();
             (
                 pagination
@@ -1514,7 +1545,7 @@ impl EngineSession {
                     .clone()
                     .ok_or_else(|| "resident pagination input is not built".to_owned())?,
                 pagination.block_fingerprints.clone(),
-                pagination.content_fingerprints.clone(),
+                pagination.content_keys.clone(),
             )
         };
         let paragraph_merge = blocks.len().checked_add(1) == Some(previous.measured.len());
@@ -1525,25 +1556,26 @@ impl EngineSession {
             return Err("resident pagination fingerprints are not built".to_owned());
         }
 
-        // Retained from last pass when it left one, so a keystroke hashes each
-        // block once rather than re-deriving what an unchanged block hashed to.
-        let previous_content = (previous_content.len() == previous.measured.len())
-            .then_some(previous_content)
-            .unwrap_or_else(|| vec![0; previous.measured.len()]);
+        // Retained from the last pass when it left one, so an unchanged block is
+        // recognised by the key lowering already computed rather than by
+        // fingerprinting the built block again.
+        let previous_keys = (previous_keys.len() == previous.measured.len())
+            .then_some(previous_keys)
+            .unwrap_or_else(|| vec![None; previous.measured.len()]);
         let mut previous_blocks = previous
             .measured
             .into_iter()
             .zip(previous_fingerprints)
-            .zip(previous_content)
-            .map(|((measured, fingerprint), content)| (measured, fingerprint, content))
+            .zip(previous_keys)
+            .map(|((measured, fingerprint), key)| (measured, fingerprint, key))
             .peekable();
         let mut skipped_merged_paragraph = false;
         let mut measured = Vec::with_capacity(blocks.len());
         let mut block_fingerprints = Vec::with_capacity(blocks.len());
-        let mut content_fingerprints = Vec::with_capacity(blocks.len());
+        let mut content_keys = Vec::with_capacity(blocks.len());
         let mut resident_measure_calls = 0_u64;
         let mut resident_reused_blocks = 0_u64;
-        for (block_index, mut next_block) in blocks.into_iter().enumerate() {
+        for (block_index, (mut next_block, next_key)) in blocks.into_iter().zip(keys).enumerate() {
             let mut previous_entry = previous_blocks.next().ok_or_else(|| {
                 "resident plain-text input changed the block structure".to_owned()
             })?;
@@ -1562,17 +1594,30 @@ impl EngineSession {
             {
                 return Err("resident plain-text input changed stable block identity".to_owned());
             }
-            let (previous_measured, previous_fingerprint, previous_content) = previous_entry;
-            let next_content = block_fingerprint(&next_block)?;
-            let previous_content = match previous_content {
-                0 => block_fingerprint(&previous_measured.block)?,
-                cached => cached,
+            let (previous_measured, previous_fingerprint, previous_identity) = previous_entry;
+            let next_identity = match next_key {
+                Some(key) => BlockIdentity::Key(key),
+                None => BlockIdentity::Fingerprint(block_fingerprint(&next_block)?),
+            };
+            let unchanged = match previous_identity {
+                Some(previous) => previous == next_identity,
+                // Nothing retained to compare against, so fall back to the
+                // blocks themselves. Costs one pass after a full layout.
+                None => match next_identity {
+                    BlockIdentity::Fingerprint(next) => {
+                        next == block_fingerprint(&previous_measured.block)?
+                    }
+                    BlockIdentity::Key(_) => {
+                        block_fingerprint(&next_block)?
+                            == block_fingerprint(&previous_measured.block)?
+                    }
+                },
             };
             let (Some((next_id, _)), Some((previous_id, _))) = (
                 paragraph_identity(&next_block),
                 paragraph_identity(&previous_measured.block),
             ) else {
-                if next_content != previous_content {
+                if !unchanged {
                     return Err(
                         "resident plain-text input changed a non-paragraph block".to_owned()
                     );
@@ -1582,7 +1627,7 @@ impl EngineSession {
                     measure: previous_measured.measure,
                 });
                 block_fingerprints.push(previous_fingerprint);
-                content_fingerprints.push(next_content);
+                content_keys.push(Some(next_identity));
                 resident_reused_blocks = resident_reused_blocks.wrapping_add(1);
                 continue;
             };
@@ -1590,13 +1635,13 @@ impl EngineSession {
             if key != block_key(previous_id) {
                 return Err("resident plain-text input changed stable block identity".to_owned());
             }
-            if next_content == previous_content {
+            if unchanged {
                 measured.push(MeasuredBlock {
                     block: next_block,
                     measure: previous_measured.measure,
                 });
                 block_fingerprints.push(previous_fingerprint);
-                content_fingerprints.push(next_content);
+                content_keys.push(Some(next_identity));
                 resident_reused_blocks = resident_reused_blocks.wrapping_add(1);
                 continue;
             }
@@ -1608,7 +1653,13 @@ impl EngineSession {
                 measure,
             };
             block_fingerprints.push(measured_fingerprint(&measured_block)?);
-            content_fingerprints.push(block_fingerprint(&measured_block.block)?);
+            // Taken after the measure, which may rewrite the block.
+            content_keys.push(match next_key {
+                Some(key) => Some(BlockIdentity::Key(key)),
+                None => Some(BlockIdentity::Fingerprint(block_fingerprint(
+                    &measured_block.block,
+                )?)),
+            });
             measured.push(measured_block);
             resident_measure_calls = resident_measure_calls.wrapping_add(1);
         }
@@ -1639,7 +1690,7 @@ impl EngineSession {
                 options: previous.options,
             },
             block_fingerprints,
-            content_fingerprints,
+            content_keys,
         })
     }
 
@@ -1661,7 +1712,7 @@ impl EngineSession {
         self.layout_document_value_with_fingerprints(
             resident.input,
             resident.block_fingerprints,
-            resident.content_fingerprints,
+            resident.content_keys,
         )?;
         let extras = self
             .display
@@ -1717,8 +1768,8 @@ impl EngineSession {
             };
             lowered.env.clone()
         };
-        let blocks = self
-            .with_lowered_story(story, &env, <[LayoutBlock]>::to_vec)
+        let (blocks, keys) = self
+            .with_lowered_story_keyed(story, &env, |blocks, keys| (blocks.to_vec(), keys.to_vec()))
             .map_err(|error| error.to_string())?;
         phase(RegionResidentPhase::Lowered);
         let (widths, geometry, previous_pages) = {
@@ -1745,6 +1796,7 @@ impl EngineSession {
         }
         let resident = match self.resident_layout_input_from_blocks(
             blocks,
+            keys,
             &mut |index, _key, _previous_block, next_block| {
                 let width = widths.get(index).copied().unwrap_or(default_width);
                 docx_layout::measure_blocks::measure_block(next_block, width, measurement.as_ref())
@@ -1759,7 +1811,7 @@ impl EngineSession {
         self.layout_document_value_with_fingerprints(
             resident.input,
             resident.block_fingerprints,
-            resident.content_fingerprints,
+            resident.content_keys,
         )?;
         let mut pagination = self.pagination.borrow_mut();
         let layout = pagination
@@ -1844,7 +1896,7 @@ impl EngineSession {
             self.layout_document_value_with_fingerprints(
                 resident.input,
                 resident.block_fingerprints,
-                resident.content_fingerprints,
+                resident.content_keys,
             )?;
             let finished = now();
             profile.paginate_ms = finished - started;

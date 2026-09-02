@@ -104,6 +104,15 @@ pub fn yrs_doc_to_layout_blocks(
     story_id: &str,
     env: &RenderEnv,
 ) -> Result<Vec<LayoutBlock>, BridgeError> {
+    yrs_doc_to_lowered_blocks(doc, story_id, env).map(|lowered| lowered.blocks)
+}
+
+/// Lowering with the content key of each block alongside it.
+pub fn yrs_doc_to_lowered_blocks(
+    doc: &EditingDoc,
+    story_id: &str,
+    env: &RenderEnv,
+) -> Result<LoweredBlocks, BridgeError> {
     if doc.yrs_doc().offset_kind() != OffsetKind::Utf16 {
         return Err(BridgeError::WrongOffsetKind);
     }
@@ -112,7 +121,108 @@ pub fn yrs_doc_to_layout_blocks(
     let mut active_stories = BTreeSet::new();
     let mut list_state = ListState::default();
     lower_story(&txn, story_id, env, 0, &mut active_stories, &mut list_state)
-        .map(|(blocks, _)| blocks)
+        .map(|(lowered, _)| lowered)
+}
+
+/// FNV-1a over the yrs data a paragraph is lowered from.
+///
+/// A keystroke re-lowers a whole story and then has to decide which paragraphs
+/// actually changed. Hashing the *built* blocks answers that, but a built block
+/// is an order of magnitude larger than the data it came from — the defaults
+/// applied to every run see to that. Hashing the source instead is the same
+/// answer for a tenth of the work.
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+fn fold_bytes(hash: u64, bytes: &[u8]) -> u64 {
+    let mut hash = hash;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Folds a serializable value without building its JSON.
+fn fold_serializable<T: serde::Serialize + ?Sized>(hash: u64, value: &T) -> Option<u64> {
+    struct Sink(u64);
+    impl std::io::Write for Sink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = fold_bytes(self.0, bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut sink = Sink(hash);
+    serde_json::to_writer(&mut sink, value).ok()?;
+    Some(sink.0)
+}
+
+/// Run attributes are an unordered map, so they are folded through a sorted
+/// view — iteration order must not decide a paragraph's identity.
+fn fold_attrs(hash: u64, attributes: Option<&Attrs>) -> Option<u64> {
+    let Some(attributes) = attributes else {
+        return Some(fold_bytes(hash, b"\x00"));
+    };
+    let mut entries: Vec<(&str, &Any)> = attributes
+        .iter()
+        .map(|(key, value)| (key.as_ref(), value))
+        .collect();
+    entries.sort_by_key(|(key, _)| *key);
+    let mut hash = hash;
+    for (key, value) in entries {
+        hash = fold_bytes(hash, key.as_bytes());
+        hash = fold_serializable(hash, value)?;
+    }
+    Some(hash)
+}
+
+/// Everything outside a paragraph that still decides how it lowers: the render
+/// environment and the comment ranges over this story. Mixed into every
+/// paragraph key, so a change to either invalidates the lot.
+fn story_content_salt(env: &RenderEnv, comments: &[CommentInterval]) -> Option<u64> {
+    let mut hash = fold_serializable(FNV_OFFSET, env)?;
+    for comment in comments {
+        hash = fold_bytes(hash, &comment.start.to_le_bytes());
+        hash = fold_bytes(hash, &comment.end.to_le_bytes());
+        hash = fold_bytes(hash, &comment.id.to_le_bytes());
+    }
+    Some(hash)
+}
+
+/// Blocks and their content keys, pushed together so they cannot drift apart.
+/// A `None` key means "no cheap identity for this block" — the caller falls
+/// back to fingerprinting the built block, which is always correct.
+#[derive(Default)]
+pub struct LoweredBlocks {
+    pub blocks: Vec<LayoutBlock>,
+    pub keys: Vec<Option<u64>>,
+}
+
+impl LoweredBlocks {
+    fn push(&mut self, block: LayoutBlock, key: Option<u64>) {
+        self.blocks.push(block);
+        self.keys.push(key);
+    }
+
+    /// Several blocks from one paragraph flush: only a lone paragraph carries
+    /// the key, because a split paragraph's drawings are not described by it.
+    fn push_paragraph_flush(&mut self, blocks: Vec<LayoutBlock>, key: Option<u64>) {
+        let key = (blocks.len() == 1).then_some(key).flatten();
+        for block in blocks {
+            self.push(block, key);
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.blocks.len()
+    }
+
+    fn absorb(&mut self, other: LoweredBlocks) {
+        self.blocks.extend(other.blocks);
+        self.keys.extend(other.keys);
+    }
 }
 
 fn lower_story<T: ReadTxn>(
@@ -122,7 +232,7 @@ fn lower_story<T: ReadTxn>(
     pm_base: u64,
     active_stories: &mut BTreeSet<String>,
     list_state: &mut ListState,
-) -> Result<(Vec<LayoutBlock>, u64), BridgeError> {
+) -> Result<(LoweredBlocks, u64), BridgeError> {
     if !active_stories.insert(story_id.to_owned()) {
         return Err(BridgeError::RecursiveStory(story_id.to_owned()));
     }
@@ -130,7 +240,11 @@ fn lower_story<T: ReadTxn>(
     let result = (|| {
         let story = story_ref(txn, story_id)?;
         let comments = resolve_comment_intervals(txn, story_id, env)?;
-        let mut blocks = Vec::new();
+        let salt = story_content_salt(env, &comments);
+        // Reset at every block boundary; cleared the moment anything other than
+        // text joins the paragraph, because only text is described by this key.
+        let mut paragraph_key = salt;
+        let mut blocks = LoweredBlocks::default();
         let mut paragraph_runs = Vec::new();
         let mut paragraph_drawings = Vec::new();
         let mut story_index = 0_u32;
@@ -144,9 +258,23 @@ fn lower_story<T: ReadTxn>(
 
         for diff in story.diff(txn, YChange::identity) {
             let attributes = diff.attributes.as_deref();
+            // Text and the pilcrow are the only things the paragraph key
+            // describes. Deciding that here rather than in each arm means a new
+            // kind of embed cannot quietly inherit a key that does not cover it.
+            let described_by_key = match &diff.insert {
+                Out::Any(Any::String(_)) => true,
+                Out::YMap(map) => is_pilcrow(map, txn),
+                _ => false,
+            };
+            if !described_by_key {
+                paragraph_key = None;
+            }
             match diff.insert {
                 Out::Any(Any::String(text)) => {
                     let text = text.as_ref();
+                    paragraph_key = paragraph_key
+                        .map(|hash| fold_bytes(hash, text.as_bytes()))
+                        .and_then(|hash| fold_attrs(hash, attributes));
                     push_text_chunks(
                         &mut paragraph_runs,
                         text,
@@ -165,6 +293,9 @@ fn lower_story<T: ReadTxn>(
                     // One read of the pilcrow's properties serves the paragraph
                     // and the section break that may follow it.
                     let values = pilcrow_values(&pilcrow, txn);
+                    paragraph_key = paragraph_key
+                        .and_then(|hash| fold_serializable(hash, &values))
+                        .and_then(|hash| fold_attrs(hash, attributes));
                     let paragraph_blocks = flush_paragraph_parts(
                         paragraph_runs,
                         paragraph_drawings,
@@ -177,11 +308,24 @@ fn lower_story<T: ReadTxn>(
                         list_state,
                     );
                     pm_cursor = paragraph_pm_start + u64::from(paragraph_pm_units) + 2;
-                    blocks.extend(paragraph_blocks);
+                    // The list marker is the one part of a paragraph that the
+                    // paragraphs before it decide, so it joins the key.
+                    let flushed_key = paragraph_key.and_then(|hash| {
+                        let marker = match paragraph_blocks.as_slice() {
+                            [LayoutBlock::Paragraph(paragraph)] => paragraph
+                                .attrs
+                                .as_ref()
+                                .and_then(|attrs| attrs.list_marker.as_deref()),
+                            _ => None,
+                        };
+                        fold_serializable(hash, &marker)
+                    });
+                    blocks.push_paragraph_flush(paragraph_blocks, flushed_key);
+                    paragraph_key = salt;
                     // Section properties emit a break after the paragraph.
                     if let Some(section_break) = section_break_block(&values, &mut section_margins)
                     {
-                        blocks.push(LayoutBlock::SectionBreak(section_break));
+                        blocks.push(LayoutBlock::SectionBreak(section_break), None);
                     }
                     paragraph_runs = Vec::new();
                     paragraph_drawings = Vec::new();
@@ -204,7 +348,7 @@ fn lower_story<T: ReadTxn>(
                             detail: "table embed interrupts paragraph content".to_owned(),
                         });
                     }
-                    let (table, node_size) = lower_table(
+                    let (table, node_size, table_key) = lower_table(
                         &table,
                         txn,
                         story_id,
@@ -214,7 +358,11 @@ fn lower_story<T: ReadTxn>(
                         active_stories,
                         list_state,
                     )?;
-                    blocks.push(LayoutBlock::Table(table));
+                    let table_key = salt
+                        .zip(table_key)
+                        .map(|(salt, key)| fold_bytes(salt, &key.to_le_bytes()));
+                    blocks.push(LayoutBlock::Table(table), table_key);
+                    paragraph_key = salt;
                     story_index += 1;
                     paragraph_start = story_index;
                     pm_cursor += node_size;
@@ -244,19 +392,25 @@ fn lower_story<T: ReadTxn>(
                     // below, which anchors on a persistent cell story instead.
                     let id = BlockId::Str(format!("{story_id}:{kind}:b{}", blocks.len()));
                     if kind == "columnBreak" {
-                        blocks.push(LayoutBlock::ColumnBreak(ColumnBreakBlock {
-                            sdt_groups: None,
-                            id,
-                            pm_start: Some(pm_cursor as f64),
-                            pm_end: Some((pm_cursor + 1) as f64),
-                        }));
+                        blocks.push(
+                            LayoutBlock::ColumnBreak(ColumnBreakBlock {
+                                sdt_groups: None,
+                                id,
+                                pm_start: Some(pm_cursor as f64),
+                                pm_end: Some((pm_cursor + 1) as f64),
+                            }),
+                            None,
+                        );
                     } else {
-                        blocks.push(LayoutBlock::PageBreak(PageBreakBlock {
-                            sdt_groups: None,
-                            id,
-                            pm_start: Some(pm_cursor as f64),
-                            pm_end: Some((pm_cursor + 1) as f64),
-                        }));
+                        blocks.push(
+                            LayoutBlock::PageBreak(PageBreakBlock {
+                                sdt_groups: None,
+                                id,
+                                pm_start: Some(pm_cursor as f64),
+                                pm_end: Some((pm_cursor + 1) as f64),
+                            }),
+                            None,
+                        );
                     }
                     story_index += 1;
                     paragraph_start = story_index;
@@ -285,7 +439,7 @@ fn lower_story<T: ReadTxn>(
                         });
                     };
                     let group = lower_sdt_group(&block_sdt, txn, pm_cursor as i64);
-                    let (mut child_blocks, content_size) = lower_story(
+                    let (mut child, content_size) = lower_story(
                         txn,
                         &child_story,
                         env,
@@ -293,8 +447,12 @@ fn lower_story<T: ReadTxn>(
                         active_stories,
                         list_state,
                     )?;
-                    stamp_sdt_group(&mut child_blocks, group);
-                    blocks.extend(child_blocks);
+                    stamp_sdt_group(&mut child.blocks, group);
+                    // A nested story's blocks are reachable only through this
+                    // embed, whose own identity is not in their keys.
+                    child.keys.iter_mut().for_each(|key| *key = None);
+                    blocks.absorb(child);
+                    paragraph_key = salt;
                     story_index += 1;
                     paragraph_start = story_index;
                     pm_cursor += content_size + 2;
@@ -582,7 +740,7 @@ fn lower_table<T: ReadTxn>(
     env: &RenderEnv,
     active_stories: &mut BTreeSet<String>,
     list_state: &mut ListState,
-) -> Result<(TableBlock, u64), BridgeError> {
+) -> Result<(TableBlock, u64, Option<u64>), BridgeError> {
     let tbl_pr_value = shared_any(table, txn, "tblPr")
         .ok_or_else(|| malformed_table(parent_story, story_index, "missing tblPr"))?;
     let tbl_pr = any_map(&tbl_pr_value)
@@ -599,8 +757,13 @@ fn lower_table<T: ReadTxn>(
             ));
         }
     };
+    // A table lowers from exactly these three properties and its cell stories,
+    // so folding them is the whole of its identity.
     let rows_value = shared_any(table, txn, "rows")
         .ok_or_else(|| malformed_table(parent_story, story_index, "missing rows"))?;
+    let mut table_key = fold_serializable(FNV_OFFSET, &tbl_pr_value)
+        .and_then(|hash| fold_serializable(hash, &grid_value))
+        .and_then(|hash| fold_serializable(hash, &rows_value));
     let row_values = match &rows_value {
         Any::Array(values) => values,
         _ => {
@@ -682,7 +845,7 @@ fn lower_table<T: ReadTxn>(
                     format!("row {row_index} cell {cell_index} is missing story"),
                 )
             })?;
-            let (blocks, content_size) = lower_story(
+            let (lowered, content_size) = lower_story(
                 txn,
                 &cell_story,
                 env,
@@ -690,6 +853,12 @@ fn lower_table<T: ReadTxn>(
                 active_stories,
                 list_state,
             )?;
+            table_key = table_key.and_then(|hash| {
+                lowered.keys.iter().try_fold(hash, |hash, key| {
+                    key.map(|key| fold_bytes(hash, &key.to_le_bytes()))
+                })
+            });
+            let blocks = lowered.blocks;
 
             let width_value = map_number(tc_pr, "width");
             let width_type = map_string(tc_pr, "widthType");
@@ -790,6 +959,7 @@ fn lower_table<T: ReadTxn>(
             pm_end: Some((pm_start + node_size) as f64),
         },
         node_size,
+        table_key,
     ))
 }
 
@@ -2005,6 +2175,40 @@ fn coalesce_runs(runs: Vec<RawRun>) -> Vec<RawRun> {
 fn formatting_equal(left: &RunFormatting, right: &RunFormatting) -> bool {
     serde_json::to_value(left).expect("RunFormatting serializes")
         == serde_json::to_value(right).expect("RunFormatting serializes")
+}
+
+/// Moves a lowered paragraph to a new story position.
+///
+/// Every absolute position a paragraph carries is `paragraph_pm_start` plus a
+/// fixed offset, so a paragraph whose content did not change can be re-stamped
+/// instead of rebuilt — which is what lets an edit skip lowering the rest of
+/// the story. That this covers *every* position is not an assumption:
+/// `shifting_a_retained_paragraph_matches_a_fresh_lowering` holds it against a
+/// full lowering.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "groundwork for reusing lowered paragraphs")
+)]
+fn shift_paragraph_positions(paragraph: &mut ParagraphBlock, delta: i64) {
+    fn shift(position: &mut Option<f64>, delta: i64) {
+        if let Some(position) = position {
+            *position += delta as f64;
+        }
+    }
+    shift(&mut paragraph.pm_start, delta);
+    shift(&mut paragraph.pm_end, delta);
+    for run in &mut paragraph.runs {
+        let (start, end) = match run {
+            Run::Text(run) => (&mut run.pm_start, &mut run.pm_end),
+            Run::Tab(run) => (&mut run.pm_start, &mut run.pm_end),
+            Run::Image(run) => (&mut run.pm_start, &mut run.pm_end),
+            Run::LineBreak(run) => (&mut run.pm_start, &mut run.pm_end),
+            Run::Field(run) => (&mut run.pm_start, &mut run.pm_end),
+            Run::Unsupported => continue,
+        };
+        shift(start, delta);
+        shift(end, delta);
+    }
 }
 
 fn raw_run_to_layout(raw: RawRun, paragraph_pm_start: u64) -> Run {
@@ -3237,6 +3441,31 @@ mod tests {
             block_count = blocks.len();
         }
         let per = |value: f64| value / ROUNDS as f64;
+        let keyed = yrs_doc_to_lowered_blocks(&doc, "body", &env).unwrap();
+        println!(
+            "keyed blocks        {} of {}",
+            keyed.keys.iter().filter(|key| key.is_some()).count(),
+            keyed.keys.len()
+        );
+        let mut unkeyed: std::collections::BTreeMap<&str, usize> = Default::default();
+        for (block, key) in keyed.blocks.iter().zip(&keyed.keys) {
+            if key.is_none() {
+                let kind = match block {
+                    LayoutBlock::Paragraph(_) => "paragraph",
+                    LayoutBlock::Table(_) => "table",
+                    LayoutBlock::Image(_) => "image",
+                    LayoutBlock::Shape(_) => "shape",
+                    LayoutBlock::Chart(_) => "chart",
+                    LayoutBlock::TextBox(_) => "textBox",
+                    LayoutBlock::SectionBreak(_) => "sectionBreak",
+                    LayoutBlock::PageBreak(_) => "pageBreak",
+                    LayoutBlock::ColumnBreak(_) => "columnBreak",
+                    LayoutBlock::Unsupported => "unsupported",
+                };
+                *unkeyed.entry(kind).or_default() += 1;
+            }
+        }
+        println!("unkeyed             {unkeyed:?}");
         println!("blocks              {block_count}");
         println!("diff entries        {diff_entries}");
         println!("yrs diff walk       {:>7.1}ms", per(diff_ms));
@@ -3310,6 +3539,206 @@ mod tests {
             &EditCtx::local("", DATE),
         )
         .unwrap();
+    }
+
+    /// The property paragraph reuse rests on: editing one paragraph leaves every
+    /// other paragraph's content key alone. Without it, reuse would either miss
+    /// changes or never fire.
+    #[test]
+    fn editing_one_paragraph_leaves_the_other_content_keys_alone() {
+        let doc = EditingDoc::new(4102);
+        doc.create_story("body", "", "Normal", "left").unwrap();
+        let mut ops = vec![RawOp::Delete { index: 0, len: 1 }];
+        let mut index = 0_u32;
+        for (paragraph, text) in [(0, "alpha"), (1, "beta"), (2, "gamma"), (3, "delta")] {
+            ops.push(RawOp::Insert {
+                index,
+                text: text.to_owned(),
+                attrs: Attrs::new(),
+            });
+            index += utf16_len(text);
+            ops.push(RawOp::InsertEmbed {
+                index,
+                kind: "pilcrow".to_owned(),
+                payload: vec![
+                    ("paraId".to_owned(), Any::from(format!("p{paragraph}"))),
+                    ("hangingIndent".to_owned(), Any::Bool(false)),
+                ],
+                attrs: Attrs::new(),
+            });
+            index += 1;
+        }
+        doc.apply_raw_ops("body", ops, &EditCtx::local("", DATE))
+            .unwrap();
+
+        let env = RenderEnv::default();
+        let before = yrs_doc_to_lowered_blocks(&doc, "body", &env).unwrap();
+        assert_eq!(
+            before.blocks.len(),
+            before.keys.len(),
+            "every block carries a key slot"
+        );
+        assert!(
+            before.keys.iter().all(Option::is_some),
+            "plain text paragraphs all get a key: {:?}",
+            before.keys
+        );
+
+        // Type into the second paragraph.
+        doc.apply_raw_ops(
+            "body",
+            vec![RawOp::Insert {
+                index: 7,
+                text: "X".to_owned(),
+                attrs: Attrs::new(),
+            }],
+            &EditCtx::local("", DATE),
+        )
+        .unwrap();
+        let after = yrs_doc_to_lowered_blocks(&doc, "body", &env).unwrap();
+
+        assert_eq!(before.keys.len(), after.keys.len());
+        assert_ne!(
+            before.keys[1], after.keys[1],
+            "the edited paragraph's key must move"
+        );
+        for index in [0, 2, 3] {
+            assert_eq!(
+                before.keys[index], after.keys[index],
+                "paragraph {index} did not change, so its key must not"
+            );
+        }
+    }
+
+    /// Formatting is part of a paragraph's identity even when its text is not
+    /// touched, and a paragraph holding anything but text opts out of the key.
+    #[test]
+    fn content_keys_track_formatting_and_skip_embedded_paragraphs() {
+        let doc = EditingDoc::new(4103);
+        doc.create_story("body", "", "Normal", "left").unwrap();
+        doc.apply_raw_ops(
+            "body",
+            vec![
+                RawOp::Delete { index: 0, len: 1 },
+                RawOp::Insert {
+                    index: 0,
+                    text: "formatted".to_owned(),
+                    attrs: Attrs::new(),
+                },
+                RawOp::InsertEmbed {
+                    index: 9,
+                    kind: "pilcrow".to_owned(),
+                    payload: vec![
+                        ("paraId".to_owned(), Any::from("p0")),
+                        ("hangingIndent".to_owned(), Any::Bool(false)),
+                    ],
+                    attrs: Attrs::new(),
+                },
+            ],
+            &EditCtx::local("", DATE),
+        )
+        .unwrap();
+
+        let env = RenderEnv::default();
+        let plain = yrs_doc_to_lowered_blocks(&doc, "body", &env).unwrap();
+        format_range(&doc, 0, 9, vec![("bold", Any::Bool(true))]);
+        let bold = yrs_doc_to_lowered_blocks(&doc, "body", &env).unwrap();
+        assert_ne!(
+            plain.keys[0], bold.keys[0],
+            "bolding a run must move the paragraph's key"
+        );
+
+        // A line break embed joins the paragraph, which gives up its key.
+        doc.apply_raw_ops(
+            "body",
+            vec![RawOp::InsertEmbed {
+                index: 4,
+                kind: "break".to_owned(),
+                payload: vec![],
+                attrs: Attrs::new(),
+            }],
+            &EditCtx::local("", DATE),
+        )
+        .unwrap();
+        let broken = yrs_doc_to_lowered_blocks(&doc, "body", &env).unwrap();
+        assert_eq!(
+            broken.keys[0], None,
+            "a paragraph holding more than text has no cheap identity"
+        );
+    }
+
+    /// The claim `shift_paragraph_positions` rests on: a paragraph whose
+    /// content did not change differs from a freshly lowered one only by a
+    /// uniform shift of its absolute positions. If any field carried a position
+    /// the shift does not know about, this fails.
+    #[test]
+    fn shifting_a_retained_paragraph_matches_a_fresh_lowering() {
+        let doc = EditingDoc::new(4101);
+        doc.create_story("body", "", "Normal", "left").unwrap();
+        let mut ops = vec![RawOp::Delete { index: 0, len: 1 }];
+        let mut index = 0_u32;
+        // Varied run kinds, so the shift is held against more than plain text.
+        for (paragraph, text) in [
+            (0, "first paragraph"),
+            (1, "second\tparagraph with a tab"),
+            (2, "third paragraph"),
+            (3, "fourth"),
+        ] {
+            ops.push(RawOp::Insert {
+                index,
+                text: text.to_owned(),
+                attrs: Attrs::new(),
+            });
+            index += utf16_len(text);
+            ops.push(RawOp::InsertEmbed {
+                index,
+                kind: "pilcrow".to_owned(),
+                payload: vec![
+                    ("paraId".to_owned(), Any::from(format!("p{paragraph}"))),
+                    ("hangingIndent".to_owned(), Any::Bool(false)),
+                ],
+                attrs: Attrs::new(),
+            });
+            index += 1;
+        }
+        doc.apply_raw_ops("body", ops, &EditCtx::local("", DATE))
+            .unwrap();
+        // Bold on the second paragraph, so a formatted run crosses the shift.
+        format_range(&doc, 16, 22, vec![("bold", Any::Bool(true))]);
+
+        let env = RenderEnv::default();
+        let before = yrs_doc_to_layout_blocks(&doc, "body", &env).unwrap();
+
+        const INSERTED: &str = "xy";
+        doc.apply_raw_ops(
+            "body",
+            vec![RawOp::Insert {
+                index: 0,
+                text: INSERTED.to_owned(),
+                attrs: Attrs::new(),
+            }],
+            &EditCtx::local("", DATE),
+        )
+        .unwrap();
+        let after = yrs_doc_to_layout_blocks(&doc, "body", &env).unwrap();
+
+        assert_eq!(before.len(), after.len(), "the edit kept the block count");
+        let delta = i64::from(utf16_len(INSERTED));
+        // The first paragraph took the insertion; every later one only moved.
+        for (index, (retained, fresh)) in before.iter().zip(&after).enumerate().skip(1) {
+            let (LayoutBlock::Paragraph(retained), LayoutBlock::Paragraph(fresh)) =
+                (retained, fresh)
+            else {
+                panic!("block {index} is not a paragraph");
+            };
+            let mut shifted = retained.clone();
+            shift_paragraph_positions(&mut shifted, delta);
+            assert_eq!(
+                serde_json::to_value(&shifted).unwrap(),
+                serde_json::to_value(fresh).unwrap(),
+                "shifting retained paragraph {index} must reproduce the fresh lowering"
+            );
+        }
     }
 
     #[test]
