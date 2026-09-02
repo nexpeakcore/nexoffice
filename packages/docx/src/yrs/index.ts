@@ -1824,7 +1824,10 @@ function wrapSession(session: EditSession, clientId: number): YrsSession {
     },
     paragraphs: (story) => JSON.parse(session.paragraphs(story)) as YrsParagraph[],
     paragraphSpans: (story) => JSON.parse(session.paragraph_spans(story)) as YrsParagraphLength[],
-    storySegments: (story) => JSON.parse(session.story_segments(story)) as YrsStorySegment[],
+    storySegments: (story) =>
+      notingDocumentWalk('storySegments', () =>
+        JSON.parse(session.story_segments(story)) as YrsStorySegment[]
+      ),
     locateParagraph: (story, paraId) =>
       JSON.parse(session.locate_paragraph(story, paraId)) as YrsParagraphSpan,
 
@@ -1848,6 +1851,33 @@ function wrapSession(session: EditSession, clientId: number): YrsSession {
  * initializes the embedded docx-edit wasm (~440KB base64) — callers must
  * load it lazily so non-editor consumers avoid the wasm startup cost.
  */
+/**
+ * A read that walks the whole story. Its cost is the document's length, so on
+ * a long one it belongs to opening or to a command — never to a keystroke,
+ * where it is paid again for every character typed.
+ *
+ * Reported once per caller: the interesting fact is which code path asks, not
+ * how many times it did so before anyone looked.
+ */
+const DOCUMENT_WALK_BUDGET_MS = 33;
+const reportedDocumentWalks = new Set<string>();
+
+function notingDocumentWalk<T>(name: string, walk: () => T): T {
+  const startedAt = performance.now();
+  const result = walk();
+  const totalMs = performance.now() - startedAt;
+  if (totalMs <= DOCUMENT_WALK_BUDGET_MS) return result;
+  const caller = (new Error().stack ?? '')
+    .split('\n')
+    .slice(3, 6)
+    .map((line) => line.trim().replace(/^at /, '').split(' (')[0])
+    .join(' \u2190 ');
+  if (reportedDocumentWalks.has(caller)) return result;
+  reportedDocumentWalks.add(caller);
+  console.warn(`[yrs] ${name} walked the whole story in ${Math.round(totalMs)}ms, from ${caller}`);
+  return result;
+}
+
 export async function createYrsSession(options?: CreateYrsSessionOptions): Promise<YrsSession> {
   const clientId = options?.clientId ?? randomClientId();
   const wasm = await import('./wasm/index');
