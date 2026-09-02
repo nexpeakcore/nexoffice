@@ -474,7 +474,9 @@ export function useRustDisplayList(
         }
         if (!result.applied) return declineResidentInput('the worker could not apply it');
         noteResidentInputCost(performance.now() - startedAt, result, queuedAhead);
+        const appliedAt = performance.now();
         const delta = decodeFrameDelta(result.frame);
+        const decodedAt = performance.now();
         suppressWorkerInvalidationRef.current += 1;
         try {
           for (const update of result.updates) worker.engine.applyLocalUpdate(update, 'body');
@@ -508,6 +510,7 @@ export function useRustDisplayList(
         setSnapshot(nextSnapshot);
         setError(null);
         setLoading(false);
+        noteResidentFrameCost(appliedAt, decodedAt, delta, nextFrame);
         applyPaintedCaretReply(Boolean(result.caretPainted && caret?.caretRect), paintToken);
         return {
           frameEpoch: nextFrame.frameEpoch,
@@ -1026,6 +1029,28 @@ const RESIDENT_INPUT_BUDGET_MS = 33;
 
 /** Armed by a slow keystroke so the next one reports its phases. */
 let profileNextResidentInput = false;
+
+/**
+ * What this thread spends turning the worker's reply into painted pages. The
+ * worker's own figure stops at the reply, so a keystroke that is slow while
+ * the worker is fast has spent its time here — and the next keystroke waits
+ * behind it, because this thread is where its await resumes.
+ */
+function noteResidentFrameCost(
+  appliedAt: number,
+  decodedAt: number,
+  delta: { full: boolean; pageCount: number; bytes: Uint8Array },
+  frame: { displayList: { pages: unknown[] } }
+): void {
+  const totalMs = performance.now() - appliedAt;
+  if (totalMs <= RESIDENT_INPUT_BUDGET_MS) return;
+  console.warn(
+    `[CanvasRenderer] applying the frame took ${Math.round(totalMs)}ms ` +
+      `(decode ${Math.round(decodedAt - appliedAt)}ms) for a ` +
+      `${delta.full ? 'full' : 'partial'} delta of ${Math.round(delta.bytes.byteLength / 1024)}KB ` +
+      `over ${delta.pageCount} pages, leaving ${frame.displayList.pages.length} pages`
+  );
+}
 
 function noteResidentInputCost(
   totalMs: number,
