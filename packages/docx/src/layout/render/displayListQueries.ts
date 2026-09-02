@@ -288,7 +288,12 @@ const QUERY_SOURCE_BUDGET_MS = 33;
  */
 const reportedQueryCallers = new Set<string>();
 
-function noteQueryCost(label: string, source: string, startedAt: number): void {
+function noteQueryCost(
+  label: string,
+  source: string,
+  startedAt: number,
+  answerLength: number
+): void {
   const totalMs = performance.now() - startedAt;
   if (totalMs <= QUERY_SOURCE_BUDGET_MS) return;
   const caller = (new Error().stack ?? '')
@@ -299,7 +304,8 @@ function noteQueryCost(label: string, source: string, startedAt: number): void {
   const seen = reportedQueryCallers.has(caller);
   reportedQueryCallers.add(caller);
   console.warn(
-    `[CanvasRenderer] ${label} took ${Math.round(totalMs)}ms against ${source}` +
+    `[CanvasRenderer] ${label} took ${Math.round(totalMs)}ms against ${source}, ` +
+      `answering ${answerLength} chars` +
       (seen ? '' : `, from ${caller}`)
   );
 }
@@ -549,7 +555,7 @@ export function createDisplayListQueries(
       const startedAt = performance.now();
       try {
         const answer = byHandle(handle);
-        noteQueryCost(label, 'the parsed list', startedAt);
+        noteQueryCost(label, 'the parsed list', startedAt, answer.length);
         return answer;
       } catch (error) {
         if (isWasmTrap(error)) {
@@ -563,7 +569,7 @@ export function createDisplayListQueries(
     const jsonStartedAt = performance.now();
     try {
       const answer = byJson();
-      noteQueryCost(label, 'the whole list as an argument', jsonStartedAt);
+      noteQueryCost(label, 'the whole list as an argument', jsonStartedAt, answer.length);
       return answer;
     } catch (error) {
       if (isWasmTrap(error)) {
@@ -651,7 +657,7 @@ export function createDisplayListQueries(
     const raw = runQuery(
       eng?.rangeRectsByHandle && ((h: number) => eng!.rangeRectsByHandle!(h, from, to)),
       () => eng!.rangeRectsJson(getJson(), from, to),
-      'range_rects'
+      `range_rects ${from}→${to}`
     );
     return parseQuery(raw, [], 'range_rects');
   };
