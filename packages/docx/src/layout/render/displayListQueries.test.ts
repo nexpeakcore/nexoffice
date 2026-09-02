@@ -95,9 +95,20 @@ describe('createDisplayListQueries handle lifecycle', () => {
     const second = createDisplayListQueries({ pages: [shared] }, engine, first);
     second.rangeRects(0, 1);
     expect(calls.update).toBe(1);
-    first.rangeRects(0, 1);
+    // A range this facade has not been asked for before, so its own answer
+    // cache cannot serve it and the fallback is what runs.
+    first.rangeRects(1, 2);
     expect(calls.open).toBe(1);
     expect(calls.rangeJson).toBe(1);
+  });
+
+  test('answers a range it has already been asked for without asking again', () => {
+    const { engine, calls } = fakeEngine();
+    const queries = createDisplayListQueries({ pages: [page(0)] }, engine);
+    queries.rangeRects(0, 1);
+    queries.rangeRects(0, 1);
+    queries.caretRect(0);
+    expect(calls.rangeByHandle).toBe(1);
   });
 
   test('routes vertical movement through the retained handle', () => {

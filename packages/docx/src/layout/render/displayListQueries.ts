@@ -273,6 +273,54 @@ function isWasmTrap(error: unknown): boolean {
  * are unchanged since the donor parsed it. Returns null when nothing is
  * reusable (a full open costs the same).
  */
+/**
+ * What it cost to give the query source a display list to answer from. A
+ * re-parse of the whole list is the expensive shape, and on a long document it
+ * blocks the thread for as long as a keystroke's whole round trip — so it must
+ * be a rare event, not something a typing pause triggers.
+ */
+const QUERY_SOURCE_BUDGET_MS = 33;
+
+/**
+ * A single query that costs more than a frame. Which source answered it is the
+ * whole story: a parsed list answers from an index, while the whole list as an
+ * argument is re-parsed on every call.
+ */
+const reportedQueryCallers = new Set<string>();
+
+function noteQueryCost(label: string, source: string, startedAt: number): void {
+  const totalMs = performance.now() - startedAt;
+  if (totalMs <= QUERY_SOURCE_BUDGET_MS) return;
+  const caller = (new Error().stack ?? '')
+    .split('\n')
+    .slice(3, 7)
+    .map((line) => line.trim().replace(/^at /, '').split(' (')[0])
+    .join(' ← ');
+  const seen = reportedQueryCallers.has(caller);
+  reportedQueryCallers.add(caller);
+  console.warn(
+    `[CanvasRenderer] ${label} took ${Math.round(totalMs)}ms against ${source}` +
+      (seen ? '' : `, from ${caller}`)
+  );
+}
+
+/** Why the cheap path was not available, named once per reason. */
+const querySourceRefusals = new Set<string>();
+
+function noteQuerySourceRefusal(reason: string): void {
+  if (querySourceRefusals.has(reason)) return;
+  querySourceRefusals.add(reason);
+  console.warn(`[CanvasRenderer] the query source could not patch: ${reason}`);
+}
+
+function noteQuerySourceCost(how: string, startedAt: number, pages: number): void {
+  const totalMs = performance.now() - startedAt;
+  if (totalMs <= QUERY_SOURCE_BUDGET_MS) return;
+  console.warn(
+    `[CanvasRenderer] the query source ${how}: ${Math.round(totalMs)}ms over ${pages} pages`
+  );
+}
+
 function buildDisplayListUpdateJson(seed: FacadeDeltaSeed, next: DisplayList): string | null {
   const previousIndex = new Map<unknown, number>();
   seed.list.pages.forEach((page, index) => previousIndex.set(page, index));
@@ -411,11 +459,20 @@ export function createDisplayListQueries(
     donorFacade = null;
     if (!donor || !eng?.updateDisplayList || !eng.hasDisplayListUpdate?.()) return false;
     const seed = facadeDeltaSeeds.get(donor);
-    if (!seed || seed.engine() !== eng) return false;
+    if (!seed || seed.engine() !== eng) {
+      noteQuerySourceRefusal(seed ? 'the donor belongs to another engine' : 'no donor was recorded');
+      return false;
+    }
     const update = buildDisplayListUpdateJson(seed, list);
-    if (!update) return false;
+    if (!update) {
+      noteQuerySourceRefusal('no page survived unchanged');
+      return false;
+    }
     const adopted = seed.takeHandle();
-    if (adopted === null) return false;
+    if (adopted === null) {
+      noteQuerySourceRefusal('the donor never opened a handle of its own');
+      return false;
+    }
     try {
       eng.updateDisplayList(adopted, update);
       handle = adopted;
@@ -440,9 +497,14 @@ export function createDisplayListQueries(
     if (disposed || superseded || handleAttempted || handle !== null || !eng || isDead()) return;
     if (!eng.hasDisplayListSession?.() || !eng.openDisplayList) return;
     handleAttempted = true;
-    if (adoptHandle()) return;
+    const startedAt = performance.now();
+    if (adoptHandle()) {
+      noteQuerySourceCost('patched the pages that changed', startedAt, list.pages.length);
+      return;
+    }
     try {
       handle = eng.openDisplayList(getJson());
+      noteQuerySourceCost('re-parsed the whole list', startedAt, list.pages.length);
     } catch (error) {
       handle = null;
       if (isWasmTrap(error)) {
@@ -484,8 +546,11 @@ export function createDisplayListQueries(
     if (!eng || isDead()) return null;
     if (handle === null) openHandle();
     if (handle !== null && byHandle) {
+      const startedAt = performance.now();
       try {
-        return byHandle(handle);
+        const answer = byHandle(handle);
+        noteQueryCost(label, 'the parsed list', startedAt);
+        return answer;
       } catch (error) {
         if (isWasmTrap(error)) {
           killSource(label, error);
@@ -495,8 +560,11 @@ export function createDisplayListQueries(
         closeHandle();
       }
     }
+    const jsonStartedAt = performance.now();
     try {
-      return byJson();
+      const answer = byJson();
+      noteQueryCost(label, 'the whole list as an argument', jsonStartedAt);
+      return answer;
     } catch (error) {
       if (isWasmTrap(error)) {
         killSource(label, error);
@@ -554,7 +622,25 @@ export function createDisplayListQueries(
     return parseQuery(raw, null, 'hit_test_regions');
   };
 
+  // One facade answers for one immutable display list, so a range asked for
+  // twice has the same answer twice. The caret alone is asked for by the
+  // overlay, by React's render, by a resize and by the scroll anchor, and on a
+  // long document each of those answers costs a scan of the list.
+  const rangeRectsByRange = new Map<string, DisplayListRect[]>();
+
   const rangeRects = (from: number, to: number): DisplayListRect[] => {
+    const key = `${from}:${to}`;
+    const remembered = rangeRectsByRange.get(key);
+    if (remembered) return remembered;
+    const answer = rangeRectsUncached(from, to);
+    // A query answered before the source was ready is not the list's answer.
+    if ((resident !== null || eng !== null) && sourceError === null) {
+      rangeRectsByRange.set(key, answer);
+    }
+    return answer;
+  };
+
+  const rangeRectsUncached = (from: number, to: number): DisplayListRect[] => {
     if (resident) {
       return parseQuery(
         residentQuery(() => resident.displayRangeRectsJson(from, to), 'range_rects'),

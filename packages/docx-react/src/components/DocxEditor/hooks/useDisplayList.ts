@@ -1065,7 +1065,7 @@ function watchMainThreadStall(): () => number {
 function noteResidentFrameCost(
   appliedAt: number,
   decodedAt: number,
-  delta: { full: boolean; pageCount: number; bytes: Uint8Array },
+  delta: { full: boolean; pageCount: number; operations: readonly unknown[]; bytes: Uint8Array },
   frame: { displayList: { pages: unknown[] } }
 ): void {
   const totalMs = performance.now() - appliedAt;
@@ -1074,7 +1074,8 @@ function noteResidentFrameCost(
     `[CanvasRenderer] applying the frame took ${Math.round(totalMs)}ms ` +
       `(decode ${Math.round(decodedAt - appliedAt)}ms) for a ` +
       `${delta.full ? 'full' : 'partial'} delta of ${Math.round(delta.bytes.byteLength / 1024)}KB ` +
-      `over ${delta.pageCount} pages, leaving ${frame.displayList.pages.length} pages`
+      `carrying ${delta.operations.length} page operation(s) of ${delta.pageCount}, ` +
+      `leaving ${frame.displayList.pages.length} pages`
   );
 }
 
