@@ -3789,6 +3789,7 @@ mod tests {
         let blocks = engine.stats().lowered_block_count;
 
         let mut totals = EngineApplyProfile::default();
+        let mut last = EngineApplyProfile::default();
         const KEYSTROKES: usize = 8;
         for _ in 0..KEYSTROKES {
             engine
@@ -3815,6 +3816,7 @@ mod tests {
             totals.paginate_ms += profile.paginate_ms;
             totals.display_ms += profile.display_ms;
             totals.encode_ms += profile.encode_ms;
+            last = profile;
         }
         let per = |value: f64| value / KEYSTROKES as f64;
         let stats = engine.stats();
@@ -3827,6 +3829,12 @@ mod tests {
         println!(
             "measured blocks  {} of {} reused",
             stats.resident_measure_calls, stats.resident_reused_blocks
+        );
+        // The first keystroke after a full layout has no retained hashes to
+        // reuse, so the mean above is pessimistic about the steady state.
+        println!(
+            "last keystroke   lower {:.1}ms . measure {:.1}ms . paginate {:.1}ms",
+            last.lower_ms, last.measure_ms, last.paginate_ms
         );
     }
 
