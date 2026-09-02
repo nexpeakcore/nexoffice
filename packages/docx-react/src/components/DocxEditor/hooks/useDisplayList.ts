@@ -1057,6 +1057,7 @@ function noteResidentInputCost(
   result: {
     engineMs?: number;
     workerTotalMs?: number;
+    workerQueuedMs?: number;
     replayMs?: number;
     replayedPages?: number;
     engineProfile?: YrsEngineApplyProfile;
@@ -1080,8 +1081,9 @@ function noteResidentInputCost(
     `[CanvasRenderer] resident keystroke took ${Math.round(totalMs)}ms ` +
       `(worker ${Math.round(result.workerTotalMs ?? 0)}ms, of which engine ` +
       `${Math.round(result.engineMs ?? 0)}ms and replay ${Math.round(result.replayMs ?? 0)}ms ` +
-      `over ${result.replayedPages ?? 0} pages; ${queuedAhead} request(s) were already ` +
-      `waiting on the worker)`
+      `over ${result.replayedPages ?? 0} pages, after waiting ` +
+      `${Math.round(result.workerQueuedMs ?? 0)}ms for its turn there; ` +
+      `${queuedAhead} answered request(s) were outstanding)`
   );
 }
 

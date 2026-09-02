@@ -122,6 +122,10 @@ export type ResidentEngineWorkerResponse =
       updates?: ArrayBuffer[];
       engineMs?: number;
       workerTotalMs?: number;
+      /** How long the request waited in the worker before it was handled. */
+      workerQueuedMs?: number;
+      /** The worker clock when the request arrived, for host-side comparison. */
+      workerArrivedAt?: number;
       engineProfile?: YrsEngineApplyProfile;
       caret?: YrsResidentCaretSnapshot;
       selection?: YrsSelection | null;

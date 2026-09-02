@@ -56,9 +56,21 @@ let paintedCaretKey: string | null = null;
 let caretStage: OffscreenCanvas | null = null;
 const intactBackBuffers = new Set<string>();
 
+// When the newest request arrived, against when its turn came. A keystroke
+// that is slow while the engine is fast has waited somewhere, and the two
+// candidates — this worker still busy, or the host thread not yet free to send
+// or to receive — look identical from the host.
+let requestArrivedAt = 0;
+let requestQueuedMs = 0;
+
 scope.onmessage = (event: MessageEvent<ResidentEngineWorkerRequest>) => {
+  const arrivedAt = performance.now();
   operations = operations
-    .then(() => handle(event.data))
+    .then(() => {
+      requestArrivedAt = arrivedAt;
+      requestQueuedMs = performance.now() - arrivedAt;
+      return handle(event.data);
+    })
     .catch((error) => {
       reply({
         id: event.data.id,
@@ -379,6 +391,8 @@ async function replyFrame(
       updates: updateBuffers,
       engineMs,
       workerTotalMs: performance.now() - requestStarted,
+      workerQueuedMs: requestQueuedMs,
+      workerArrivedAt: requestArrivedAt,
       engineProfile,
       caret,
       selection,

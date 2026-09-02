@@ -18,6 +18,8 @@ export interface ResidentEngineWorkerFrame {
   updates: Uint8Array[];
   engineMs: number;
   workerTotalMs: number;
+  /** How long the request waited inside the worker before it was handled. */
+  workerQueuedMs: number;
   engineProfile?: YrsEngineApplyProfile;
   caret: YrsResidentCaretSnapshot;
   selection: YrsSelection | null;
@@ -420,6 +422,7 @@ function frameResult(
     updates: (response.updates ?? []).map((update) => new Uint8Array(update)),
     engineMs: response.engineMs ?? 0,
     workerTotalMs: response.workerTotalMs ?? 0,
+    workerQueuedMs: response.workerQueuedMs ?? 0,
     engineProfile: response.engineProfile,
     caret: response.caret,
     selection: response.selection,
