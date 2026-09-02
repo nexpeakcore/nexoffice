@@ -3403,6 +3403,14 @@ mod tests {
     /// Where lowering a whole story spends its time. A keystroke re-lowers
     /// everything, so each part here is paid on every key.
     ///
+    /// Reusing retained paragraphs instead of rebuilding them was tried against
+    /// this and did not pay: with 2711 of 2753 paragraphs moved rather than
+    /// built — identity from the content keys, positions re-stamped — lowering
+    /// moved by under 7%, and by less than the run-to-run spread. What a
+    /// keystroke spends here is the memory traffic of the block array itself,
+    /// not the work of building a paragraph's structure. Anything faster has to
+    /// stop moving the blocks around, not stop computing them.
+    ///
     ///   cargo test -p betteroffice-docx-edit --release --lib lowering_cost \
     ///     -- --ignored --nocapture
     #[test]
