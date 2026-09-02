@@ -66,6 +66,7 @@ export function CanvasPagedArea({
           glyphOutlineProvider={renderer.glyphOutlineProvider}
           offscreenReplay={renderer.offscreenReplay}
           onWorkerPresentationChange={renderer.setWorkerPresentationActive}
+          onPageWindowChange={renderer.setPageWindow}
         />
       ) : renderer.status === 'error' ? (
         <div data-testid="canvas-renderer-error" role="alert" style={{ minHeight: 240 }}>
@@ -129,6 +130,7 @@ export function CanvasPagesView({
   glyphOutlineProvider,
   offscreenReplay,
   onWorkerPresentationChange,
+  onPageWindowChange,
 }: {
   displayList: DisplayList;
   /** Binary retained-frame metadata used to scope page replay. */
@@ -157,6 +159,8 @@ export function CanvasPagesView({
   /** Dedicated worker replay surface; unsupported/media-heavy pages use DOM canvas. */
   offscreenReplay?: UseCanvasRendererResult['offscreenReplay'];
   onWorkerPresentationChange?: (active: boolean) => void;
+  /** Reports the pages near the viewport, so the rest need not be carried. */
+  onPageWindowChange?: (window: PageWindowRange | null) => void;
 }) {
   const canvasesRef = useRef(new Map<string, HTMLCanvasElement>());
   const transferredCanvasesRef = useRef(new WeakSet<HTMLCanvasElement>());
@@ -289,6 +293,7 @@ export function CanvasPagesView({
       if (rafId === null) rafId = requestAnimationFrame(recompute);
     };
     recompute();
+
     // Capture-phase on window: scroll events do not bubble off an element
     // scroller, and which element scrolls the editor can change after mount.
     window.addEventListener('scroll', schedule, { capture: true, passive: true });
@@ -299,6 +304,14 @@ export function CanvasPagesView({
       window.removeEventListener('resize', schedule);
     };
   }, [windowingEnabled, pageOffsets]);
+
+  // The raster window is also the data window: a page whose bitmap is released
+  // has no reader for its primitives either.
+  const onPageWindowChangeRef = useRef(onPageWindowChange);
+  onPageWindowChangeRef.current = onPageWindowChange;
+  useEffect(() => {
+    onPageWindowChangeRef.current?.(windowingEnabled ? pageWindow : null);
+  }, [pageWindow, windowingEnabled]);
   // Until the first measurement lands (set pre-paint by the layout effect
   // above), the replay effect is deferred entirely — never guess a window
   // that could blank a visible page, and never raster every page of a large

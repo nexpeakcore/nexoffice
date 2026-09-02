@@ -294,6 +294,18 @@ export class ResidentEngineWorkerClient {
     this.post({ id, type: 'eraseCaret' });
   }
 
+  /**
+   * The pages the host is looking at, so the worker can send the rest as
+   * geometry alone. Fire-and-forget: the next frame carries the change, and a
+   * window that arrives late costs one frame of stale content, never
+   * correctness.
+   */
+  setPageWindow(start: number, count: number): void {
+    if (this.destroyed) return;
+    const id = this.nextId++;
+    this.post({ id, type: 'setPageWindow', start, count });
+  }
+
   invalidate(update: Uint8Array, selection: YrsSelection | null): void {
     if (this.destroyed) return;
     this.ready = false;

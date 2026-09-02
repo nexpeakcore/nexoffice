@@ -657,6 +657,12 @@ export interface YrsSession extends CollaborationReplica {
   layoutDocumentWithRegionsVoid(input: string): void;
   /** Build display primitives against the session's resident font store. */
   buildDisplayListJson(input: string): string;
+  /**
+   * The pages the host is looking at. Pages outside travel as geometry
+   * without content; every page still reaches the host, so scroll geometry
+   * and pointer routing see the whole document. A negative count clears it.
+   */
+  setPageWindow(start: number, count: number): void;
   /** Build a binary FrameDelta v1 against the last host-applied frame. */
   buildDisplayListFrame(input: string, expectedFrameEpoch: number): Uint8Array;
   /** Caret geometry from the current resident display frame. */
@@ -1229,6 +1235,7 @@ function wrapSession(session: EditSession, clientId: number): YrsSession {
       residentLayoutRevision += 1;
     },
     buildDisplayListJson: (input) => session.build_display_list_json(input),
+    setPageWindow: (start, count) => session.set_page_window(start, count),
     buildDisplayListFrame: (input, expectedFrameEpoch) =>
       session.build_display_list_frame(input, expectedFrameEpoch),
     residentCaretSnapshot: () =>

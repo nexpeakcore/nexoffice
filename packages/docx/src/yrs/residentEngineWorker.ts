@@ -201,6 +201,10 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
     );
     return;
   }
+  if (request.type === 'setPageWindow') {
+    session.setPageWindow(request.start, request.count);
+    return;
+  }
   if (request.type === 'applyUpdate') {
     session.applyUpdate(request.update);
     if (request.selection) session.setSelection(request.selection.anchor, request.selection.head);

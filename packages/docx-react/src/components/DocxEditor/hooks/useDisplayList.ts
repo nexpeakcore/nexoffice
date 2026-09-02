@@ -69,6 +69,8 @@ export interface UseRustDisplayListResult {
   applyInput(text: string): Promise<ResidentFrameApplyResult | null>;
   /** Apply one collapsed deletion/paragraph merge through the resident engine. */
   applyDelete(direction: 'backward' | 'forward'): Promise<ResidentFrameApplyResult | null>;
+  /** The pages on screen, so the rest can travel as geometry alone. */
+  setPageWindow(window: { start: number; end: number } | null): void;
   /**
    * True while the worker owns the visible page surfaces. Sticky across
    * invalidation (remote/structural updates) so the canvas keeps its last
@@ -433,6 +435,51 @@ export function useRustDisplayList(
       if (idle !== null) cancelIdleCallback(idle);
     };
   }, [snapshot.queries]);
+
+  // The pages the host is looking at, as the canvas already computes them for
+  // its rasters. Telling the worker lets it send the rest as geometry alone.
+  const pageWindowRef = useRef<{ start: number; end: number } | null>(null);
+  const setPageWindow = useCallback(
+    (next: { start: number; end: number } | null): void => {
+      const previous = pageWindowRef.current;
+      if (previous?.start === next?.start && previous?.end === next?.end) return;
+      pageWindowRef.current = next;
+      const worker = workerRef.current;
+      if (!worker || !worker.client.isReady()) return;
+      if (!workerServesEngine(worker, residentEngine)) return;
+      worker.client.setPageWindow(next ? next.start : -1, next ? next.end - next.start + 1 : -1);
+      // The window only says what the next frame should carry; ask for that
+      // frame, or the pages that just entered stay empty until an edit.
+      void workerInputQueueRef.current.then(async () => {
+        const current = workerRef.current;
+        const frame = snapshotRef.current.frame;
+        if (!current || current !== worker || !frame) return;
+        try {
+          const result = await current.client.buildFrame(EMPTY_FRAME_EXTRAS, frame.frameEpoch);
+          const delta = decodeFrameDelta(result.frame);
+          const previousFrame = snapshotRef.current.frame;
+          if (!previousFrame || delta.frameEpoch <= previousFrame.frameEpoch) return;
+          const nextFrame = applyFrameDeltaOwned(previousFrame, delta);
+          const nextSnapshot = createRustDisplayListSnapshot(
+            nextFrame.displayList,
+            nextFrame,
+            snapshotRef.current.caret,
+            null,
+            snapshotRef.current
+          );
+          generationRef.current += 1;
+          snapshotRef.current = nextSnapshot;
+          publishQuerySnapshot(nextSnapshot, contentEpochRef.current);
+          setSnapshot(nextSnapshot);
+        } catch (error) {
+          // A window is a rendering nicety: failing to move it leaves the
+          // pages the host already holds, which are still correct.
+          console.warn('[CanvasRenderer] could not move the page window', error);
+        }
+      });
+    },
+    [publishQuerySnapshot, residentEngine]
+  );
 
   const applyResidentInput = useCallback(
     (operation: ResidentInputOperation): Promise<ResidentFrameApplyResult | null> => {
@@ -955,6 +1002,7 @@ export function useRustDisplayList(
     caret: snapshot.caret,
     applyInput,
     applyDelete,
+    setPageWindow,
     workerSurfacesActive,
     workerPresentationActive,
     setWorkerPresentationActive,
@@ -1036,6 +1084,9 @@ function declineResidentInput(reason: string): null {
 
 /** A resident keystroke slower than one frame at 30Hz, with where it went. */
 const RESIDENT_INPUT_BUDGET_MS = 33;
+
+/** The worker keeps its own display extras; a frame request adds nothing. */
+const EMPTY_FRAME_EXTRAS = '{}';
 
 /** Armed by a slow keystroke so the next one reports its phases. */
 let profileNextResidentInput = false;
@@ -1198,6 +1249,8 @@ export interface UseCanvasRendererResult {
     direction: 'backward' | 'forward'
   ): Promise<ResidentFrameApplyResult | null>;
   setWorkerPresentationActive(active: boolean): void;
+  /** The pages on screen, so the rest can travel as geometry alone. */
+  setPageWindow(window: { start: number; end: number } | null): void;
   /** OffscreenCanvas replay bridge; null keeps DOM-canvas replay. */
   offscreenReplay: {
     attach(
@@ -1292,6 +1345,7 @@ export function useCanvasRenderer(
     caret,
     applyInput,
     applyDelete,
+    setPageWindow,
     workerSurfacesActive,
     workerPresentationActive,
     setWorkerPresentationActive,
@@ -1395,6 +1449,7 @@ export function useCanvasRenderer(
     glyphOutlineProvider: engine?.outlineGlyphJson ?? null,
     applyInput,
     applyDelete,
+    setPageWindow,
     setWorkerPresentationActive,
     offscreenReplay,
     paintedCaretActive,

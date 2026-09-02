@@ -105,6 +105,19 @@ export type ResidentEngineWorkerRequest =
       zoom: number;
       caretStyle: ResidentCaretPaintStyle;
     }
+  | {
+      /**
+       * The pages the host is looking at. Pages outside travel as geometry
+       * without content, so a long document's weight stops being something
+       * both threads carry in full. `count` below zero clears the window.
+       *
+       * Fire-and-forget: the next frame carries the change.
+       */
+      id: number;
+      type: 'setPageWindow';
+      start: number;
+      count: number;
+    }
   | { id: number; type: 'eraseCaret' }
   | { id: number; type: 'destroy' };
 

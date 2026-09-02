@@ -385,6 +385,13 @@ export class EditSession {
      */
     set_image_geometry(embed_id: string, geometry_json: string): void;
     /**
+     * The page range the host is looking at. Pages outside it travel as
+     * geometry alone, so a long document's weight stops being something both
+     * threads carry in full. A negative count clears the window and sends
+     * every page whole.
+     */
+    set_page_window(start: number, count: number): void;
+    /**
      * Sets one paragraph property (any JSON value) on `para_id`'s pilcrow.
      * `paraId` / the embed discriminator are reserved.
      */
@@ -801,6 +808,7 @@ export interface InitOutput {
     readonly editsession_set_content_control_value_at: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly editsession_set_hyperlink: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
     readonly editsession_set_image_geometry: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly editsession_set_page_window: (a: number, b: number, c: number) => void;
     readonly editsession_set_paragraph_attr: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly editsession_set_paragraph_attrs: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number) => [number, number];
     readonly editsession_set_selection: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];

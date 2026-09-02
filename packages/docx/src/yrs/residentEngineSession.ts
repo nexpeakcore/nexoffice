@@ -34,6 +34,7 @@ export type ResidentEngineSession = Pick<
   | 'registerFont'
   | 'residentCaretSnapshot'
   | 'selection'
+  | 'setPageWindow'
   | 'setSelection'
   | 'yrsBlocksForStory'
 >;
@@ -77,6 +78,7 @@ export async function createResidentEngineSession(): Promise<ResidentEngineSessi
     layoutDocumentWithRegionsSlimJson: (input) =>
       session.layout_document_with_regions_slim_json(input),
     layoutDocumentWithRegionsVoid: (input) => session.layout_document_with_regions_void(input),
+    setPageWindow: (start, count) => session.set_page_window(start, count),
     buildDisplayListFrame: (input, expectedFrameEpoch) =>
       session.build_display_list_frame(input, expectedFrameEpoch),
     residentCaretSnapshot: () =>
