@@ -1074,8 +1074,10 @@ pub struct TypesetRowSegment {
     pub width: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// A measure may arrive from a host that omits what it has nothing to say
+// about; an absent number reads as zero rather than as a parse failure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TypesetRunAdvance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_index: Option<u64>,
@@ -1089,8 +1091,10 @@ pub struct TypesetRunAdvance {
     pub logical_order: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// A measure may arrive from a host that omits what it has nothing to say
+// about; an absent number reads as zero rather than as a parse failure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TypesetClusterAdvance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_index: Option<u64>,
@@ -1108,8 +1112,10 @@ pub struct TypesetClusterAdvance {
     pub logical_order: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// A measure may arrive from a host that omits what it has nothing to say
+// about; an absent number reads as zero rather than as a parse failure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TypesetBidiSlice {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_index: Option<u64>,
@@ -1127,8 +1133,10 @@ pub struct TypesetBidiSlice {
     pub logical_order: Option<u64>,
 }
 
+// A measure may arrive from a host that omits what it has nothing to say
+// about; an absent number reads as zero rather than as a parse failure.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct TypesetRow {
     pub head_run: usize,
     pub head_char: usize,
@@ -1154,21 +1162,28 @@ pub struct TypesetRow {
     pub bidi_slices: Option<Vec<TypesetBidiSlice>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// A measure may arrive from a host that omits what it has nothing to say
+// about; an absent number reads as zero rather than as a parse failure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct ParagraphExtent {
     pub lines: Vec<TypesetRow>,
     pub total_height: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// A measure may arrive from a host that omits what it has nothing to say
+// about; an absent number reads as zero rather than as a parse failure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ImageExtent {
     pub width: f64,
     pub height: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// A measure may arrive from a host that omits what it has nothing to say
+// about; an absent number reads as zero rather than as a parse failure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct ShapeExtent {
     pub width: f64,
     pub height: f64,
@@ -1176,14 +1191,19 @@ pub struct ShapeExtent {
     pub inner_measures: Option<Vec<ParagraphExtent>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// A measure may arrive from a host that omits what it has nothing to say
+// about; an absent number reads as zero rather than as a parse failure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ChartExtent {
     pub width: f64,
     pub height: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// A measure may arrive from a host that omits what it has nothing to say
+// about; an absent number reads as zero rather than as a parse failure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TableCellExtent {
     pub blocks: Vec<BlockExtent>,
     pub width: f64,
@@ -1194,14 +1214,19 @@ pub struct TableCellExtent {
     pub row_span: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// A measure may arrive from a host that omits what it has nothing to say
+// about; an absent number reads as zero rather than as a parse failure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TableRowExtent {
     pub cells: Vec<TableCellExtent>,
     pub height: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// A measure may arrive from a host that omits what it has nothing to say
+// about; an absent number reads as zero rather than as a parse failure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TableExtent {
     pub rows: Vec<TableRowExtent>,
     pub column_widths: Vec<f64>,
@@ -1209,8 +1234,10 @@ pub struct TableExtent {
     pub total_height: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// A measure may arrive from a host that omits what it has nothing to say
+// about; an absent number reads as zero rather than as a parse failure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TextBoxExtent {
     pub width: f64,
     pub height: f64,

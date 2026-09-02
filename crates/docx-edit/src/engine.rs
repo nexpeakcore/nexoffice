@@ -3788,6 +3788,59 @@ mod tests {
         assert_eq!(slim, after, "the void pass leaves the same layout behind");
     }
 
+    /// A digest of the display list the fixture produces, so a change to how
+    /// the engine's typed document reaches the display list builder can be held
+    /// against what it produced before.
+    ///
+    /// Prints rather than asserts: the number belongs to a fixture that is
+    /// generated, not committed, so it is a before/after instrument for one
+    /// change rather than a constant to defend.
+    ///
+    ///   cargo test -p betteroffice-docx-edit --release --features yrs-cursor \
+    ///     --lib display_list_digest -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx"]
+    fn display_list_digest() {
+        const FONT: &[u8] =
+            include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        let bytes = std::fs::read(&path).expect("fixture");
+        docx_layout::clear_measure_fonts();
+        let font_id = docx_layout::register_measure_font(FONT).unwrap();
+        let request = serde_json::json!({
+            "bodyStory": "body",
+            "options": {"pageGap": 24},
+            "regions": {
+                "sections": [{
+                    "sectionId": "main",
+                    "pageSize": {"w": 816, "h": 1056},
+                    "margins": {"top": 96, "right": 96, "bottom": 96, "left": 96,
+                                "header": 48, "footer": 48}
+                }]
+            },
+            "notes": {"contents": []},
+            "measurement": {
+                "fontChains": {"calibri|0|0": [font_id], "calibri|0|1": [font_id],
+                               "calibri|1|0": [font_id]},
+                "defaults": {"fontSize": 24, "fontFamily": "Calibri"},
+                "authoritativeShaping": true
+            },
+            "renderEnv": {}
+        })
+        .to_string();
+
+        let engine = EngineSession::new(3003);
+        crate::seed_from_docx(engine.doc(), &bytes).expect("seed");
+        engine.layout_document_with_regions_void(&request).unwrap();
+        engine.build_display_list_frame("{}", 0).unwrap();
+        let display = engine.display.borrow();
+        let list = display.list.as_ref().expect("display list retained");
+        let json = serde_json::to_string(list).unwrap();
+        println!("display list      {} KB", json.len() / 1024);
+        println!("digest            {:016x}", hash_bytes(json.as_bytes()));
+    }
+
     /// What opening a document costs, split the way the worker does it.
     ///
     /// `frame` is the interesting one, and inside it `display input`, which on
