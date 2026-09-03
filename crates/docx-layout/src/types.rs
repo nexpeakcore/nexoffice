@@ -426,6 +426,25 @@ impl Run {
             Run::Unsupported => None,
         }
     }
+
+    /// Slides both offsets, for a run whose text is where it was but whose
+    /// document moved out from under it.
+    pub fn shift_pm(&mut self, by: f64) {
+        let (start, end) = match self {
+            Run::Text(r) => (&mut r.pm_start, &mut r.pm_end),
+            Run::Tab(r) => (&mut r.pm_start, &mut r.pm_end),
+            Run::Image(r) => (&mut r.pm_start, &mut r.pm_end),
+            Run::LineBreak(r) => (&mut r.pm_start, &mut r.pm_end),
+            Run::Field(r) => (&mut r.pm_start, &mut r.pm_end),
+            Run::Unsupported => return,
+        };
+        if let Some(start) = start {
+            *start += by;
+        }
+        if let Some(end) = end {
+            *end += by;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

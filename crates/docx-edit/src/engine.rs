@@ -3984,12 +3984,18 @@ mod tests {
         engine.layout_document_with_regions_void(&request).unwrap();
         engine.build_display_list_frame("{}", 0).unwrap();
 
-        // A caret near the end, where a reader of a long document usually is.
-        let caret = engine
-            .doc()
-            .story_len("body")
-            .expect("story len")
-            .saturating_sub(1);
+        // Both ends of the document. What a keystroke costs depends on how
+        // much of the document comes after it — that is where an incremental
+        // pass has retained work to carry forward — so a benchmark that only
+        // types at one end cannot see half of what it costs.
+        let caret = match std::env::var("CARET").as_deref() {
+            Ok("start") => 1,
+            _ => engine
+                .doc()
+                .story_len("body")
+                .expect("story len")
+                .saturating_sub(1),
+        };
         let blocks = engine.stats().lowered_block_count;
 
         let mut totals = EngineApplyProfile::default();
@@ -4024,6 +4030,14 @@ mod tests {
         }
         let per = |value: f64| value / KEYSTROKES as f64;
         let stats = engine.stats();
+        println!(
+            "caret            {}",
+            if caret == 1 {
+                "at the start (CARET=start)"
+            } else {
+                "at the end (CARET=start for the other one)"
+            }
+        );
         println!("blocks           {blocks}");
         println!("lower            {:>7.1}ms", per(totals.lower_ms));
         println!("measure          {:>7.1}ms", per(totals.measure_ms));

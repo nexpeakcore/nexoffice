@@ -708,10 +708,18 @@ fn fragment_block_id(fragment: &Fragment) -> &crate::types::BlockId {
 }
 
 /// Retained suffix pages keep their geometry but absolute document positions move
-/// after an earlier edit. Refresh every fragment's document range — and, for a
-/// paragraph, its resolved run slices — from the new measured arena before the
-/// display list consumes them. A paragraph fragment covers a line range and has
-/// to recompute its range; every other kind spans its whole block.
+/// after an earlier edit. Refresh every fragment's document range from the new
+/// measured arena before the display list consumes them. A paragraph fragment
+/// covers a line range and has to recompute its range; every other kind spans
+/// its whole block.
+///
+/// A paragraph's resolved run slices are rebuilt only when the fragment has
+/// none. Pagination reuses a page only where every fingerprint from that point
+/// on matches, and a document position is not part of a fingerprint — so the
+/// slices a reused fragment already carries are the ones this would rebuild.
+/// Rebuilding them anyway re-cut every line of every page after the edit: with
+/// the caret on the first page of a 338-page document, pagination cost 59.6ms
+/// against 11.3ms for the same edit at the end.
 fn refresh_reused_pages(pages: &mut [crate::types::Page], measured: &[MeasuredBlock]) {
     let blocks: std::collections::HashMap<_, _> = measured
         .iter()
@@ -727,18 +735,35 @@ fn refresh_reused_pages(pages: &mut [crate::types::Page], measured: &[MeasuredBl
                     let BlockExtent::Paragraph(extent) = &measured.measure else {
                         continue;
                     };
-                    (fragment.pm_start, fragment.pm_end) = get_paragraph_fragment_pm_range(
+                    let (pm_start, pm_end) = get_paragraph_fragment_pm_range(
                         block,
                         extent,
                         fragment.from_line,
                         fragment.to_line,
                     );
-                    fragment.resolved_lines = Some(build_resolved_lines(
-                        block,
-                        extent,
-                        fragment.from_line,
-                        fragment.to_line,
-                    ));
+                    // How far the paragraph slid. Without both ends there is
+                    // nothing to slide by, so those fragments are rebuilt.
+                    let shift = pm_start
+                        .zip(fragment.pm_start)
+                        .map(|(next, previous)| next - previous);
+                    (fragment.pm_start, fragment.pm_end) = (pm_start, pm_end);
+                    match (&mut fragment.resolved_lines, shift) {
+                        (Some(lines), Some(shift)) => {
+                            for line in lines.iter_mut() {
+                                for segment in &mut line.segments {
+                                    segment.run.shift_pm(shift);
+                                }
+                            }
+                        }
+                        _ => {
+                            fragment.resolved_lines = Some(build_resolved_lines(
+                                block,
+                                extent,
+                                fragment.from_line,
+                                fragment.to_line,
+                            ));
+                        }
+                    }
                 }
                 (Fragment::Table(fragment), LayoutBlock::Table(block)) => {
                     (fragment.pm_start, fragment.pm_end) = (block.pm_start, block.pm_end);
