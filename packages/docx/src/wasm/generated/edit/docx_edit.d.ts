@@ -444,6 +444,17 @@ export class EditSession {
      */
     story_len(story: string): number;
     /**
+     * The structural outline: the same segment order as `story_segments`, with
+     * only what a position projection reads — text as a `"len"` count, a
+     * pilcrow's bookmarks (each one *is* a position) and nothing else of its
+     * properties, and an embed payload without the image bytes.
+     *
+     * Sending the rest anyway put 9.5MB of JSON on the bridge for a 338-page
+     * document, of which 6.3MB was twelve images and 2.4MB was the round-trip
+     * formatting provenance the projection never opens.
+     */
+    story_outline(story: string): string;
+    /**
      * The raw formatted-segment view (the render bridge's input):
      * `[{"kind":"text","text",…} | {"kind":"pilcrow","paraId","properties",…}
      * | {"kind":"embed",…}]`, each with `"attributes"` (run marks plus
@@ -820,6 +831,7 @@ export interface InitOutput {
     readonly editsession_story_checksum: (a: number, b: number, c: number) => [number, number, number, number];
     readonly editsession_story_ids: (a: number) => [number, number];
     readonly editsession_story_len: (a: number, b: number, c: number) => [number, number, number];
+    readonly editsession_story_outline: (a: number, b: number, c: number) => [number, number, number, number];
     readonly editsession_story_segments: (a: number, b: number, c: number) => [number, number, number, number];
     readonly editsession_toggle_mark: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
     readonly editsession_track_table_undo: (a: number, b: number, c: number) => [number, number];

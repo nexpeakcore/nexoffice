@@ -277,6 +277,24 @@ export type YrsStorySegment =
       attributes: Record<string, unknown>;
     };
 
+/**
+ * One segment of {@link YrsSession.storyOutline} — the structure `storySegments`
+ * describes, with none of the content it carries.
+ *
+ * A run is its UTF-16 count. A paragraph is its id and its bookmarks, each of
+ * which *is* a position; its formatting is not here because nothing that maps
+ * positions reads it. An embed keeps its payload minus the image bytes.
+ */
+export type YrsStoryOutlineSegment =
+  | { kind: 'text'; len: number }
+  | { kind: 'pilcrow'; paraId: string; bookmarks?: unknown }
+  | {
+      kind: 'embed';
+      embedKind: string;
+      payload: Record<string, unknown>;
+      attributes: Record<string, unknown>;
+    };
+
 /** Current offsets of one sticky comment anchor. */
 export interface YrsResolvedCommentAnchor {
   story: string;
@@ -922,6 +940,8 @@ export interface YrsSession extends CollaborationReplica {
   paragraphSpans(story: string): YrsParagraphLength[];
   /** The raw formatted-segment view (the render bridge's input). */
   storySegments(story: string): YrsStorySegment[];
+  /** The structural outline: segment order and offsets, without content. */
+  storyOutline(story: string): YrsStoryOutlineSegment[];
   /** A paragraph's story span (start unit, pilcrow index). */
   locateParagraph(story: string, paraId: string): YrsParagraphSpan;
 
@@ -1835,6 +1855,10 @@ function wrapSession(session: EditSession, clientId: number): YrsSession {
     storySegments: (story) =>
       notingDocumentWalk('storySegments', () =>
         JSON.parse(session.story_segments(story)) as YrsStorySegment[]
+      ),
+    storyOutline: (story) =>
+      notingDocumentWalk('storyOutline', () =>
+        JSON.parse(session.story_outline(story)) as YrsStoryOutlineSegment[]
       ),
     locateParagraph: (story, paraId) =>
       JSON.parse(session.locate_paragraph(story, paraId)) as YrsParagraphSpan,

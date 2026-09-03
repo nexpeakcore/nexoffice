@@ -2962,6 +2962,48 @@ impl EditSession {
         serde_json::to_string(&items).map_err(js_err)
     }
 
+    /// The structural outline: the same segment order as `story_segments`, with
+    /// only what a position projection reads — text as a `"len"` count, a
+    /// pilcrow's bookmarks (each one *is* a position) and nothing else of its
+    /// properties, and an embed payload without the image bytes.
+    ///
+    /// Sending the rest anyway put 9.5MB of JSON on the bridge for a 338-page
+    /// document, of which 6.3MB was twelve images and 2.4MB was the round-trip
+    /// formatting provenance the projection never opens.
+    pub fn story_outline(&self, story: &str) -> Result<String, JsValue> {
+        let segments = self.engine.doc().story_segments(story).map_err(js_err)?;
+        let items = segments
+            .into_iter()
+            .map(|segment| {
+                Ok(match segment.content {
+                    SegmentContent::Text(text) => {
+                        json!({ "kind": "text", "len": text.encode_utf16().count() })
+                    }
+                    SegmentContent::Pilcrow(properties) => {
+                        let mut item = json!({ "kind": "pilcrow", "paraId": properties.para_id });
+                        if let Some(bookmarks) = properties.values.get("bookmarks") {
+                            item["bookmarks"] = serde_json::to_value(bookmarks).map_err(js_err)?;
+                        }
+                        item
+                    }
+                    SegmentContent::OtherEmbed { kind, payload } => {
+                        let mut structure = attrs_value(&payload)?;
+                        if let Some(map) = structure.as_object_mut() {
+                            map.remove("src");
+                        }
+                        json!({
+                            "kind": "embed",
+                            "embedKind": kind,
+                            "payload": structure,
+                            "attributes": attrs_value(&segment.attributes)?,
+                        })
+                    }
+                })
+            })
+            .collect::<Result<Vec<Value>, JsValue>>()?;
+        serde_json::to_string(&items).map_err(js_err)
+    }
+
     /// `{"start","end"}` — the paragraph's story span; `end` is its pilcrow's
     /// index, so `end - start` is the paragraph length (`offset` domain).
     pub fn locate_paragraph(&self, story: &str, para_id: &str) -> Result<String, JsValue> {

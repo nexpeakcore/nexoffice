@@ -1,4 +1,4 @@
-import type { YrsCellLoc, YrsLoc, YrsSession, YrsStorySegment } from '@betteroffice/docx/yrs';
+import type { YrsCellLoc, YrsLoc, YrsSession, YrsStoryOutlineSegment } from '@betteroffice/docx/yrs';
 
 export interface YrsProjectedNode {
   kind: string;
@@ -182,7 +182,7 @@ export class YrsPositionProjection {
     };
     this.stories.set(storyId, story);
 
-    const segments = this.session.storySegments(storyId);
+    const segments = this.session.storyOutline(storyId);
     let cursor = 0;
     let inlineLength = 0;
     let paragraphStart = 0;
@@ -191,7 +191,7 @@ export class YrsPositionProjection {
     let tableIndex = 0;
     for (const segment of segments) {
       if (segment.kind === 'text') {
-        inlineLength += segment.text.length;
+        inlineLength += segment.len;
         continue;
       }
       if (segment.kind === 'pilcrow') {
@@ -201,7 +201,7 @@ export class YrsPositionProjection {
           kind: 'paragraph',
           start,
           nodeSize,
-          attrs: { ...segment.properties, paraId: segment.paraId },
+          attrs: { paraId: segment.paraId, bookmarks: segment.bookmarks },
           story: storyId,
         };
         this.nodes.set(start, node);
@@ -293,7 +293,7 @@ export class YrsPositionProjection {
   }
 
   private buildTable(
-    segment: Extract<YrsStorySegment, { kind: 'embed' }>,
+    segment: Extract<YrsStoryOutlineSegment, { kind: 'embed' }>,
     storyId: string,
     tableIndex: number,
     start: number,
