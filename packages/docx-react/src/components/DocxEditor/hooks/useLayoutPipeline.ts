@@ -234,6 +234,14 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
       const loc = displayPositionToYrsLocRef.current?.(position);
       // Round-trip guard: a projection that cannot map the loc back to the same
       // display position would resolve the anchor into another story on restore.
+      //
+      // This guard is what a keystroke pays for on a long document. Traced on
+      // heavy-300p.docx: five rebuilds of the yrs position index per eight keys
+      // typed at speed, 73ms each, all reaching it through
+      // `yrsLocToDisplayPosition`. Both the capture above and the restore below
+      // run on every new display list, so gating one of them changes nothing —
+      // measured. The index walks every story in the file to answer a question
+      // about one sticky position that survives edits by construction.
       if (!session || !loc || yrsLocToDisplayPositionRef.current?.(loc) !== position) return null;
       try {
         return session.encodeStickyPosition(loc);
