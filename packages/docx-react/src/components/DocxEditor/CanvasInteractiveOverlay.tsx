@@ -15,11 +15,11 @@
  * trigger that re-rasters the canvas.
  */
 
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import { buildInteractiveOverlayPage, type DisplayPage } from '@betteroffice/docx/layout/render';
 import { useTranslation } from '../../i18n';
 
-export function CanvasInteractiveOverlay({ page, zoom = 1 }: { page: DisplayPage; zoom?: number }) {
+function CanvasInteractiveOverlayComponent({ page, zoom = 1 }: { page: DisplayPage; zoom?: number }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
 
@@ -58,3 +58,6 @@ export function CanvasInteractiveOverlay({ page, zoom = 1 }: { page: DisplayPage
     />
   );
 }
+
+/** Memoed for the same reason as the mirror it sits beside. */
+export const CanvasInteractiveOverlay = memo(CanvasInteractiveOverlayComponent);
