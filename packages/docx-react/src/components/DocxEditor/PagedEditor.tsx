@@ -1316,6 +1316,13 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
     // Display-list positions retain the document tree's integer coordinate
     // space. Build a lightweight index directly from the authoritative yrs
     // stories and cache it across gestures until the next mutation.
+    //
+    // "Lightweight" is no longer true on a long document: this walks every
+    // story in the file, tables included, and the invalidation above fires on
+    // every keystroke. Measured on heavy-300p.docx: 73ms a rebuild, about four
+    // rebuilds per eight keys typed at speed. The rebuild is not driven by the
+    // overlays that read it — passing them a lazy getter changed nothing — but
+    // by an async continuation after each layout, which was not chased further.
     const yrsPositionProjectionCacheRef = useRef<{
       version: number;
       session: YrsSession;
