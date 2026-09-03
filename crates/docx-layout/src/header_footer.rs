@@ -96,7 +96,10 @@ pub fn measure_header_footer(
     let measured = blocks
         .into_iter()
         .zip(measures)
-        .map(|(block, measure)| MeasuredBlock { block, measure })
+        .map(|(block, measure)| MeasuredBlock {
+            block,
+            measure: std::sync::Arc::new(measure),
+        })
         .collect();
     Ok(Some(HeaderFooterVariant {
         r_id,

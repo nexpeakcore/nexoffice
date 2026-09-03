@@ -526,7 +526,7 @@ fn place(
 
         match &mb.block {
             LayoutBlock::Paragraph(block) => {
-                let BlockExtent::Paragraph(measure) = &mb.measure else {
+                let BlockExtent::Paragraph(measure) = &*mb.measure else {
                     return Err(LayoutError::Invalid(
                         "layoutParagraph: expected paragraph measure".into(),
                     ));
@@ -535,7 +535,7 @@ fn place(
             }
 
             LayoutBlock::Table(block) => {
-                let BlockExtent::Table(measure) = &mb.measure else {
+                let BlockExtent::Table(measure) = &*mb.measure else {
                     return Err(LayoutError::Invalid(
                         "layoutTable: expected table measure".into(),
                     ));
@@ -549,7 +549,7 @@ fn place(
             }
 
             LayoutBlock::Image(block) => {
-                let BlockExtent::Image(measure) = &mb.measure else {
+                let BlockExtent::Image(measure) = &*mb.measure else {
                     return Err(LayoutError::Invalid(
                         "layoutImage: expected image measure".into(),
                     ));
@@ -558,7 +558,7 @@ fn place(
             }
 
             LayoutBlock::Shape(block) => {
-                let BlockExtent::Shape(measure) = &mb.measure else {
+                let BlockExtent::Shape(measure) = &*mb.measure else {
                     return Err(LayoutError::Invalid(
                         "layoutShape: expected shape measure".into(),
                     ));
@@ -567,7 +567,7 @@ fn place(
             }
 
             LayoutBlock::Chart(block) => {
-                let BlockExtent::Chart(measure) = &mb.measure else {
+                let BlockExtent::Chart(measure) = &*mb.measure else {
                     return Err(LayoutError::Invalid(
                         "layoutChart: expected chart measure".into(),
                     ));
@@ -576,7 +576,7 @@ fn place(
             }
 
             LayoutBlock::TextBox(block) => {
-                let BlockExtent::TextBox(measure) = &mb.measure else {
+                let BlockExtent::TextBox(measure) = &*mb.measure else {
                     return Err(LayoutError::Invalid(
                         "layoutTextBox: expected textBox measure".into(),
                     ));
@@ -732,7 +732,7 @@ fn refresh_reused_pages(pages: &mut [crate::types::Page], measured: &[MeasuredBl
             };
             match (fragment, &measured.block) {
                 (Fragment::Paragraph(fragment), LayoutBlock::Paragraph(block)) => {
-                    let BlockExtent::Paragraph(extent) = &measured.measure else {
+                    let BlockExtent::Paragraph(extent) = &*measured.measure else {
                         continue;
                     };
                     let (pm_start, pm_end) = get_paragraph_fragment_pm_range(

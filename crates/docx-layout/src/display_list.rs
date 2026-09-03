@@ -1307,7 +1307,7 @@ pub(crate) struct PictureWatermarkIn {
 #[derive(Deserialize)]
 pub(crate) struct MeasuredBlockIn {
     pub(crate) block: BlockIn,
-    pub(crate) measure: crate::types::BlockExtent,
+    pub(crate) measure: std::sync::Arc<crate::types::BlockExtent>,
 }
 
 // variants boxed: a transient deserialization mirror, but the enum nests
@@ -4148,7 +4148,7 @@ fn emit_note_regions(page: &PageIn, ctx: &RenderCtx<'_>) -> Vec<NoteRegion> {
 }
 
 fn measured_block_height(measured: &MeasuredBlockIn) -> f64 {
-    match &measured.measure {
+    match &*measured.measure {
         BlockExtent::Paragraph(measure) => measure.total_height,
         BlockExtent::Table(measure) => measure.total_height,
         BlockExtent::Image(measure) => measure.height,
@@ -4266,7 +4266,7 @@ fn recompose_hf_region(
     let mut front = Vec::new();
     let mut cursor = 0.0;
     for measured in &variant.measured {
-        match (&measured.block, &measured.measure) {
+        match (&measured.block, &*measured.measure) {
             (BlockIn::Paragraph(block), BlockExtent::Paragraph(measure)) => {
                 let before = block
                     .attrs
@@ -4499,7 +4499,7 @@ fn build_display_list_selected(
                         continue;
                     };
                     let (BlockIn::Paragraph(block), BlockExtent::Paragraph(measure)) =
-                        (&mb.block, &mb.measure)
+                        (&mb.block, &*mb.measure)
                     else {
                         prev_para_borders = None;
                         continue;
@@ -4527,7 +4527,7 @@ fn build_display_list_selected(
                         continue;
                     };
                     let (BlockIn::Table(block), BlockExtent::Table(measure)) =
-                        (&mb.block, &mb.measure)
+                        (&mb.block, &*mb.measure)
                     else {
                         continue;
                     };
@@ -4576,7 +4576,7 @@ fn build_display_list_selected(
                         continue;
                     };
                     let (BlockIn::TextBox(block), BlockExtent::TextBox(measure)) =
-                        (&mb.block, &mb.measure)
+                        (&mb.block, &*mb.measure)
                     else {
                         continue;
                     };
@@ -9009,7 +9009,7 @@ fn resident_build_input(
         input.measured.push(MeasuredBlockIn {
             block: serde_json::from_slice(&block)
                 .map_err(|e| format!("parse resident measured block: {e}"))?,
-            measure: measured.measure.clone(),
+            measure: std::sync::Arc::clone(&measured.measure),
         });
     }
     Ok(input)

@@ -27,7 +27,7 @@ fn get_balanced_section_height(
 
     for mb in &measured[start..end] {
         if let (LayoutBlock::Paragraph(block), BlockExtent::Paragraph(measure)) =
-            (&mb.block, &mb.measure)
+            (&mb.block, &*mb.measure)
         {
             total_height += get_spacing_before(block);
             let mut measured_line_height = 0.0_f64;
@@ -57,7 +57,7 @@ fn get_balanced_section_height(
             continue;
         }
 
-        match &mb.measure {
+        match &*mb.measure {
             BlockExtent::Table(table) => {
                 for row in &table.rows {
                     total_height += row.height;
@@ -203,7 +203,7 @@ mod tests {
     fn text_paragraph(text: &str, line_count: usize, line_height: f64) -> MeasuredBlock {
         MeasuredBlock {
             block: LayoutBlock::Paragraph(para_block(vec![text_run(text)], None)),
-            measure: BlockExtent::Paragraph(ParagraphExtent {
+            measure: std::sync::Arc::new(BlockExtent::Paragraph(ParagraphExtent {
                 lines: (0..line_count)
                     .map(|_| TypesetRow {
                         line_height,
@@ -211,7 +211,7 @@ mod tests {
                     })
                     .collect(),
                 total_height: line_count as f64 * line_height,
-            }),
+            })),
         }
     }
 
@@ -226,14 +226,14 @@ mod tests {
                 margins: None,
                 columns: None,
             }),
-            measure: BlockExtent::SectionBreak,
+            measure: std::sync::Arc::new(BlockExtent::SectionBreak),
         }
     }
 
     fn other_block() -> MeasuredBlock {
         MeasuredBlock {
             block: LayoutBlock::Unsupported,
-            measure: BlockExtent::Unsupported,
+            measure: std::sync::Arc::new(BlockExtent::Unsupported),
         }
     }
 
@@ -279,10 +279,10 @@ mod tests {
         // whole 56px paragraph stays in the first column.
         let measured = vec![MeasuredBlock {
             block: LayoutBlock::Paragraph(block),
-            measure: BlockExtent::Paragraph(ParagraphExtent {
+            measure: std::sync::Arc::new(BlockExtent::Paragraph(ParagraphExtent {
                 lines: vec![TypesetRow::default(), TypesetRow::default()],
                 total_height: 40.0,
-            }),
+            })),
         }];
         let mut paginator = MockPaginator::new(2.0, 100.0, 400.0);
         balance_terminal_continuous_text_columns(&measured, &mut paginator, 0, measured.len());
@@ -357,7 +357,7 @@ mod tests {
     fn paragraph_block_with_non_paragraph_measure_disables_balancing() {
         let measured = vec![MeasuredBlock {
             block: LayoutBlock::Paragraph(para_block(vec![], None)),
-            measure: BlockExtent::Unsupported,
+            measure: std::sync::Arc::new(BlockExtent::Unsupported),
         }];
         let mut paginator = MockPaginator::new(2.0, 100.0, 400.0);
         balance_terminal_continuous_text_columns(&measured, &mut paginator, 0, measured.len());
