@@ -159,6 +159,53 @@ fn fold_serializable<T: serde::Serialize + ?Sized>(hash: u64, value: &T) -> Opti
     Some(sink.0)
 }
 
+/// Folds a yrs value directly, without formatting it as JSON first.
+///
+/// Every run attribute and every paragraph's properties are folded on every
+/// keystroke; going through `serde_json` to do it spends the lowering pass in
+/// number formatting and string escaping. The tag byte keeps variants that
+/// print alike — `1` and `"1"`, an empty array and an empty map — apart.
+fn fold_any(hash: u64, value: &Any) -> u64 {
+    match value {
+        Any::Null => fold_bytes(hash, b"\x00"),
+        Any::Undefined => fold_bytes(hash, b"\x01"),
+        Any::Bool(flag) => fold_bytes(fold_bytes(hash, b"\x02"), &[u8::from(*flag)]),
+        Any::Number(number) => fold_bytes(fold_bytes(hash, b"\x03"), &number.to_le_bytes()),
+        Any::BigInt(number) => fold_bytes(fold_bytes(hash, b"\x04"), &number.to_le_bytes()),
+        Any::String(text) => fold_bytes(fold_bytes(hash, b"\x05"), text.as_bytes()),
+        Any::Buffer(bytes) => fold_bytes(fold_bytes(hash, b"\x06"), bytes),
+        Any::Array(items) => {
+            let mut hash = fold_bytes(hash, b"\x07");
+            for item in items.iter() {
+                hash = fold_any(hash, item);
+            }
+            hash
+        }
+        // A hash map, so it is folded through a sorted view — iteration order
+        // must not decide identity.
+        Any::Map(entries) => {
+            let mut keys: Vec<&String> = entries.keys().collect();
+            keys.sort_unstable();
+            let mut hash = fold_bytes(hash, b"\x08");
+            for key in keys {
+                hash = fold_bytes(hash, key.as_bytes());
+                hash = fold_any(hash, &entries[key]);
+            }
+            hash
+        }
+    }
+}
+
+/// Folds an already-sorted map of yrs values — a paragraph's properties.
+fn fold_sorted_any<'a>(hash: u64, entries: impl Iterator<Item = (&'a str, &'a Any)>) -> u64 {
+    let mut hash = hash;
+    for (key, value) in entries {
+        hash = fold_bytes(hash, key.as_bytes());
+        hash = fold_any(hash, value);
+    }
+    hash
+}
+
 /// Run attributes are an unordered map, so they are folded through a sorted
 /// view — iteration order must not decide a paragraph's identity.
 fn fold_attrs(hash: u64, attributes: Option<&Attrs>) -> Option<u64> {
@@ -169,13 +216,8 @@ fn fold_attrs(hash: u64, attributes: Option<&Attrs>) -> Option<u64> {
         .iter()
         .map(|(key, value)| (key.as_ref(), value))
         .collect();
-    entries.sort_by_key(|(key, _)| *key);
-    let mut hash = hash;
-    for (key, value) in entries {
-        hash = fold_bytes(hash, key.as_bytes());
-        hash = fold_serializable(hash, value)?;
-    }
-    Some(hash)
+    entries.sort_unstable_by_key(|(key, _)| *key);
+    Some(fold_sorted_any(hash, entries.into_iter()))
 }
 
 /// Everything outside a paragraph that still decides how it lowers: the render
@@ -294,7 +336,12 @@ fn lower_story<T: ReadTxn>(
                     // and the section break that may follow it.
                     let values = pilcrow_values(&pilcrow, txn);
                     paragraph_key = paragraph_key
-                        .and_then(|hash| fold_serializable(hash, &values))
+                        .map(|hash| {
+                            fold_sorted_any(
+                                hash,
+                                values.iter().map(|(key, value)| (key.as_str(), value)),
+                            )
+                        })
                         .and_then(|hash| fold_attrs(hash, attributes));
                     let paragraph_blocks = flush_paragraph_parts(
                         paragraph_runs,
@@ -3400,16 +3447,65 @@ mod tests {
 
     const DATE: &str = "2026-07-13T12:00:00Z";
 
+    #[test]
+    fn fold_any_separates_values_that_print_alike() {
+        let fold = |value: &Any| fold_any(FNV_OFFSET, value);
+        let distinct = [
+            Any::Null,
+            Any::Undefined,
+            Any::Bool(true),
+            Any::Number(1.0),
+            Any::BigInt(1),
+            Any::String("1".into()),
+            Any::Buffer(Arc::from([1_u8].as_slice())),
+            Any::Array(Arc::from([].as_slice())),
+            Any::Map(Arc::new(Default::default())),
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for value in &distinct {
+            assert!(seen.insert(fold(value)), "collided: {value:?}");
+        }
+    }
+
+    #[test]
+    fn fold_any_ignores_map_order() {
+        let entry = |pairs: [(&str, i64); 2]| {
+            Any::Map(Arc::new(
+                pairs
+                    .into_iter()
+                    .map(|(key, value)| (key.to_owned(), Any::BigInt(value)))
+                    .collect(),
+            ))
+        };
+        assert_eq!(
+            fold_any(FNV_OFFSET, &entry([("a", 1), ("b", 2)])),
+            fold_any(FNV_OFFSET, &entry([("b", 2), ("a", 1)]))
+        );
+        assert_ne!(
+            fold_any(FNV_OFFSET, &entry([("a", 1), ("b", 2)])),
+            fold_any(FNV_OFFSET, &entry([("a", 2), ("b", 1)]))
+        );
+    }
+
     /// Where lowering a whole story spends its time. A keystroke re-lowers
     /// everything, so each part here is paid on every key.
     ///
     /// Reusing retained paragraphs instead of rebuilding them was tried against
     /// this and did not pay: with 2711 of 2753 paragraphs moved rather than
     /// built — identity from the content keys, positions re-stamped — lowering
-    /// moved by under 7%, and by less than the run-to-run spread. What a
-    /// keystroke spends here is the memory traffic of the block array itself,
-    /// not the work of building a paragraph's structure. Anything faster has to
-    /// stop moving the blocks around, not stop computing them.
+    /// moved by under 7%, and by less than the run-to-run spread.
+    ///
+    /// Stubbing each part out in turn says why, against a 33.5ms pass on
+    /// heavy-300p.docx: building every paragraph is 8.3ms of it, of which the
+    /// attributes are 3.7ms and the whole run pipeline — defaults, coalescing,
+    /// logical order — is 0.3ms; reading each pilcrow's properties is 3.0ms;
+    /// cutting text into runs is 5.4ms; the yrs walk is 1.0ms; copying the
+    /// finished array out to the caller is 1.7ms. There is no cliff here.
+    /// Reuse can only reach the parts a retained paragraph makes unnecessary,
+    /// and the list numbering and the section break that follows a paragraph
+    /// both need the properties and the attributes anyway — so it is worth
+    /// about 10ms of the 33.5, for a lowering loop that would have to defer
+    /// every build until its key is known.
     ///
     ///   cargo test -p betteroffice-docx-edit --release --lib lowering_cost \
     ///     -- --ignored --nocapture

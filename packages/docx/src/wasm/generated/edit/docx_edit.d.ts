@@ -842,8 +842,8 @@ export interface InitOutput {
     readonly heap_live_bytes: () => number;
     readonly heap_reset_peak: () => void;
     readonly heap_stats_available: () => number;
-    readonly heap_peak_bytes: () => number;
     readonly editsession_load: (a: number, b: number, c: number) => [number, number];
+    readonly heap_peak_bytes: () => number;
     readonly parse_docx_relationships: (a: number, b: number) => [number, number, number, number];
     readonly parse_docx_s2: (a: number, b: number) => [number, number, number, number];
     readonly parse_docx_s3: (a: number, b: number) => [number, number, number, number];
