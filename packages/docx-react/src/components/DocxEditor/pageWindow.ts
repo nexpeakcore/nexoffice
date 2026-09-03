@@ -55,3 +55,17 @@ export function nextPageWindow(
 export function openingPageWindow(): { start: number; count: number } {
   return { start: 0, count: PAGE_WINDOW_MIN_PAGES + PAGE_WINDOW_BUFFER * 4 };
 }
+
+/**
+ * How much of the body the first pass lays out. Measuring every block before
+ * painting any of them is what a long document waits on — 730ms of a 1.3s
+ * layout on a 343-page fixture — while the reader is looking at page one.
+ *
+ * Blocks are the only knob available before measuring tells anyone how tall
+ * they are. Eight per page is ordinary prose, so this covers the opening
+ * window with room to spare; a document whose blocks are far taller paints
+ * fewer pages for the moment it takes the unrestricted pass to land.
+ */
+export function openingBlockPrefix(): number {
+  return 96;
+}

@@ -65,6 +65,12 @@ const intactBackBuffers = new Set<string>();
 let requestArrivedAt = 0;
 let requestQueuedMs = 0;
 
+/** The open's region request, restricted to the leading blocks it asked for. */
+function openLayoutInput(layoutInput: string, firstBlocks: number | undefined): string {
+  if (firstBlocks === undefined) return layoutInput;
+  return JSON.stringify({ ...JSON.parse(layoutInput), firstBlocks });
+}
+
 scope.onmessage = (event: MessageEvent<ResidentEngineWorkerRequest>) => {
   const arrivedAt = performance.now();
   operations = operations
@@ -118,7 +124,9 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
     // here, inside this one region layout, and nowhere else. Nothing can be
     // said while it runs, so the host is told before and after.
     progress('layingOut');
-    session.layoutDocumentWithRegionsVoid(request.layoutInput);
+    const partial = session.layoutDocumentWithRegionsVoid(
+      openLayoutInput(request.layoutInput, request.open.firstBlocks)
+    );
     progress('laidOut');
     // A document opens at its first page, so the first frame carries those.
     // The view widens this the moment it knows its own viewport.
@@ -135,6 +143,7 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
       loadMs: loadedAt - sessionAt,
       layoutMs: laidOutAt - loadedAt,
       frameMs: performance.now() - laidOutAt,
+      partial,
     };
     await replyFrame(
       request.id,
@@ -176,6 +185,7 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
       loadMs: loadedAt - sessionAt,
       layoutMs: 0,
       frameMs: performance.now() - started,
+      partial: false,
     };
     await replyFrame(
       request.id,

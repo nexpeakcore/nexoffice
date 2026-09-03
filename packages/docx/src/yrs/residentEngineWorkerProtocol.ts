@@ -161,6 +161,11 @@ export interface YrsOpenProfile {
   layoutMs: number;
   /** Building the first display list and encoding its frame. */
   frameMs: number;
+  /**
+   * The pass covered only the leading blocks the open asked for. The document
+   * is not fully paginated until the host asks again without a restriction.
+   */
+  partial: boolean;
 }
 
 /** A sign of life, not a result: the request it names is still running. */
