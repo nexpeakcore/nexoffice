@@ -1110,25 +1110,25 @@ pub struct TypesetRunAdvance {
     pub logical_order: Option<u64>,
 }
 
-// A measure may arrive from a host that omits what it has nothing to say
-// about; an absent number reads as zero rather than as a parse failure.
+/// One shaped cluster's placement on a line.
+///
+/// There is one of these per character of the document and they are the
+/// largest thing an open document retains — 816,642 of them on a 338-page
+/// fixture. So this mirrors `TypesetClusterAdvanceOut`, the only thing that
+/// produces it, field for field and width for width: as seven optional 64-bit
+/// fields it took 104 bytes to carry 25 bytes of shaping, and 81MB to say what
+/// fits in 22MB. No host supplies these — they are produced and consumed
+/// inside the engine — so nothing needs the absent case.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TypesetClusterAdvance {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_index: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub start_char: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub end_char: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub advance: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub x_offset: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bidi_level: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub logical_order: Option<u64>,
+    pub run_index: u32,
+    pub start_char: u32,
+    pub end_char: u32,
+    pub advance: f32,
+    pub x_offset: f32,
+    pub bidi_level: u8,
+    pub logical_order: u32,
 }
 
 // A measure may arrive from a host that omits what it has nothing to say

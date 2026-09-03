@@ -3870,6 +3870,132 @@ mod tests {
     ///
     ///   cargo test -p betteroffice-docx-edit --release --features yrs-cursor \
     ///     --lib open_cost -- --ignored --nocapture
+    /// What an open document costs in memory, stage by stage.
+    ///
+    /// A 2.7MB file was reported at 545MB in the worker's engine, so the
+    /// question is which retained structure holds it. Needs the counting
+    /// allocator, which is off in the shipped build.
+    ///
+    ///   cargo test -p betteroffice-docx-edit --release \
+    ///     --features yrs-cursor,heap-stats --lib open_memory -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx and heap-stats"]
+    fn open_memory() {
+        assert!(
+            crate::heap_stats::available(),
+            "build with --features heap-stats"
+        );
+        const FONT: &[u8] =
+            include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        let bytes = std::fs::read(&path).expect("fixture");
+        docx_layout::clear_measure_fonts();
+        let font_id = docx_layout::register_measure_font(FONT).unwrap();
+        let request = serde_json::json!({
+            "bodyStory": "body",
+            "options": {"pageGap": 24},
+            "regions": {
+                "sections": [{
+                    "sectionId": "main",
+                    "pageSize": {"w": 816, "h": 1056},
+                    "margins": {"top": 96, "right": 96, "bottom": 96, "left": 96,
+                                "header": 48, "footer": 48}
+                }]
+            },
+            "notes": {"contents": []},
+            "measurement": {
+                "fontChains": {"calibri|0|0": [font_id], "calibri|0|1": [font_id],
+                               "calibri|1|0": [font_id]},
+                "defaults": {"fontSize": 24, "fontFamily": "Calibri"},
+                "authoritativeShaping": true
+            },
+            "renderEnv": {}
+        })
+        .to_string();
+
+        let mb = |bytes: usize| bytes as f64 / (1024.0 * 1024.0);
+        let mut previous = crate::heap_stats::live_bytes();
+        let mut stage = |label: &str| {
+            let live = crate::heap_stats::live_bytes();
+            let peak = crate::heap_stats::peak_bytes();
+            println!(
+                "{label:<22} live {:>8.1} MB   (+{:>7.1})   peak {:>8.1} MB",
+                mb(live),
+                mb(live.saturating_sub(previous)),
+                mb(peak)
+            );
+            previous = live;
+            crate::heap_stats::reset_peak();
+        };
+
+        stage("before anything");
+        let engine = EngineSession::new(3009);
+        crate::seed_from_docx(engine.doc(), &bytes).expect("seed");
+        stage("seeded (yrs doc)");
+        engine.layout_document_with_regions_void(&request).unwrap();
+        stage("laid out");
+        engine.set_page_window(Some(0..12));
+        let frame = engine.build_display_list_frame("{}", 0).unwrap();
+        stage("first frame built");
+        println!("frame bytes            {:>8.1} MB", mb(frame.len()));
+        println!("file bytes             {:>8.1} MB", mb(bytes.len()));
+
+        // What the retained measure is made of, and what each part costs at
+        // its in-memory size rather than its serialized one.
+        {
+            let pagination = engine.pagination.borrow();
+            let input = pagination.input.as_ref().expect("laid out");
+            let (mut lines, mut clusters, mut runs, mut bidi, mut segments) = (0, 0, 0, 0, 0);
+            for measured in &input.measured {
+                let docx_layout::types::BlockExtent::Paragraph(extent) = &measured.measure else {
+                    continue;
+                };
+                lines += extent.lines.len();
+                for line in &extent.lines {
+                    clusters += line.cluster_advances.as_ref().map_or(0, Vec::len);
+                    runs += line.run_advances.as_ref().map_or(0, Vec::len);
+                    bidi += line.bidi_slices.as_ref().map_or(0, Vec::len);
+                    segments += line.segments.as_ref().map_or(0, Vec::len);
+                }
+            }
+            let size = std::mem::size_of::<docx_layout::types::TypesetClusterAdvance>();
+            println!(
+                "\nlines                  {lines:>10}  x {:>4}B = {:>7.1} MB",
+                std::mem::size_of::<docx_layout::types::TypesetRow>(),
+                mb(lines * std::mem::size_of::<docx_layout::types::TypesetRow>())
+            );
+            println!(
+                "cluster advances       {clusters:>10}  x {size:>4}B = {:>7.1} MB",
+                mb(clusters * size)
+            );
+            println!(
+                "run advances           {runs:>10}  x {:>4}B = {:>7.1} MB",
+                std::mem::size_of::<docx_layout::types::TypesetRunAdvance>(),
+                mb(runs * std::mem::size_of::<docx_layout::types::TypesetRunAdvance>())
+            );
+            println!(
+                "bidi slices            {bidi:>10}  x {:>4}B = {:>7.1} MB",
+                std::mem::size_of::<docx_layout::types::TypesetBidiSlice>(),
+                mb(bidi * std::mem::size_of::<docx_layout::types::TypesetBidiSlice>())
+            );
+            println!(
+                "row segments           {segments:>10}  x {:>4}B = {:>7.1} MB",
+                std::mem::size_of::<docx_layout::types::TypesetRowSegment>(),
+                mb(segments * std::mem::size_of::<docx_layout::types::TypesetRowSegment>())
+            );
+            println!(
+                "blocks                 {:>10}  x {:>4}B = {:>7.1} MB",
+                input.measured.len(),
+                std::mem::size_of::<docx_layout::types::LayoutBlock>(),
+                mb(input.measured.len() * std::mem::size_of::<docx_layout::types::LayoutBlock>())
+            );
+        }
+        drop(frame);
+        drop(engine);
+        stage("engine dropped");
+    }
+
     #[test]
     #[ignore = "measurement; needs test-fixtures/heavy-300p.docx"]
     fn open_cost() {

@@ -5178,19 +5178,17 @@ fn authoritative_line_items<'a>(
         slices.sort_by_key(|slice| slice.5);
     } else if !cluster_advances.is_empty() {
         for (index, cluster) in cluster_advances.iter().enumerate() {
+            let _ = index;
             slices.push((
-                cluster.run_index? as usize,
-                cluster.start_char? as usize,
-                cluster.end_char? as usize,
-                cluster.advance?,
-                cluster.bidi_level.unwrap_or(default_level),
+                cluster.run_index as usize,
+                cluster.start_char as usize,
+                cluster.end_char as usize,
+                f64::from(cluster.advance),
+                cluster.bidi_level,
                 // xOffset is the authoritative visual coordinate. Convert it
                 // to a stable integer sort key without changing the value.
-                cluster
-                    .x_offset
-                    .map(|x| (x.max(0.0) * 1_000.0).round() as u64)
-                    .unwrap_or(index as u64),
-                cluster.logical_order,
+                (f64::from(cluster.x_offset).max(0.0) * 1_000.0).round() as u64,
+                Some(u64::from(cluster.logical_order)),
             ));
         }
         slices.sort_by_key(|slice| slice.5);
