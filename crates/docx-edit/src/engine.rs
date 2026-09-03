@@ -3870,6 +3870,196 @@ mod tests {
     ///
     ///   cargo test -p betteroffice-docx-edit --release --features yrs-cursor \
     ///     --lib open_cost -- --ignored --nocapture
+    /// What a peer pays to receive the document instead of parsing it.
+    ///
+    /// The main thread parses and seeds, then ships the yrs state to the
+    /// worker. Its wasm memory claims the seed peak forever. This asks what
+    /// the other order would cost: `load_state` on a fresh engine.
+    ///
+    /// Seeding peaks with four shapes of the same document alive at once —
+    /// the typed envelope (80.6MB), a `serde_json::Value` tree (+44), the
+    /// re-serialized JSON (+39) and an `OrderedValue` tree (+37) — for a
+    /// result that occupies 44MB.
+    ///
+    /// Reordering that to serialize once, drop the envelope, and parse both
+    /// trees back from the text was tried: it takes the peak from 201MB to
+    /// 124MB by this counter and makes the shipped wasm module claim MORE
+    /// (193.8MB to 220.3MB, measured in the app). These counters total the
+    /// bytes a program asks for; what a wasm module claims is the high-water
+    /// mark of *contiguous* address space its allocator could not satisfy
+    /// from free lists, and it never shrinks. Lowering one can raise the
+    /// other. Read this benchmark against the app, never instead of it.
+    ///
+    ///   cargo test -p betteroffice-docx-edit --release \
+    ///     --features yrs-cursor,heap-stats --lib load_state_memory -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx and heap-stats"]
+    fn load_state_memory() {
+        assert!(
+            crate::heap_stats::available(),
+            "build with --features heap-stats"
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        let bytes = std::fs::read(&path).expect("fixture");
+        let mb = |bytes: usize| bytes as f64 / (1024.0 * 1024.0);
+
+        let seeder = EngineSession::new(3011);
+        crate::heap_stats::reset_peak();
+        let before_seed = crate::heap_stats::live_bytes();
+        crate::seed_from_docx(seeder.doc(), &bytes).expect("seed");
+        println!(
+            "seeded from the file   live +{:>7.1} MB   peak {:>7.1} MB",
+            mb(crate::heap_stats::live_bytes().saturating_sub(before_seed)),
+            mb(crate::heap_stats::peak_bytes())
+        );
+
+        let state = seeder.doc().encode_state_as_update_v1();
+        println!("state on the wire      {:>8.1} MB", mb(state.len()));
+
+        let peer = EngineSession::new(3012);
+        crate::heap_stats::reset_peak();
+        let before_load = crate::heap_stats::live_bytes();
+        peer.doc().apply_update_v1(&state).expect("load");
+        println!(
+            "loaded from the state  live +{:>7.1} MB   peak {:>7.1} MB",
+            mb(crate::heap_stats::live_bytes().saturating_sub(before_load)),
+            mb(crate::heap_stats::peak_bytes())
+        );
+
+        // Both must hold the same document, or the comparison is meaningless.
+        assert_eq!(
+            seeder.doc().story_len("body").unwrap(),
+            peer.doc().story_len("body").unwrap()
+        );
+        assert_eq!(
+            seeder.doc().paragraphs("body").unwrap().len(),
+            peer.doc().paragraphs("body").unwrap().len()
+        );
+    }
+
+    /// What the parsed DOCX envelope is made of.
+    ///
+    /// Parsing a 2.7MB file holds 77.9MB, and that peak is what the main
+    /// thread's wasm memory claims for the life of the document. This counts
+    /// the envelope's parts at their in-memory size, the way `open_memory`
+    /// did for the measure.
+    ///
+    ///   cargo test -p betteroffice-docx-edit --release \
+    ///     --features heap-stats --lib envelope_memory -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx and heap-stats"]
+    fn envelope_memory() {
+        use docx_parse::block::BlockContent;
+        use docx_parse::inline::{InlineNode, Run, RunContent};
+        use docx_parse::paragraph::{Paragraph, ParagraphContent};
+
+        assert!(
+            crate::heap_stats::available(),
+            "build with --features heap-stats"
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        let bytes = std::fs::read(&path).expect("fixture");
+        let before = crate::heap_stats::live_bytes();
+        let envelope = crate::seed::parse_docx_for_edit(&bytes).expect("parse");
+        let live = crate::heap_stats::live_bytes().saturating_sub(before);
+        let mb = |bytes: usize| bytes as f64 / (1024.0 * 1024.0);
+
+        let (mut paragraphs, mut runs, mut contents, mut text_bytes, mut inlines) = (0, 0, 0, 0, 0);
+        let mut node_type_bytes = 0;
+        let mut walk_paragraph = |paragraph: &Paragraph| {
+            paragraphs += 1;
+            node_type_bytes += paragraph.node_type.capacity();
+            for content in &paragraph.content {
+                let ParagraphContent::Inline(inline) = content else {
+                    inlines += 1;
+                    continue;
+                };
+                inlines += 1;
+                let InlineNode::Run(run) = inline else {
+                    continue;
+                };
+                let Run { content, .. } = run;
+                runs += 1;
+                contents += content.len();
+                for entry in content {
+                    if let RunContent::Text { text, .. } = entry {
+                        text_bytes += text.capacity();
+                    }
+                }
+            }
+        };
+        for block in &envelope.document.package.document.content {
+            if let BlockContent::Paragraph(paragraph) = block {
+                walk_paragraph(paragraph);
+            }
+        }
+
+        let size = |count: usize, each: usize| (count, each, mb(count * each));
+        let rows = [
+            (
+                "paragraphs",
+                size(paragraphs, std::mem::size_of::<Paragraph>()),
+            ),
+            (
+                "paragraph content",
+                size(inlines, std::mem::size_of::<ParagraphContent>()),
+            ),
+            ("runs", size(runs, std::mem::size_of::<Run>())),
+            (
+                "run content",
+                size(contents, std::mem::size_of::<RunContent>()),
+            ),
+        ];
+        println!(
+            "envelope live          {:>8.1} MB   (file {:.1} MB)",
+            mb(live),
+            mb(bytes.len())
+        );
+        for (label, (count, each, total)) in rows {
+            println!("{label:<22} {count:>10}  x {each:>5}B = {total:>7.1} MB");
+        }
+        println!(
+            "{:<22} {:>10}           {:>9.1} MB",
+            "run text",
+            "",
+            mb(text_bytes)
+        );
+        {
+            use docx_parse::{ParagraphFormatting, TextFormatting};
+            let with_formatting = envelope
+                .document
+                .package
+                .document
+                .content
+                .iter()
+                .filter(
+                    |block| matches!(block, BlockContent::Paragraph(p) if p.formatting.is_some()),
+                )
+                .count();
+            println!(
+                "\nBlockContent           {:>5}B     Paragraph {:>5}B of which ParagraphFormatting {:>5}B",
+                std::mem::size_of::<BlockContent>(),
+                std::mem::size_of::<Paragraph>(),
+                std::mem::size_of::<ParagraphFormatting>()
+            );
+            println!(
+                "InlineNode             {:>5}B     Run       {:>5}B of which TextFormatting      {:>5}B",
+                std::mem::size_of::<InlineNode>(),
+                std::mem::size_of::<Run>(),
+                std::mem::size_of::<TextFormatting>()
+            );
+            println!("paragraphs carrying formatting {with_formatting} of {paragraphs}");
+        }
+        println!(
+            "{:<22} {:>10}           {:>9.1} MB",
+            "\"paragraph\" strings",
+            paragraphs,
+            mb(node_type_bytes)
+        );
+    }
+
     /// What an open document costs in memory, stage by stage.
     ///
     /// A 2.7MB file was reported at 545MB in the worker's engine, so the
