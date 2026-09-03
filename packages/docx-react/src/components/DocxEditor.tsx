@@ -1009,9 +1009,16 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
 
   const handleYrsContentChange = useCallback(() => {
     if (onChange || contentChangeSubscribersRef.current.size > 0) {
-      commitYrsDocumentChange(yrsCore.documentFromYrs, {
-        push: pushDocument,
-        notify: notifyDocumentChange,
+      // Deferred and coalesced, the way the legacy path already does it. This
+      // projection walks every story in the document — on a long one that is
+      // longer than the engine takes to lay the edit out — and typing it once
+      // per keystroke bought nothing: the save path projects on demand, so
+      // nobody reads this between one key and the next.
+      scheduleLegacyProjection(() => {
+        commitYrsDocumentChange(yrsCore.documentFromYrs, {
+          push: pushDocument,
+          notify: notifyDocumentChange,
+        });
       });
     }
     handleContentHousekeeping();
@@ -1020,6 +1027,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     notifyDocumentChange,
     onChange,
     pushDocument,
+    scheduleLegacyProjection,
     yrsCore.documentFromYrs,
   ]);
 
