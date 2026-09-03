@@ -3,14 +3,14 @@ import {
   createYrsInputPositionMap,
   displayPositionToYrsLoc,
   type YrsSession,
-  type YrsStorySegment,
+  type YrsStoryOutlineSegment,
 } from '@betteroffice/docx/yrs';
 import { YrsPositionProjection } from './yrsPositionProjection';
 
-const segments: Record<string, YrsStorySegment[]> = {
+const segments: Record<string, YrsStoryOutlineSegment[]> = {
   body: [
-    { kind: 'text', text: 'before', attributes: {} },
-    { kind: 'pilcrow', paraId: 'body:p0', properties: {}, attributes: {} },
+    { kind: 'text', len: 6 },
+    { kind: 'pilcrow', paraId: 'body:p0' },
     {
       kind: 'embed',
       embedKind: 'table',
@@ -20,17 +20,17 @@ const segments: Record<string, YrsStorySegment[]> = {
       },
       attributes: {},
     },
-    { kind: 'text', text: 'after', attributes: {} },
-    { kind: 'pilcrow', paraId: 'body:p1', properties: {}, attributes: {} },
+    { kind: 'text', len: 5 },
+    { kind: 'pilcrow', paraId: 'body:p1' },
   ],
   'body:t0:r0c0': [
-    { kind: 'text', text: 'cell', attributes: {} },
-    { kind: 'pilcrow', paraId: 'cell:p0', properties: {}, attributes: {} },
+    { kind: 'text', len: 4 },
+    { kind: 'pilcrow', paraId: 'cell:p0' },
   ],
 };
 
 const session = {
-  storySegments: (story: string) => segments[story] ?? [],
+  storyOutline: (story: string) => segments[story] ?? [],
 } as unknown as YrsSession;
 
 describe('YrsPositionProjection', () => {

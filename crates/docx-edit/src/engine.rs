@@ -1537,17 +1537,16 @@ impl EngineSession {
         if keys.len() != blocks.len() {
             return Err("resident lowering did not key every block".to_owned());
         }
-        let (previous, previous_fingerprints, previous_keys) = {
-            let pagination = self.pagination.borrow();
-            (
-                pagination
-                    .input
-                    .clone()
-                    .ok_or_else(|| "resident pagination input is not built".to_owned())?,
-                pagination.block_fingerprints.clone(),
-                pagination.content_keys.clone(),
-            )
-        };
+        // Borrowed, not copied. Pagination keeps these — the incremental pass
+        // that follows diffs against them — so a copy here is a second measured
+        // document per keystroke, and all this pass takes from one is an extent
+        // to reuse and a fingerprint to carry forward.
+        let pagination = self.pagination.borrow();
+        let previous = pagination
+            .input
+            .as_ref()
+            .ok_or_else(|| "resident pagination input is not built".to_owned())?;
+        let previous_fingerprints = &pagination.block_fingerprints;
         let paragraph_merge = blocks.len().checked_add(1) == Some(previous.measured.len());
         if blocks.len() != previous.measured.len() && !paragraph_merge {
             return Err("resident plain-text input changed the block structure".to_owned());
@@ -1559,15 +1558,20 @@ impl EngineSession {
         // Retained from the last pass when it left one, so an unchanged block is
         // recognised by the key lowering already computed rather than by
         // fingerprinting the built block again.
-        let previous_keys = (previous_keys.len() == previous.measured.len())
-            .then_some(previous_keys)
-            .unwrap_or_else(|| vec![None; previous.measured.len()]);
+        let unkeyed;
+        let previous_keys: &[Option<BlockIdentity>] =
+            if pagination.content_keys.len() == previous.measured.len() {
+                &pagination.content_keys
+            } else {
+                unkeyed = vec![None; previous.measured.len()];
+                &unkeyed
+            };
         let mut previous_blocks = previous
             .measured
-            .into_iter()
+            .iter()
             .zip(previous_fingerprints)
             .zip(previous_keys)
-            .map(|((measured, fingerprint), key)| (measured, fingerprint, key))
+            .map(|((measured, fingerprint), key)| (measured, *fingerprint, *key))
             .peekable();
         let mut skipped_merged_paragraph = false;
         let mut measured = Vec::with_capacity(blocks.len());
@@ -1624,7 +1628,7 @@ impl EngineSession {
                 }
                 measured.push(MeasuredBlock {
                     block: next_block,
-                    measure: previous_measured.measure,
+                    measure: previous_measured.measure.clone(),
                 });
                 block_fingerprints.push(previous_fingerprint);
                 content_keys.push(Some(next_identity));
@@ -1638,7 +1642,7 @@ impl EngineSession {
             if unchanged {
                 measured.push(MeasuredBlock {
                     block: next_block,
-                    measure: previous_measured.measure,
+                    measure: previous_measured.measure.clone(),
                 });
                 block_fingerprints.push(previous_fingerprint);
                 content_keys.push(Some(next_identity));
@@ -1687,7 +1691,7 @@ impl EngineSession {
         Ok(ResidentLayoutInput {
             input: LayoutInput {
                 measured,
-                options: previous.options,
+                options: previous.options.clone(),
             },
             block_fingerprints,
             content_keys,
@@ -3788,6 +3792,542 @@ mod tests {
         assert_eq!(slim, after, "the void pass leaves the same layout behind");
     }
 
+    /// A digest of the display list the fixture produces, so a change to how
+    /// the engine's typed document reaches the display list builder can be held
+    /// against what it produced before.
+    ///
+    /// Prints rather than asserts: the number belongs to a fixture that is
+    /// generated, not committed, so it is a before/after instrument for one
+    /// change rather than a constant to defend.
+    ///
+    ///   cargo test -p betteroffice-docx-edit --release --features yrs-cursor \
+    ///     --lib display_list_digest -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx"]
+    fn display_list_digest() {
+        const FONT: &[u8] =
+            include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        let bytes = std::fs::read(&path).expect("fixture");
+        docx_layout::clear_measure_fonts();
+        let font_id = docx_layout::register_measure_font(FONT).unwrap();
+        let request = serde_json::json!({
+            "bodyStory": "body",
+            "options": {"pageGap": 24},
+            "regions": {
+                "sections": [{
+                    "sectionId": "main",
+                    "pageSize": {"w": 816, "h": 1056},
+                    "margins": {"top": 96, "right": 96, "bottom": 96, "left": 96,
+                                "header": 48, "footer": 48}
+                }]
+            },
+            "notes": {"contents": []},
+            "measurement": {
+                "fontChains": {"calibri|0|0": [font_id], "calibri|0|1": [font_id],
+                               "calibri|1|0": [font_id]},
+                "defaults": {"fontSize": 24, "fontFamily": "Calibri"},
+                "authoritativeShaping": true
+            },
+            "renderEnv": {}
+        })
+        .to_string();
+
+        let engine = EngineSession::new(3003);
+        crate::seed_from_docx(engine.doc(), &bytes).expect("seed");
+        engine.layout_document_with_regions_void(&request).unwrap();
+        engine.build_display_list_frame("{}", 0).unwrap();
+        let display = engine.display.borrow();
+        let list = display.list.as_ref().expect("display list retained");
+        let json = serde_json::to_string(list).unwrap();
+        println!("display list      {} KB", json.len() / 1024);
+        println!("digest            {:016x}", hash_bytes(json.as_bytes()));
+    }
+
+    /// What opening a document costs, split the way the worker does it.
+    ///
+    /// `frame` is the interesting one, and inside it `display input`, which on
+    /// the fixture is 578ms of a 639ms frame. It is not building anything: it
+    /// converts the engine's typed document into the display list's own
+    /// `*In` mirror of the same shapes by serializing it to JSON and parsing it
+    /// back. Attributed once, so the next person need not:
+    ///
+    ///   layout           10,866 KB parsed in 13.8ms  (serde skips what the
+    ///                                                 mirror does not declare)
+    ///   2753 blocks      107,091 KB in 552.8ms       (serialize 155, parse 410)
+    ///     of which block   9,194 KB
+    ///     of which measure 97,897 KB                 (91% — typeset advances)
+    ///
+    /// So the cost is not spread across the 87 mirror types: it is the `measure`
+    /// field of every block. `MeasureIn` and its extents mirror `BlockExtent`,
+    /// which already derives `Deserialize` — 78 mentions to move over.
+    ///
+    /// Run it the way the product is built. `yrs-cursor` is off by default, so
+    /// without it this measures a seeding path nothing ships — 2061ms against
+    /// 280ms on the fixture, which is enough to point the whole investigation
+    /// at the wrong phase.
+    ///
+    ///   cargo test -p betteroffice-docx-edit --release --features yrs-cursor \
+    ///     --lib open_cost -- --ignored --nocapture
+    /// What a peer pays to receive the document instead of parsing it.
+    ///
+    /// The main thread parses and seeds, then ships the yrs state to the
+    /// worker. Its wasm memory claims the seed peak forever. This asks what
+    /// the other order would cost: `load_state` on a fresh engine.
+    ///
+    /// Seeding peaks with four shapes of the same document alive at once —
+    /// the typed envelope (80.6MB), a `serde_json::Value` tree (+44), the
+    /// re-serialized JSON (+39) and an `OrderedValue` tree (+37) — for a
+    /// result that occupies 44MB.
+    ///
+    /// Reordering that to serialize once, drop the envelope, and parse both
+    /// trees back from the text was tried: it takes the peak from 201MB to
+    /// 124MB by this counter and makes the shipped wasm module claim MORE
+    /// (193.8MB to 220.3MB, measured in the app). These counters total the
+    /// bytes a program asks for; what a wasm module claims is the high-water
+    /// mark of *contiguous* address space its allocator could not satisfy
+    /// from free lists, and it never shrinks. Lowering one can raise the
+    /// other. Read this benchmark against the app, never instead of it.
+    ///
+    ///   cargo test -p betteroffice-docx-edit --release \
+    ///     --features yrs-cursor,heap-stats --lib load_state_memory -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx and heap-stats"]
+    fn load_state_memory() {
+        assert!(
+            crate::heap_stats::available(),
+            "build with --features heap-stats"
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        let bytes = std::fs::read(&path).expect("fixture");
+        let mb = |bytes: usize| bytes as f64 / (1024.0 * 1024.0);
+
+        let seeder = EngineSession::new(3011);
+        crate::heap_stats::reset_peak();
+        let before_seed = crate::heap_stats::live_bytes();
+        crate::seed_from_docx(seeder.doc(), &bytes).expect("seed");
+        println!(
+            "seeded from the file   live +{:>7.1} MB   peak {:>7.1} MB",
+            mb(crate::heap_stats::live_bytes().saturating_sub(before_seed)),
+            mb(crate::heap_stats::peak_bytes())
+        );
+
+        let state = seeder.doc().encode_state_as_update_v1();
+        println!("state on the wire      {:>8.1} MB", mb(state.len()));
+
+        let peer = EngineSession::new(3012);
+        crate::heap_stats::reset_peak();
+        let before_load = crate::heap_stats::live_bytes();
+        peer.doc().apply_update_v1(&state).expect("load");
+        println!(
+            "loaded from the state  live +{:>7.1} MB   peak {:>7.1} MB",
+            mb(crate::heap_stats::live_bytes().saturating_sub(before_load)),
+            mb(crate::heap_stats::peak_bytes())
+        );
+
+        // Both must hold the same document, or the comparison is meaningless.
+        assert_eq!(
+            seeder.doc().story_len("body").unwrap(),
+            peer.doc().story_len("body").unwrap()
+        );
+        assert_eq!(
+            seeder.doc().paragraphs("body").unwrap().len(),
+            peer.doc().paragraphs("body").unwrap().len()
+        );
+    }
+
+    /// What the parsed DOCX envelope is made of.
+    ///
+    /// Parsing a 2.7MB file holds 77.9MB, and that peak is what the main
+    /// thread's wasm memory claims for the life of the document. This counts
+    /// the envelope's parts at their in-memory size, the way `open_memory`
+    /// did for the measure.
+    ///
+    ///   cargo test -p betteroffice-docx-edit --release \
+    ///     --features heap-stats --lib envelope_memory -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx and heap-stats"]
+    fn envelope_memory() {
+        use docx_parse::block::BlockContent;
+        use docx_parse::inline::{InlineNode, Run, RunContent};
+        use docx_parse::paragraph::{Paragraph, ParagraphContent};
+
+        assert!(
+            crate::heap_stats::available(),
+            "build with --features heap-stats"
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        let bytes = std::fs::read(&path).expect("fixture");
+        let before = crate::heap_stats::live_bytes();
+        let envelope = crate::seed::parse_docx_for_edit(&bytes).expect("parse");
+        let live = crate::heap_stats::live_bytes().saturating_sub(before);
+        let mb = |bytes: usize| bytes as f64 / (1024.0 * 1024.0);
+
+        let (mut paragraphs, mut runs, mut contents, mut text_bytes, mut inlines) = (0, 0, 0, 0, 0);
+        let mut node_type_bytes = 0;
+        let mut walk_paragraph = |paragraph: &Paragraph| {
+            paragraphs += 1;
+            node_type_bytes += paragraph.node_type.capacity();
+            for content in &paragraph.content {
+                let ParagraphContent::Inline(inline) = content else {
+                    inlines += 1;
+                    continue;
+                };
+                inlines += 1;
+                let InlineNode::Run(run) = inline else {
+                    continue;
+                };
+                let Run { content, .. } = run;
+                runs += 1;
+                contents += content.len();
+                for entry in content {
+                    if let RunContent::Text { text, .. } = entry {
+                        text_bytes += text.capacity();
+                    }
+                }
+            }
+        };
+        for block in &envelope.document.package.document.content {
+            if let BlockContent::Paragraph(paragraph) = block {
+                walk_paragraph(paragraph);
+            }
+        }
+
+        let size = |count: usize, each: usize| (count, each, mb(count * each));
+        let rows = [
+            (
+                "paragraphs",
+                size(paragraphs, std::mem::size_of::<Paragraph>()),
+            ),
+            (
+                "paragraph content",
+                size(inlines, std::mem::size_of::<ParagraphContent>()),
+            ),
+            ("runs", size(runs, std::mem::size_of::<Run>())),
+            (
+                "run content",
+                size(contents, std::mem::size_of::<RunContent>()),
+            ),
+        ];
+        println!(
+            "envelope live          {:>8.1} MB   (file {:.1} MB)",
+            mb(live),
+            mb(bytes.len())
+        );
+        for (label, (count, each, total)) in rows {
+            println!("{label:<22} {count:>10}  x {each:>5}B = {total:>7.1} MB");
+        }
+        println!(
+            "{:<22} {:>10}           {:>9.1} MB",
+            "run text",
+            "",
+            mb(text_bytes)
+        );
+        {
+            use docx_parse::{ParagraphFormatting, TextFormatting};
+            let with_formatting = envelope
+                .document
+                .package
+                .document
+                .content
+                .iter()
+                .filter(
+                    |block| matches!(block, BlockContent::Paragraph(p) if p.formatting.is_some()),
+                )
+                .count();
+            println!(
+                "\nBlockContent           {:>5}B     Paragraph {:>5}B of which ParagraphFormatting {:>5}B",
+                std::mem::size_of::<BlockContent>(),
+                std::mem::size_of::<Paragraph>(),
+                std::mem::size_of::<ParagraphFormatting>()
+            );
+            println!(
+                "InlineNode             {:>5}B     Run       {:>5}B of which TextFormatting      {:>5}B",
+                std::mem::size_of::<InlineNode>(),
+                std::mem::size_of::<Run>(),
+                std::mem::size_of::<TextFormatting>()
+            );
+            println!("paragraphs carrying formatting {with_formatting} of {paragraphs}");
+        }
+        println!(
+            "{:<22} {:>10}           {:>9.1} MB",
+            "\"paragraph\" strings",
+            paragraphs,
+            mb(node_type_bytes)
+        );
+    }
+
+    /// What an open document costs in memory, stage by stage.
+    ///
+    /// A 2.7MB file was reported at 545MB in the worker's engine, so the
+    /// question is which retained structure holds it. Needs the counting
+    /// allocator, which is off in the shipped build.
+    ///
+    ///   cargo test -p betteroffice-docx-edit --release \
+    ///     --features yrs-cursor,heap-stats --lib open_memory -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx and heap-stats"]
+    fn open_memory() {
+        assert!(
+            crate::heap_stats::available(),
+            "build with --features heap-stats"
+        );
+        const FONT: &[u8] =
+            include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        let bytes = std::fs::read(&path).expect("fixture");
+        docx_layout::clear_measure_fonts();
+        let font_id = docx_layout::register_measure_font(FONT).unwrap();
+        let request = serde_json::json!({
+            "bodyStory": "body",
+            "options": {"pageGap": 24},
+            "regions": {
+                "sections": [{
+                    "sectionId": "main",
+                    "pageSize": {"w": 816, "h": 1056},
+                    "margins": {"top": 96, "right": 96, "bottom": 96, "left": 96,
+                                "header": 48, "footer": 48}
+                }]
+            },
+            "notes": {"contents": []},
+            "measurement": {
+                "fontChains": {"calibri|0|0": [font_id], "calibri|0|1": [font_id],
+                               "calibri|1|0": [font_id]},
+                "defaults": {"fontSize": 24, "fontFamily": "Calibri"},
+                "authoritativeShaping": true
+            },
+            "renderEnv": {}
+        })
+        .to_string();
+
+        let mb = |bytes: usize| bytes as f64 / (1024.0 * 1024.0);
+        let mut previous = crate::heap_stats::live_bytes();
+        let mut stage = |label: &str| {
+            let live = crate::heap_stats::live_bytes();
+            let peak = crate::heap_stats::peak_bytes();
+            println!(
+                "{label:<22} live {:>8.1} MB   (+{:>7.1})   peak {:>8.1} MB",
+                mb(live),
+                mb(live.saturating_sub(previous)),
+                mb(peak)
+            );
+            previous = live;
+            crate::heap_stats::reset_peak();
+        };
+
+        stage("before anything");
+        let engine = EngineSession::new(3009);
+        let envelope = crate::seed::parse_docx_for_edit(&bytes).expect("parse");
+        stage("docx parsed");
+        crate::seed::seed_parsed_docx(engine.doc(), envelope).expect("seed");
+        stage("seeded (yrs doc)");
+        engine.layout_document_with_regions_void(&request).unwrap();
+        stage("laid out");
+        engine.set_page_window(Some(0..12));
+        let frame = engine.build_display_list_frame("{}", 0).unwrap();
+        stage("first frame built");
+        println!("frame bytes            {:>8.1} MB", mb(frame.len()));
+        println!("file bytes             {:>8.1} MB", mb(bytes.len()));
+
+        // What the retained measure is made of, and what each part costs at
+        // its in-memory size rather than its serialized one.
+        {
+            let pagination = engine.pagination.borrow();
+            let input = pagination.input.as_ref().expect("laid out");
+            let (mut lines, mut clusters, mut runs, mut bidi, mut segments) = (0, 0, 0, 0, 0);
+            for measured in &input.measured {
+                let docx_layout::types::BlockExtent::Paragraph(extent) = &measured.measure else {
+                    continue;
+                };
+                lines += extent.lines.len();
+                for line in &extent.lines {
+                    clusters += line.cluster_advances.as_ref().map_or(0, Vec::len);
+                    runs += line.run_advances.as_ref().map_or(0, Vec::len);
+                    bidi += line.bidi_slices.as_ref().map_or(0, Vec::len);
+                    segments += line.segments.as_ref().map_or(0, Vec::len);
+                }
+            }
+            let size = std::mem::size_of::<docx_layout::types::TypesetClusterAdvance>();
+            println!(
+                "\nlines                  {lines:>10}  x {:>4}B = {:>7.1} MB",
+                std::mem::size_of::<docx_layout::types::TypesetRow>(),
+                mb(lines * std::mem::size_of::<docx_layout::types::TypesetRow>())
+            );
+            println!(
+                "cluster advances       {clusters:>10}  x {size:>4}B = {:>7.1} MB",
+                mb(clusters * size)
+            );
+            println!(
+                "run advances           {runs:>10}  x {:>4}B = {:>7.1} MB",
+                std::mem::size_of::<docx_layout::types::TypesetRunAdvance>(),
+                mb(runs * std::mem::size_of::<docx_layout::types::TypesetRunAdvance>())
+            );
+            println!(
+                "bidi slices            {bidi:>10}  x {:>4}B = {:>7.1} MB",
+                std::mem::size_of::<docx_layout::types::TypesetBidiSlice>(),
+                mb(bidi * std::mem::size_of::<docx_layout::types::TypesetBidiSlice>())
+            );
+            println!(
+                "row segments           {segments:>10}  x {:>4}B = {:>7.1} MB",
+                std::mem::size_of::<docx_layout::types::TypesetRowSegment>(),
+                mb(segments * std::mem::size_of::<docx_layout::types::TypesetRowSegment>())
+            );
+            println!(
+                "blocks                 {:>10}  x {:>4}B = {:>7.1} MB",
+                input.measured.len(),
+                std::mem::size_of::<docx_layout::types::LayoutBlock>(),
+                mb(input.measured.len() * std::mem::size_of::<docx_layout::types::LayoutBlock>())
+            );
+        }
+
+        // And what the display list itself is made of.
+        {
+            use docx_layout::display_list::Primitive;
+            let display = engine.display.borrow();
+            let list = display.list.as_ref().expect("frame built");
+            let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
+            let mut text_bytes = 0;
+            let mut glyphs = 0;
+            for page in &list.pages {
+                for primitive in &page.primitives {
+                    let label = match primitive {
+                        Primitive::Text(text) => {
+                            text_bytes += text.text.capacity();
+                            "text"
+                        }
+                        Primitive::GlyphRun(run) => {
+                            text_bytes += run.text.capacity();
+                            glyphs += run.glyphs.len();
+                            "glyphRun"
+                        }
+                        Primitive::Rect(_) => "rect",
+                        Primitive::Line(_) => "line",
+                        Primitive::Image(_) => "image",
+                        Primitive::Shape(_) => "shape",
+                        Primitive::Decoration(_) => "decoration",
+                    };
+                    *kinds.entry(label).or_default() += 1;
+                }
+            }
+            {
+                use docx_layout::display_list::*;
+                macro_rules! p { ($($t:ty),*) => { $( println!("  {:<26} {:>5}B", stringify!($t), std::mem::size_of::<$t>()); )* } }
+                println!("\nprimitive variants:");
+                p!(
+                    DocAttrs,
+                    FieldMetadata,
+                    NoteRefMetadata,
+                    Revision,
+                    SdtAttrs,
+                    InlineSdtWidgetAttrs,
+                    ChartA11yAttrs,
+                    StructuralRevision,
+                    TableCellRef
+                );
+            }
+            let each = std::mem::size_of::<Primitive>();
+            let total: usize = kinds.values().sum();
+            println!(
+                "\ndisplay pages          {:>10}   primitives {total} x {each}B = {:>7.1} MB",
+                list.pages.len(),
+                mb(total * each)
+            );
+            for (kind, count) in &kinds {
+                println!("  {kind:<20} {count:>10}");
+            }
+            println!(
+                "  {:<20} {:>10}  x {:>4}B = {:>7.1} MB",
+                "glyphs",
+                glyphs,
+                std::mem::size_of::<docx_layout::display_list::PlacedGlyph>(),
+                mb(glyphs * std::mem::size_of::<docx_layout::display_list::PlacedGlyph>())
+            );
+            println!(
+                "  {:<20} {:>10}           {:>7.1} MB",
+                "primitive text",
+                "",
+                mb(text_bytes)
+            );
+        }
+        drop(frame);
+        drop(engine);
+        stage("engine dropped");
+    }
+
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx"]
+    fn open_cost() {
+        const FONT: &[u8] =
+            include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        let bytes = std::fs::read(&path).expect("fixture");
+        docx_layout::clear_measure_fonts();
+        let font_id = docx_layout::register_measure_font(FONT).unwrap();
+        let request = serde_json::json!({
+            "bodyStory": "body",
+            "options": {"pageGap": 24},
+            "regions": {
+                "sections": [{
+                    "sectionId": "main",
+                    "pageSize": {"w": 816, "h": 1056},
+                    "margins": {"top": 96, "right": 96, "bottom": 96, "left": 96,
+                                "header": 48, "footer": 48}
+                }]
+            },
+            "notes": {"contents": []},
+            "measurement": {
+                "fontChains": {"calibri|0|0": [font_id], "calibri|0|1": [font_id],
+                               "calibri|1|0": [font_id]},
+                "defaults": {"fontSize": 24, "fontFamily": "Calibri"},
+                "authoritativeShaping": true
+            },
+            "renderEnv": {}
+        })
+        .to_string();
+
+        let elapsed = |at: std::time::Instant| at.elapsed().as_secs_f64() * 1000.0;
+        let engine = EngineSession::new(3002);
+        let started = std::time::Instant::now();
+        crate::seed_from_docx(engine.doc(), &bytes).expect("seed");
+        let seed_ms = elapsed(started);
+
+        let started = std::time::Instant::now();
+        engine.layout_document_with_regions_void(&request).unwrap();
+        let layout_ms = elapsed(started);
+
+        // The window the first frame carries, as the host now sends it.
+        engine.set_page_window(Some(0..12));
+        let mut phases = [0.0_f64; 3];
+        let mut phase = 0;
+        let mut at = std::time::Instant::now();
+        let frame_started = at;
+        let bytes = engine
+            .build_display_list_frame_observed("{}", 0, &mut || {
+                if phase < phases.len() {
+                    phases[phase] = at.elapsed().as_secs_f64() * 1000.0;
+                }
+                at = std::time::Instant::now();
+                phase += 1;
+            })
+            .unwrap();
+        let encode_ms = at.elapsed().as_secs_f64() * 1000.0;
+        let frame_ms = elapsed(frame_started);
+
+        println!("seed             {seed_ms:>8.1}ms");
+        println!("layout           {layout_ms:>8.1}ms");
+        println!("frame            {frame_ms:>8.1}ms");
+        println!("  display input  {:>8.1}ms", phases[0]);
+        println!("  display build  {:>8.1}ms", phases[1]);
+        println!("  finalize       {:>8.1}ms", phases[2]);
+        println!("  encode         {encode_ms:>8.1}ms");
+        println!("frame bytes      {:>8} KB", bytes.len() / 1024);
+    }
+
     /// What one keystroke costs a document that is already open, split by
     /// phase. `measure` is the interesting one: a keystroke changes one
     /// paragraph, so anything it spends proportional to the document is spent
@@ -3832,12 +4372,18 @@ mod tests {
         engine.layout_document_with_regions_void(&request).unwrap();
         engine.build_display_list_frame("{}", 0).unwrap();
 
-        // A caret near the end, where a reader of a long document usually is.
-        let caret = engine
-            .doc()
-            .story_len("body")
-            .expect("story len")
-            .saturating_sub(1);
+        // Both ends of the document. What a keystroke costs depends on how
+        // much of the document comes after it — that is where an incremental
+        // pass has retained work to carry forward — so a benchmark that only
+        // types at one end cannot see half of what it costs.
+        let caret = match std::env::var("CARET").as_deref() {
+            Ok("start") => 1,
+            _ => engine
+                .doc()
+                .story_len("body")
+                .expect("story len")
+                .saturating_sub(1),
+        };
         let blocks = engine.stats().lowered_block_count;
 
         let mut totals = EngineApplyProfile::default();
@@ -3872,6 +4418,14 @@ mod tests {
         }
         let per = |value: f64| value / KEYSTROKES as f64;
         let stats = engine.stats();
+        println!(
+            "caret            {}",
+            if caret == 1 {
+                "at the start (CARET=start)"
+            } else {
+                "at the end (CARET=start for the other one)"
+            }
+        );
         println!("blocks           {blocks}");
         println!("lower            {:>7.1}ms", per(totals.lower_ms));
         println!("measure          {:>7.1}ms", per(totals.measure_ms));

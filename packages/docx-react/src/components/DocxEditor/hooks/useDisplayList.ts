@@ -1,3 +1,4 @@
+import { openingPageWindow } from '../pageWindow';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   buildRustDisplayFrame,
@@ -30,6 +31,7 @@ import {
   type ResidentCaretPaintStyle,
   type ResidentEngineOffscreenPage,
   type YrsEngineApplyProfile,
+  type YrsOpenProfile,
   type YrsResidentCaretSnapshot,
   type YrsSelection,
   type YrsSession,
@@ -798,7 +800,11 @@ export function useRustDisplayList(
           console.warn('[CanvasRenderer] the region request changed; repaginating the document');
         }
         const workerFrame = opening
-          ? worker.open(hostEngine.residentWorkerOpen(), owned.layoutInput, extras)
+          ? worker.open(
+              { ...hostEngine.residentWorkerOpen(), pageWindow: openingPageWindow() },
+              owned.layoutInput,
+              extras
+            )
           : repaginating
             ? worker.relayout(
                 owned.layoutInput,
@@ -811,6 +817,7 @@ export function useRustDisplayList(
         workerLayoutInputRef.current = owned.layoutInput;
         pending = workerFrame
           .then((result) => {
+            noteResidentOpenCost(result.openProfile);
             const delta = decodeFrameDelta(result.frame);
             const nextFrame = applyFrameDelta(previousFrame, delta);
             return {
@@ -1136,6 +1143,23 @@ function noteResidentFrameCost(
       `${delta.full ? 'full' : 'partial'} delta of ${Math.round(delta.bytes.byteLength / 1024)}KB ` +
       `carrying ${delta.operations.length} page operation(s) of ${delta.pageCount}, ` +
       `leaving ${frame.displayList.pages.length} pages`
+  );
+}
+
+/**
+ * Where opening a document went, from the worker that did it.
+ *
+ * A keystroke's phases are logged because they are the only reason its cost
+ * could be found and cut. Opening had no such breakdown, so a document that
+ * took seconds said nothing about which part of it did.
+ */
+function noteResidentOpenCost(profile: YrsOpenProfile | undefined): void {
+  if (!profile) return;
+  const ms = (value: number): string => Math.round(value).toString();
+  console.warn(
+    `[CanvasRenderer] resident open phases: session ${ms(profile.sessionMs)}ms · ` +
+      `load ${ms(profile.loadMs)}ms · layout ${ms(profile.layoutMs)}ms · ` +
+      `frame ${ms(profile.frameMs)}ms`
   );
 }
 

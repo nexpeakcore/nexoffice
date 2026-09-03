@@ -1,4 +1,9 @@
 import {
+  nextPageWindow,
+  PAGE_WINDOW_MIN_PAGES,
+  type PageWindowRange,
+} from './pageWindow';
+import {
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -83,40 +88,7 @@ export function CanvasPagedArea({
   );
 }
 
-// Pages within this many pages of the viewport keep live bitmaps and the
-// positioned a11y mirror; everything farther keeps its canvas ELEMENT (stable
-// identity, exact geometry for pointer routing/overlays/scroll math) but
-// releases its backing store and drops to a text-only outline mirror. Page
-// structure and accessible text are never windowed away.
-const PAGE_WINDOW_BUFFER = 2;
-// Documents at or below this page count never window — zero behavior change
-// for short documents.
-const PAGE_WINDOW_MIN_PAGES = 4;
-// A page already mounted stays mounted until it drifts one page beyond the
-// mount band, so slow scrolling at a boundary cannot thrash mount/unmount.
-const PAGE_WINDOW_HYSTERESIS = 1;
 
-interface PageWindowRange {
-  start: number;
-  end: number;
-}
-
-function nextPageWindow(
-  previous: PageWindowRange | null,
-  firstVisible: number,
-  lastVisible: number,
-  totalPages: number
-): PageWindowRange {
-  const mountStart = Math.max(0, firstVisible - PAGE_WINDOW_BUFFER);
-  const mountEnd = Math.min(totalPages - 1, lastVisible + PAGE_WINDOW_BUFFER);
-  if (!previous) return { start: mountStart, end: mountEnd };
-  const keepStart = Math.max(0, mountStart - PAGE_WINDOW_HYSTERESIS);
-  const keepEnd = Math.min(totalPages - 1, mountEnd + PAGE_WINDOW_HYSTERESIS);
-  const start = Math.min(mountStart, Math.max(previous.start, keepStart));
-  const end = Math.max(mountEnd, Math.min(previous.end, keepEnd));
-  if (start === previous.start && end === previous.end) return previous;
-  return { start, end };
-}
 
 /** Replays display-list pages to canvas with accessibility mirrors. */
 export function CanvasPagesView({
@@ -507,6 +479,55 @@ export function CanvasPagesView({
     publishWorkerPresentation,
   ]);
 
+  // One element per page, so a render that changed none of them reuses the
+  // same elements and React reconciles nothing. Rebuilding this list is what a
+  // keystroke used to pay for: 338 pages of wrapper, canvas, mirror and
+  // overlay, built again on every render of this view and again on the next.
+  const pageSurfaces = useMemo(
+    () =>
+      displayList.pages.map((page, i) => {
+        const retainedPage = frame?.pages[i];
+        const pageKey = retainedPage ? retainedPage.pageId.toString() : `index:${page.pageIndex}`;
+        const surfaceKey = `${pageKey}:${offscreenEligible && !offscreenFailed ? 'offscreen' : 'dom'}`;
+        const inWindow =
+          effectiveWindow === null || (i >= effectiveWindow.start && i <= effectiveWindow.end);
+        return (
+          // per-page wrapper so the mirror positions 1:1 over its canvas.
+          // Every page keeps its wrapper and canvas element (stable page
+          // geometry); the page window releases the bitmap backing store and
+          // demotes the mirror to a text-only outline off-window.
+          <div key={surfaceKey} className="canvas-page" style={{ position: 'relative' }}>
+            <canvas
+              ref={(el) => {
+                if (el) canvasesRef.current.set(pageKey, el);
+                else canvasesRef.current.delete(pageKey);
+              }}
+              data-page-index={page.pageIndex}
+              style={{
+                display: 'block',
+                width: page.width * zoom,
+                height: page.height * zoom,
+                background: '#ffffff',
+                boxShadow: '0 1px 3px var(--doc-shadow)',
+              }}
+            />
+            <CanvasPageMirror page={page} zoom={zoom} live={!windowPending && inWindow} />
+            {interactive ? <CanvasInteractiveOverlay page={page} zoom={zoom} /> : null}
+          </div>
+        );
+      }),
+    [
+      displayList.pages,
+      frame,
+      effectiveWindow,
+      interactive,
+      offscreenEligible,
+      offscreenFailed,
+      windowPending,
+      zoom,
+    ]
+  );
+
   // The host stays a full-width, un-transformed positioned box so the
   // interactive comment overlays (portalled in by DocxEditorPagedArea) anchor
   // their `50%`-centered X / host-relative Y to the page's un-shifted center.
@@ -528,35 +549,7 @@ export function CanvasPagesView({
           transition: 'transform 0.2s ease',
         }}
       >
-        {displayList.pages.map((page, i) => {
-          const retainedPage = frame?.pages[i];
-          const pageKey = retainedPage ? retainedPage.pageId.toString() : `index:${page.pageIndex}`;
-          const surfaceKey = `${pageKey}:${offscreenEligible && !offscreenFailed ? 'offscreen' : 'dom'}`;
-          return (
-            // per-page wrapper so the mirror positions 1:1 over its canvas.
-            // Every page keeps its wrapper and canvas element (stable page
-            // geometry); the page window releases the bitmap backing store and
-            // demotes the mirror to a text-only outline off-window.
-            <div key={surfaceKey} className="canvas-page" style={{ position: 'relative' }}>
-              <canvas
-                ref={(el) => {
-                  if (el) canvasesRef.current.set(pageKey, el);
-                  else canvasesRef.current.delete(pageKey);
-                }}
-                data-page-index={page.pageIndex}
-                style={{
-                  display: 'block',
-                  width: page.width * zoom,
-                  height: page.height * zoom,
-                  background: '#ffffff',
-                  boxShadow: '0 1px 3px var(--doc-shadow)',
-                }}
-              />
-              <CanvasPageMirror page={page} zoom={zoom} live={!windowPending && pageInWindow(i)} />
-              {interactive ? <CanvasInteractiveOverlay page={page} zoom={zoom} /> : null}
-            </div>
-          );
-        })}
+        {pageSurfaces}
       </div>
     </div>
   );

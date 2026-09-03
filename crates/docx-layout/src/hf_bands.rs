@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use crate::display_list::{
     BlockIn, BlockRef, FieldWidthEntry, FieldWidthMap, FloatingTablePositionIn, HfKind, HfRegion,
-    MeasureIn, MeasuredBlockIn, PageIn, ParagraphFragmentIn, Primitive, RenderCtx, ShapeFonts,
+    MeasuredBlockIn, PageIn, ParagraphFragmentIn, Primitive, RenderCtx, ShapeFonts,
     TableFragmentIn, WatermarkIn, capped_alt_text, emit_paragraph_fragment, emit_table_fragment,
     px, rotation_degrees, sanitized_href, table_total_width,
 };
@@ -244,13 +244,14 @@ fn stacked_height(measured: &[MeasuredBlockIn]) -> f64 {
     measured
         .iter()
         .map(|mb| match &mb.measure {
-            MeasureIn::Paragraph(p) => p.total_height,
-            MeasureIn::Table(t) => t.total_height,
-            MeasureIn::Image(i) => i.height,
-            MeasureIn::TextBox(t) => t.height,
-            MeasureIn::Shape(s) => s.height,
-            MeasureIn::Chart(c) => c.height,
-            MeasureIn::Unsupported => 0.0,
+            crate::types::BlockExtent::Paragraph(p) => p.total_height,
+            crate::types::BlockExtent::Table(t) => t.total_height,
+            crate::types::BlockExtent::Image(i) => i.height,
+            crate::types::BlockExtent::TextBox(t) => t.height,
+            crate::types::BlockExtent::Shape(s) => s.height,
+            crate::types::BlockExtent::Chart(c) => c.height,
+            // Breaks and anything the engine adds later contribute no height.
+            _ => 0.0,
         })
         .sum()
 }
@@ -394,7 +395,7 @@ fn compose_region(
 
     for mb in &v.measured {
         match (&mb.block, &mb.measure) {
-            (BlockIn::Paragraph(block), MeasureIn::Paragraph(measure)) => {
+            (BlockIn::Paragraph(block), crate::types::BlockExtent::Paragraph(measure)) => {
                 let spacing_before = block
                     .attrs
                     .as_ref()
@@ -421,7 +422,7 @@ fn compose_region(
                 );
                 cursor += measure.total_height;
             }
-            (BlockIn::Table(block), MeasureIn::Table(measure)) => {
+            (BlockIn::Table(block), crate::types::BlockExtent::Table(measure)) => {
                 let (x, y, advance_cursor) = if let Some(floating) = block.floating.as_ref() {
                     let (left, top) =
                         resolve_hf_floating_table_position(floating, page, flow_top, origin_x);
@@ -448,13 +449,14 @@ fn compose_region(
                     cursor += measure.total_height;
                 }
             }
-            (BlockIn::Image(block), MeasureIn::Image(measure)) => {
+            (BlockIn::Image(block), crate::types::BlockExtent::Image(measure)) => {
                 let rot = rotation_degrees(block.transform.as_deref());
                 let mut attrs = BlockRef::of(&block.id).attrs();
                 attrs.doc_start = block.pm_start;
                 attrs.doc_end = block.pm_end;
                 attrs.href = sanitized_href(block.hlink_href.as_deref());
-                attrs.sdt = crate::display_list::sdt_attrs_from_groups(&block.sdt_groups);
+                attrs.sdt =
+                    crate::display_list::sdt_attrs_from_groups(&block.sdt_groups).map(Box::new);
                 prims.push(Primitive::Image(ImagePrimitive {
                     rel_id: block.src.clone(),
                     x: px(origin_x),

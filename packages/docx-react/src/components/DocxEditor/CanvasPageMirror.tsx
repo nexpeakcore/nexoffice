@@ -18,7 +18,7 @@
  * Focus never lands here: the hidden input remains the editing surface.
  */
 
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import {
   buildMirrorPage,
   buildMirrorPageOutline,
@@ -34,7 +34,7 @@ import { useTranslation } from '../../i18n';
  */
 const MIRROR_REBUILD_DELAY_MS = 200;
 
-export function CanvasPageMirror({
+function CanvasPageMirrorComponent({
   page,
   zoom = 1,
   live = true,
@@ -99,3 +99,11 @@ export function CanvasPageMirror({
     />
   );
 }
+
+/**
+ * A page the reader is not looking at renders identically on every keystroke.
+ * With a page per canvas, an unmemoed mirror re-renders the whole document —
+ * measured at 338 of these per render of the page list, and the page list
+ * renders more than once a key.
+ */
+export const CanvasPageMirror = memo(CanvasPageMirrorComponent);

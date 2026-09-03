@@ -10,6 +10,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use std::collections::{HashMap, HashSet};
 
+use crate::types::{
+    BlockExtent, ParagraphExtent, TableCellExtent, TableExtent, TableRowExtent, TextBoxExtent,
+    TypesetRow,
+};
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DisplayList {
@@ -150,6 +155,12 @@ pub enum Primitive {
 /// painted-DOM dataset contract (data-doc-start/end, data-block-id, ...)
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
+/// Shared identity and metadata, flattened into every primitive.
+///
+/// One of these sits inline in each primitive — a rectangle included — and a
+/// 338-page document paints 14,684 of them. Everything here beyond the few
+/// identity fields is rare, so it is boxed: at 2360 bytes inline this struct
+/// was 34.7MB of a 37MB display list, for content of 0.8MB.
 pub struct DocAttrs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doc_start: Option<i64>,
@@ -189,20 +200,20 @@ pub struct DocAttrs {
     pub line_index: Option<u64>,
     /// table cell the primitive paints inside (0-based grid coordinates)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cell: Option<TableCellRef>,
+    pub cell: Option<Box<TableCellRef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comment_ids: Option<Vec<String>>,
     /// inert field identity when this primitive paints a field result — the
     /// a11y mirror announces it; the instruction is NEVER parsed/executed.
     /// Additive + serde-optional: field-free fixtures stay byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub field: Option<FieldMetadata>,
+    pub field: Option<Box<FieldMetadata>>,
     /// footnote/endnote reference identity when this primitive is the body
     /// reference mark (note backlinks). Additive + serde-optional.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note_ref: Option<NoteRefMetadata>,
+    pub note_ref: Option<Box<NoteRefMetadata>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub revision: Option<Revision>,
+    pub revision: Option<Box<Revision>>,
     /// Synthetic numbering glyph emitted before the first line of a list
     /// paragraph. The mirror uses this to expose the stable list-marker class.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -215,7 +226,7 @@ pub struct DocAttrs {
     /// display-list snapshots that carry only run-level revisions stay
     /// byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub structural_revision: Option<StructuralRevision>,
+    pub structural_revision: Option<Box<StructuralRevision>>,
     /// sanitized hyperlink target for clickable text/image primitives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub href: Option<String>,
@@ -231,16 +242,16 @@ pub struct DocAttrs {
     pub link_doc_location: Option<String>,
     /// innermost block-level content-control identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sdt: Option<SdtAttrs>,
+    pub sdt: Option<Box<SdtAttrs>>,
     /// Full outer-to-inner content-control ancestry.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sdt_path: Vec<SdtAttrs>,
     /// inline content-control widget metadata when this text primitive is its glyph.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inline_sdt_widget: Option<InlineSdtWidgetAttrs>,
+    pub inline_sdt_widget: Option<Box<InlineSdtWidgetAttrs>>,
     /// accessibility summary for primitives that compose one chart block.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chart: Option<ChartA11yAttrs>,
+    pub chart: Option<Box<ChartA11yAttrs>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logical_order: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -258,15 +269,15 @@ pub struct DocAttrs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub comment: Option<CommentMetadata>,
+    pub comment: Option<Box<CommentMetadata>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub clip_group: Option<ClipGroupMetadata>,
+    pub clip_group: Option<Box<ClipGroupMetadata>>,
     /// Leader glyph metadata shared by text and glyph primitives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub leader_glyphs: Option<LeaderGlyphMetadata>,
+    pub leader_glyphs: Option<Box<LeaderGlyphMetadata>>,
     /// Optional decoration metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub highlight_slice: Option<HighlightSliceMetadata>,
+    pub highlight_slice: Option<Box<HighlightSliceMetadata>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<DisplayBorderStyle>,
     /// Primitive-class-specific additive fields are flattened through the
@@ -279,23 +290,23 @@ pub struct DocAttrs {
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "flipV")]
     pub image_flip_v: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_frame: Option<ContentFrame>,
+    pub content_frame: Option<Box<ContentFrame>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub border: Option<Value>,
+    pub border: Option<Box<Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fill_paint: Option<Value>,
+    pub fill_paint: Option<Box<Value>>,
     /// Lossless DrawingML stroke details beyond the legacy color/width/dash
     /// triple (compound/alignment/caps/joins/arrows/custom dash).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stroke_paint: Option<Value>,
+    pub stroke_paint: Option<Box<Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effect_extent: Option<Value>,
+    pub effect_extent: Option<Box<Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub drawing_scene: Option<Value>,
+    pub drawing_scene: Option<Box<Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_body_properties: Option<Value>,
+    pub text_body_properties: Option<Box<Value>>,
     /// GlyphRun-only member flattened through the shared attrs (same pattern
     /// as the image/shape members above): the resolved CSS font shorthand the
     /// canvas fillText safety net uses when glyph outlines are unavailable,
@@ -306,9 +317,9 @@ pub struct DocAttrs {
     /// (glow/shadow/reflection/textFill/textOutline), passed through losslessly
     /// from `RunFormatting.modernEffects`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub modern_effects: Option<Value>,
+    pub modern_effects: Option<Box<Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub table: Option<TableMetadata>,
+    pub table: Option<Box<TableMetadata>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
@@ -1296,7 +1307,7 @@ pub(crate) struct PictureWatermarkIn {
 #[derive(Deserialize)]
 pub(crate) struct MeasuredBlockIn {
     pub(crate) block: BlockIn,
-    pub(crate) measure: MeasureIn,
+    pub(crate) measure: crate::types::BlockExtent,
 }
 
 // variants boxed: a transient deserialization mirror, but the enum nests
@@ -2004,7 +2015,7 @@ pub(crate) struct ShapeBlockIn {
     #[serde(default)]
     inner_text: Vec<ParagraphBlockIn>,
     #[serde(default)]
-    inner_measures: Vec<ParagraphExtentIn>,
+    inner_measures: Vec<ParagraphExtent>,
     #[serde(default)]
     children: Vec<ShapeBlockIn>,
     #[serde(default)]
@@ -2285,182 +2296,6 @@ const DEFAULT_TEXTBOX_MARGINS: TextBoxMarginsIn = TextBoxMarginsIn {
 };
 
 #[derive(Deserialize)]
-#[serde(tag = "kind")]
-pub(crate) enum MeasureIn {
-    #[serde(rename = "paragraph")]
-    Paragraph(ParagraphExtentIn),
-    #[serde(rename = "table")]
-    Table(TableExtentIn),
-    #[serde(rename = "image")]
-    Image(ImageExtentIn),
-    #[serde(rename = "textBox")]
-    TextBox(TextBoxExtentIn),
-    #[serde(rename = "shape")]
-    Shape(BoxExtentIn),
-    #[serde(rename = "chart")]
-    Chart(BoxExtentIn),
-    #[serde(other)]
-    Unsupported,
-}
-
-/// text-box measure (mirrors `TextBoxExtent`): the box's resolved size plus its
-/// inner paragraphs pre-measured, index-aligned with `TextBoxBlockIn.content`.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct TextBoxExtentIn {
-    #[serde(default)]
-    #[allow(dead_code)]
-    width: f64,
-    /// resolved box height; used by HF stacked-height fallback (`hf_bands`)
-    #[serde(default)]
-    pub(crate) height: f64,
-    #[serde(default)]
-    inner_measures: Vec<ParagraphExtentIn>,
-}
-
-#[derive(Deserialize, Default, Clone, Copy)]
-pub(crate) struct BoxExtentIn {
-    #[serde(default)]
-    pub(crate) width: f64,
-    #[serde(default)]
-    pub(crate) height: f64,
-}
-
-#[derive(Deserialize, Default, Clone, Copy)]
-pub(crate) struct ImageExtentIn {
-    #[serde(default)]
-    pub(crate) width: f64,
-    #[serde(default)]
-    pub(crate) height: f64,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct ParagraphExtentIn {
-    #[serde(default)]
-    pub(crate) lines: Vec<LineIn>,
-    #[serde(rename = "totalHeight", default)]
-    pub(crate) total_height: f64,
-}
-
-#[derive(Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct LineIn {
-    #[serde(default)]
-    head_run: usize,
-    #[serde(default)]
-    head_char: usize,
-    #[serde(default)]
-    tail_run: usize,
-    #[serde(default)]
-    tail_char: usize,
-    #[serde(default)]
-    width: f64,
-    #[serde(default)]
-    ascent: f64,
-    #[serde(default)]
-    descent: f64,
-    #[serde(default)]
-    line_height: f64,
-    #[serde(default)]
-    left_offset: Option<f64>,
-    #[serde(default)]
-    right_offset: Option<f64>,
-    #[serde(default)]
-    float_skip_before: Option<f64>,
-    #[serde(default)]
-    run_advances: Vec<TypesetRunAdvanceIn>,
-    #[serde(default)]
-    cluster_advances: Vec<TypesetClusterAdvanceIn>,
-    #[serde(default)]
-    bidi_slices: Vec<TypesetBidiSliceIn>,
-}
-
-#[derive(Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
-struct TypesetRunAdvanceIn {
-    #[serde(default)]
-    run_index: Option<usize>,
-    #[serde(default)]
-    start_char: Option<usize>,
-    #[serde(default)]
-    end_char: Option<usize>,
-    #[serde(default)]
-    advance: Option<f64>,
-    #[serde(default)]
-    logical_order: Option<u64>,
-}
-
-#[derive(Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
-struct TypesetClusterAdvanceIn {
-    #[serde(default)]
-    run_index: Option<usize>,
-    #[serde(default)]
-    start_char: Option<usize>,
-    #[serde(default)]
-    end_char: Option<usize>,
-    #[serde(default)]
-    advance: Option<f64>,
-    #[serde(default)]
-    x_offset: Option<f64>,
-    #[serde(default)]
-    bidi_level: Option<u8>,
-    #[serde(default)]
-    logical_order: Option<u64>,
-}
-
-#[derive(Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
-struct TypesetBidiSliceIn {
-    #[serde(default)]
-    run_index: Option<usize>,
-    #[serde(default)]
-    start_char: Option<usize>,
-    #[serde(default)]
-    end_char: Option<usize>,
-    #[serde(default)]
-    advance: Option<f64>,
-    #[serde(default)]
-    bidi_level: Option<u8>,
-    #[serde(default)]
-    visual_order: Option<u64>,
-    #[serde(default)]
-    logical_order: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct TableExtentIn {
-    #[serde(default)]
-    pub(crate) rows: Vec<TableRowExtentIn>,
-    #[serde(default)]
-    column_widths: Vec<f64>,
-    #[serde(default)]
-    total_width: f64,
-    #[serde(default)]
-    pub(crate) total_height: f64,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct TableRowExtentIn {
-    #[serde(default)]
-    cells: Vec<TableCellExtentIn>,
-    #[serde(default)]
-    height: f64,
-}
-
-#[derive(Deserialize)]
-struct TableCellExtentIn {
-    #[serde(default)]
-    blocks: Vec<MeasureIn>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    width: f64,
-    #[serde(default)]
-    height: f64,
-}
-
-#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LayoutIn {
     #[serde(default)]
@@ -2566,7 +2401,7 @@ struct NoteItemIn {
     #[serde(default)]
     blocks: Vec<BlockIn>,
     #[serde(default)]
-    measures: Vec<MeasureIn>,
+    measures: Vec<BlockExtent>,
     #[serde(default)]
     height: Option<f64>,
     #[serde(default)]
@@ -2980,7 +2815,7 @@ fn stamp_sdt_range(prims: &mut [Primitive], groups: &[SdtGroupIn], overwrite: bo
         if let Some(attrs) = doc_attrs_mut(p)
             && (overwrite || attrs.sdt.is_none())
         {
-            attrs.sdt = Some(sdt.clone());
+            attrs.sdt = Some(Box::new(sdt.clone()));
             attrs.sdt_path = path.clone();
         }
     }
@@ -3409,11 +3244,12 @@ fn stamp_image_run_attrs(attrs: &mut DocAttrs, run: &ImageRunIn, x: f64, y: f64)
     attrs.image_flip_v = (run.flip_v == Some(true)
         || transform_has_flip(run.transform.as_deref(), 'y'))
     .then_some(true);
-    attrs.content_frame = content_frame(x, y, run.width, run.height, run.rotation_bounds.as_ref());
+    attrs.content_frame =
+        content_frame(x, y, run.width, run.height, run.rotation_bounds.as_ref()).map(Box::new);
     attrs.effects = run.effects.clone();
-    attrs.border = run.outline.clone();
+    attrs.border = run.outline.clone().map(Box::new);
     if run.is_insertion == Some(true) || run.is_deletion == Some(true) {
-        attrs.revision = Some(Revision {
+        attrs.revision = Some(Box::new(Revision {
             author: run.change_author.clone().unwrap_or_default(),
             date: run.change_date.clone().unwrap_or_default(),
             revision_id: run
@@ -3425,7 +3261,7 @@ fn stamp_image_run_attrs(attrs: &mut DocAttrs, run: &ImageRunIn, x: f64, y: f64)
             } else {
                 RevisionKind::Del
             },
-        });
+        }));
     }
 }
 
@@ -3445,9 +3281,10 @@ fn stamp_image_block_attrs(attrs: &mut DocAttrs, block: &ImageBlockIn, x: f64, y
         block.width,
         block.height,
         block.rotation_bounds.as_ref(),
-    );
+    )
+    .map(Box::new);
     attrs.effects = block.effects.clone();
-    attrs.border = block.outline.clone();
+    attrs.border = block.outline.clone().map(Box::new);
 }
 
 fn image_layout_width(run: &ImageRunIn) -> f64 {
@@ -3506,7 +3343,7 @@ fn slice_utf16_with_total(text: &str, total: usize, start: usize, end: usize) ->
 /// extent on this line. A line that ends exactly where the run starts still
 /// names it as `tailRun`, and painting it there would draw the same object
 /// twice — once per line — at two different pen positions.
-fn atomic_run_is_on_line(run_index: usize, line: &LineIn) -> bool {
+fn atomic_run_is_on_line(run_index: usize, line: &TypesetRow) -> bool {
     let start = if run_index == line.head_run {
         line.head_char
     } else {
@@ -3520,7 +3357,7 @@ fn atomic_run_is_on_line(run_index: usize, line: &LineIn) -> bool {
     end > start
 }
 
-fn resolve_line_segments<'a>(runs: &'a [RunIn], line: &LineIn) -> Vec<ResolvedSegment<'a>> {
+fn resolve_line_segments<'a>(runs: &'a [RunIn], line: &TypesetRow) -> Vec<ResolvedSegment<'a>> {
     let mut out = Vec::new();
     for run_index in line.head_run..=line.tail_run {
         let Some(run) = runs.get(run_index) else {
@@ -4097,7 +3934,7 @@ fn emit_note_item(
     let mut cursor = 0.0;
     for (block, measure) in note.blocks.iter().zip(&note.measures) {
         match (block, measure) {
-            (BlockIn::Paragraph(block), MeasureIn::Paragraph(measure)) => {
+            (BlockIn::Paragraph(block), BlockExtent::Paragraph(measure)) => {
                 let before = block
                     .attrs
                     .as_ref()
@@ -4133,7 +3970,7 @@ fn emit_note_item(
                 );
                 cursor += measure.total_height;
             }
-            (BlockIn::Table(block), MeasureIn::Table(measure)) => {
+            (BlockIn::Table(block), BlockExtent::Table(measure)) => {
                 let fragment = TableFragmentIn {
                     block_id: block.id.clone(),
                     x,
@@ -4151,7 +3988,7 @@ fn emit_note_item(
                 emit_table_fragment(prims, &fragment, block, measure, ctx);
                 cursor += measure.total_height;
             }
-            (BlockIn::Image(block), MeasureIn::Image(measure)) => {
+            (BlockIn::Image(block), BlockExtent::Image(measure)) => {
                 let mut attrs = BlockRef::of(&block.id).attrs();
                 attrs.doc_start = block.pm_start;
                 attrs.doc_end = block.pm_end;
@@ -4175,7 +4012,7 @@ fn emit_note_item(
                 }));
                 cursor += measure.height;
             }
-            (BlockIn::TextBox(block), MeasureIn::TextBox(measure)) => {
+            (BlockIn::TextBox(block), BlockExtent::TextBox(measure)) => {
                 let fragment = TextBoxFragmentIn {
                     block_id: block.id.clone(),
                     x,
@@ -4190,7 +4027,7 @@ fn emit_note_item(
                 emit_text_box_fragment(prims, &fragment, block, measure, ctx);
                 cursor += measure.height;
             }
-            (BlockIn::Shape(block), MeasureIn::Shape(measure)) => {
+            (BlockIn::Shape(block), BlockExtent::Shape(measure)) => {
                 let fragment = ShapeFragmentIn {
                     block_id: block.id.clone(),
                     x,
@@ -4207,7 +4044,7 @@ fn emit_note_item(
                 emit_shape_fragment(prims, &fragment, block, ctx);
                 cursor += measure.height;
             }
-            (BlockIn::Chart(block), MeasureIn::Chart(measure)) => {
+            (BlockIn::Chart(block), BlockExtent::Chart(measure)) => {
                 let fragment = ChartFragmentIn {
                     block_id: block.id.clone(),
                     x,
@@ -4312,12 +4149,14 @@ fn emit_note_regions(page: &PageIn, ctx: &RenderCtx<'_>) -> Vec<NoteRegion> {
 
 fn measured_block_height(measured: &MeasuredBlockIn) -> f64 {
     match &measured.measure {
-        MeasureIn::Paragraph(measure) => measure.total_height,
-        MeasureIn::Table(measure) => measure.total_height,
-        MeasureIn::Image(measure) => measure.height,
-        MeasureIn::TextBox(measure) => measure.height,
-        MeasureIn::Shape(measure) | MeasureIn::Chart(measure) => measure.height,
-        MeasureIn::Unsupported => 0.0,
+        BlockExtent::Paragraph(measure) => measure.total_height,
+        BlockExtent::Table(measure) => measure.total_height,
+        BlockExtent::Image(measure) => measure.height,
+        BlockExtent::TextBox(measure) => measure.height,
+        BlockExtent::Shape(measure) => measure.height,
+        BlockExtent::Chart(measure) => measure.height,
+        // Breaks and anything the engine adds later contribute no height.
+        _ => 0.0,
     }
 }
 
@@ -4428,7 +4267,7 @@ fn recompose_hf_region(
     let mut cursor = 0.0;
     for measured in &variant.measured {
         match (&measured.block, &measured.measure) {
-            (BlockIn::Paragraph(block), MeasureIn::Paragraph(measure)) => {
+            (BlockIn::Paragraph(block), BlockExtent::Paragraph(measure)) => {
                 let before = block
                     .attrs
                     .as_ref()
@@ -4457,7 +4296,7 @@ fn recompose_hf_region(
                 emit_paragraph_floating_images(&mut front, block, y, &geom, false);
                 cursor += measure.total_height;
             }
-            (BlockIn::Table(block), MeasureIn::Table(measure)) => {
+            (BlockIn::Table(block), BlockExtent::Table(measure)) => {
                 let (x, y, advances) = if let Some(floating) = &block.floating {
                     let mut top = floating.tblp_y.unwrap_or(0.0);
                     if floating.vert_anchor.as_deref() == Some("page") {
@@ -4492,13 +4331,13 @@ fn recompose_hf_region(
                     cursor += measure.total_height;
                 }
             }
-            (BlockIn::Image(block), MeasureIn::Image(measure)) => {
+            (BlockIn::Image(block), BlockExtent::Image(measure)) => {
                 let x = page.margins.left;
                 let y = origin_y + cursor;
                 let mut attrs = BlockRef::of(&block.id).attrs();
                 attrs.doc_start = block.pm_start;
                 attrs.doc_end = block.pm_end;
-                attrs.sdt = sdt_attrs_from_groups(&block.sdt_groups);
+                attrs.sdt = sdt_attrs_from_groups(&block.sdt_groups).map(Box::new);
                 attrs.sdt_path = sdt_path_from_groups(&block.sdt_groups);
                 stamp_image_block_attrs(&mut attrs, block, x, y);
                 let rotation = block
@@ -4520,7 +4359,7 @@ fn recompose_hf_region(
                 }));
                 cursor += measure.height;
             }
-            (BlockIn::TextBox(block), MeasureIn::TextBox(measure)) => {
+            (BlockIn::TextBox(block), BlockExtent::TextBox(measure)) => {
                 let (x, y) = resolve_hf_box_position(
                     block.position.as_ref(),
                     block.css_float.as_deref(),
@@ -4659,7 +4498,7 @@ fn build_display_list_selected(
                         prev_para_borders = None;
                         continue;
                     };
-                    let (BlockIn::Paragraph(block), MeasureIn::Paragraph(measure)) =
+                    let (BlockIn::Paragraph(block), BlockExtent::Paragraph(measure)) =
                         (&mb.block, &mb.measure)
                     else {
                         prev_para_borders = None;
@@ -4687,7 +4526,7 @@ fn build_display_list_selected(
                     let Some(mb) = by_id.get(&block_key(&tf.block_id)) else {
                         continue;
                     };
-                    let (BlockIn::Table(block), MeasureIn::Table(measure)) =
+                    let (BlockIn::Table(block), BlockExtent::Table(measure)) =
                         (&mb.block, &mb.measure)
                     else {
                         continue;
@@ -4706,7 +4545,9 @@ fn build_display_list_selected(
                     let mut attrs = BlockRef::of(&imf.block_id).attrs();
                     attrs.doc_start = imf.pm_start.or(block.and_then(|b| b.pm_start));
                     attrs.doc_end = imf.pm_end.or(block.and_then(|b| b.pm_end));
-                    attrs.sdt = block.and_then(|b| sdt_attrs_from_groups(&b.sdt_groups));
+                    attrs.sdt = block
+                        .and_then(|b| sdt_attrs_from_groups(&b.sdt_groups))
+                        .map(Box::new);
                     if let Some(block) = block {
                         attrs.sdt_path = sdt_path_from_groups(&block.sdt_groups);
                         stamp_image_block_attrs(&mut attrs, block, imf.x, imf.y);
@@ -4734,7 +4575,7 @@ fn build_display_list_selected(
                     let Some(mb) = by_id.get(&block_key(&tf.block_id)) else {
                         continue;
                     };
-                    let (BlockIn::TextBox(block), MeasureIn::TextBox(measure)) =
+                    let (BlockIn::TextBox(block), BlockExtent::TextBox(measure)) =
                         (&mb.block, &mb.measure)
                     else {
                         continue;
@@ -4983,7 +4824,7 @@ fn apply_review_primitive_metadata(
                 if let Some(thread) = thread {
                     apply_comment_thread_metadata(&mut metadata, thread);
                 }
-                attrs.comment = Some(metadata);
+                attrs.comment = Some(Box::new(metadata));
             }
             if is_comment_wash {
                 if all_resolved {
@@ -5056,7 +4897,7 @@ pub(crate) fn emit_paragraph_fragment(
     prims: &mut Vec<Primitive>,
     frag: &ParagraphFragmentIn,
     block: &ParagraphBlockIn,
-    measure: &ParagraphExtentIn,
+    measure: &ParagraphExtent,
     ctx: &RenderCtx<'_>,
     origin_x: f64,
     origin_y: f64,
@@ -5112,7 +4953,7 @@ pub(crate) fn emit_paragraph_fragment(
     if emit_block_chrome {
         if let Some(rev) = pmark_revision.clone() {
             let mut bar_attrs = block_ref.attrs();
-            bar_attrs.structural_revision = Some(rev.clone());
+            bar_attrs.structural_revision = Some(Box::new(rev.clone()));
             prims.push(Primitive::Rect(RectPrimitive {
                 x: px(origin_x + STRUCTURAL_CHANGE_BAR_OFFSET_X),
                 y: px(origin_y),
@@ -5213,7 +5054,7 @@ pub(crate) fn emit_paragraph_fragment(
         && frag.carried_to_next != Some(true)
     {
         let mut glyph_attrs = block_ref.attrs();
-        glyph_attrs.structural_revision = Some(rev.clone());
+        glyph_attrs.structural_revision = Some(Box::new(rev.clone()));
         let glyph_x = line.end_x + PARAGRAPH_MARK_GLYPH_GAP;
         prims.push(Primitive::Text(TextRunPrimitive {
             text: "¶".to_string(),
@@ -5282,7 +5123,7 @@ pub(crate) fn emit_paragraph_fragment(
                     a.to_line = Some(to);
                 }
                 if let Some(sdt) = &sdt {
-                    a.sdt = Some(sdt.clone());
+                    a.sdt = Some(Box::new(sdt.clone()));
                     a.sdt_path = sdt_path.clone();
                 }
             }
@@ -5322,17 +5163,22 @@ struct LinePaintMetrics {
 /// finally exact run slices for older authoritative payloads.
 fn authoritative_line_items<'a>(
     block: &'a ParagraphBlockIn,
-    line: &LineIn,
+    line: &TypesetRow,
     ctx: &RenderCtx<'_>,
     default_level: u8,
 ) -> Option<Vec<LinePaintItem<'a>>> {
     let mut slices: Vec<(usize, usize, usize, f64, u8, u64, Option<u64>)> = Vec::new();
-    if !line.bidi_slices.is_empty() {
-        for (index, slice) in line.bidi_slices.iter().enumerate() {
+    // Absent and empty mean the same thing here: no authoritative metadata of
+    // that kind, fall through to the next.
+    let bidi_slices = line.bidi_slices.as_deref().unwrap_or_default();
+    let cluster_advances = line.cluster_advances.as_deref().unwrap_or_default();
+    let run_advances = line.run_advances.as_deref().unwrap_or_default();
+    if !bidi_slices.is_empty() {
+        for (index, slice) in bidi_slices.iter().enumerate() {
             slices.push((
-                slice.run_index?,
-                slice.start_char?,
-                slice.end_char?,
+                slice.run_index? as usize,
+                slice.start_char? as usize,
+                slice.end_char? as usize,
                 slice.advance?,
                 slice.bidi_level.unwrap_or(default_level),
                 slice.visual_order.unwrap_or(index as u64),
@@ -5340,27 +5186,25 @@ fn authoritative_line_items<'a>(
             ));
         }
         slices.sort_by_key(|slice| slice.5);
-    } else if !line.cluster_advances.is_empty() {
-        for (index, cluster) in line.cluster_advances.iter().enumerate() {
+    } else if !cluster_advances.is_empty() {
+        for (index, cluster) in cluster_advances.iter().enumerate() {
+            let _ = index;
             slices.push((
-                cluster.run_index?,
-                cluster.start_char?,
-                cluster.end_char?,
-                cluster.advance?,
-                cluster.bidi_level.unwrap_or(default_level),
+                cluster.run_index as usize,
+                cluster.start_char as usize,
+                cluster.end_char as usize,
+                f64::from(cluster.advance),
+                cluster.bidi_level,
                 // xOffset is the authoritative visual coordinate. Convert it
                 // to a stable integer sort key without changing the value.
-                cluster
-                    .x_offset
-                    .map(|x| (x.max(0.0) * 1_000.0).round() as u64)
-                    .unwrap_or(index as u64),
-                cluster.logical_order,
+                (f64::from(cluster.x_offset).max(0.0) * 1_000.0).round() as u64,
+                Some(u64::from(cluster.logical_order)),
             ));
         }
         slices.sort_by_key(|slice| slice.5);
-    } else if !line.run_advances.is_empty() {
-        for (index, run) in line.run_advances.iter().enumerate() {
-            let run_index = run.run_index?;
+    } else if !run_advances.is_empty() {
+        for (index, run) in run_advances.iter().enumerate() {
+            let run_index = run.run_index? as usize;
             let level = match block.runs.get(run_index) {
                 Some(RunIn::Text(text)) => text.fmt.bidi_level.unwrap_or(default_level),
                 Some(RunIn::Field(field)) => field.fmt.bidi_level.unwrap_or(default_level),
@@ -5369,8 +5213,8 @@ fn authoritative_line_items<'a>(
             };
             slices.push((
                 run_index,
-                run.start_char?,
-                run.end_char?,
+                run.start_char? as usize,
+                run.end_char? as usize,
                 run.advance?,
                 level,
                 index as u64,
@@ -5455,7 +5299,7 @@ fn authoritative_line_items<'a>(
 fn emit_line(
     prims: &mut Vec<Primitive>,
     block: &ParagraphBlockIn,
-    line: &LineIn,
+    line: &TypesetRow,
     geom: LineGeom,
     block_ref: &BlockRef,
     ctx: &RenderCtx<'_>,
@@ -6000,7 +5844,7 @@ fn emit_tab_leader(
         attrs.doc_end = tab.pm_end;
         attrs.logical_order = logical_order.or(tab.fmt.logical_order);
         attrs.bidi_level = tab.fmt.bidi_level;
-        attrs.leader_glyphs = Some(LeaderGlyphMetadata {
+        attrs.leader_glyphs = Some(Box::new(LeaderGlyphMetadata {
             glyph: Some(glyph.to_string()),
             count: Some(count),
             x: Some(px(x)),
@@ -6012,7 +5856,7 @@ fn emit_tab_leader(
             size: measured.font_size.map(|size| px(size * 96.0 / 72.0)),
             color: Some(run_color(&fmt)),
             rtl: tab.fmt.rtl.filter(|rtl| *rtl),
-        });
+        }));
         prims.push(Primitive::Text(TextRunPrimitive {
             text: glyph.repeat(count as usize),
             x: px(x),
@@ -6132,9 +5976,9 @@ fn emit_text_segment(
     attrs.doc_start = pm_start;
     attrs.doc_end = pm_end;
     attrs.comment_ids = comment_ids.clone();
-    attrs.revision = revision;
+    attrs.revision = revision.map(Box::new);
     attrs.href = hyperlink_href(fmt);
-    attrs.inline_sdt_widget = fmt.inline_sdt_widget.clone();
+    attrs.inline_sdt_widget = fmt.inline_sdt_widget.clone().map(Box::new);
     attrs.logical_order = logical_order.or(fmt.logical_order);
     attrs.bidi_level = exact_advance.then_some(bidi_level).or(fmt.bidi_level);
     attrs.lang = fmt.language.as_ref().and_then(|language| {
@@ -6158,20 +6002,20 @@ fn emit_text_segment(
     // the a11y mirror can announce what the field is. Announce-only — nothing
     // downstream parses or executes the instruction.
     if let Some(field_run) = field {
-        attrs.field = Some(field_metadata(field_run));
+        attrs.field = Some(Box::new(field_metadata(field_run)));
     }
     // footnote/endnote body reference mark → note_ref, the backlink hook
     // (the mirror renders it as a doc-noteref link to `oox-<kind>-<id>`)
     if let Some(id) = fmt.footnote_ref_id {
-        attrs.note_ref = Some(NoteRefMetadata {
+        attrs.note_ref = Some(Box::new(NoteRefMetadata {
             kind: Some("footnote".to_string()),
             id: Some(id),
-        });
+        }));
     } else if let Some(id) = fmt.endnote_ref_id {
-        attrs.note_ref = Some(NoteRefMetadata {
+        attrs.note_ref = Some(Box::new(NoteRefMetadata {
             kind: Some("endnote".to_string()),
             id: Some(id),
-        });
+        }));
     }
 
     // Highlight is the run font box, never the containing line band. Exact
@@ -6180,7 +6024,7 @@ fn emit_text_segment(
         let ascent = font_px * 0.8;
         let descent = font_px * 0.2;
         let mut highlight_attrs = attrs.clone();
-        highlight_attrs.highlight_slice = Some(HighlightSliceMetadata {
+        highlight_attrs.highlight_slice = Some(Box::new(HighlightSliceMetadata {
             source_start: exact_advance.then_some(source_start as u64),
             source_end: exact_advance.then_some(source_end as u64),
             ascent: Some(px(ascent)),
@@ -6188,7 +6032,7 @@ fn emit_text_segment(
             includes_trailing_whitespace: Some(
                 text.chars().next_back().is_some_and(char::is_whitespace),
             ),
-        });
+        }));
         prims.push(Primitive::Decoration(DecorationPrimitive {
             deco: DecoKind::Highlight,
             x: px(x),
@@ -6268,7 +6112,7 @@ fn emit_text_segment(
     };
     if !emitted_glyphs {
         let mut text_attrs = attrs.clone();
-        text_attrs.modern_effects = fmt.modern_effects.clone();
+        text_attrs.modern_effects = fmt.modern_effects.clone().map(Box::new);
         prims.push(Primitive::Text(TextRunPrimitive {
             text: text.to_string(),
             x: px(x),
@@ -6576,7 +6420,7 @@ fn try_emit_glyph_runs(
         // outlines unavailable) — same shorthand the TextRunPrimitive would
         // carry, so the fallback keeps family/weight/style
         sub_attrs.fallback_font = Some(css_font(fmt));
-        sub_attrs.modern_effects = fmt.modern_effects.clone();
+        sub_attrs.modern_effects = fmt.modern_effects.clone().map(Box::new);
 
         local.push(Primitive::GlyphRun(GlyphRunPrimitive {
             font_id: font.to_u32(),
@@ -7123,7 +6967,7 @@ fn emit_paragraph_floating_images(
         attrs.doc_start = imr.pm_start;
         attrs.doc_end = imr.pm_end;
         stamp_image_run_attrs(&mut attrs, imr, page_x, page_y);
-        attrs.sdt = sdt_attrs_from_groups(&block.sdt_groups);
+        attrs.sdt = sdt_attrs_from_groups(&block.sdt_groups).map(Box::new);
         attrs.sdt_path = sdt_path_from_groups(&block.sdt_groups);
         prims.push(Primitive::Image(ImagePrimitive {
             rel_id: imr.src.clone(),
@@ -7164,7 +7008,7 @@ fn emit_shape_fragment(
         .or(frag.pm_end)
         .or(block.doc_end)
         .or(block.pm_end);
-    attrs.sdt = sdt_attrs_from_groups(&block.sdt_groups);
+    attrs.sdt = sdt_attrs_from_groups(&block.sdt_groups).map(Box::new);
     attrs.sdt_path = sdt_path_from_groups(&block.sdt_groups);
     attrs.aria_label = block.title.clone();
     attrs.aria_description = block.description.clone();
@@ -7180,12 +7024,12 @@ fn emit_shape_fragment(
         .and_then(|scene| scene.pointer("/root/id"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    attrs.fill_paint = shape_fill_paint(block.fill.as_ref());
-    attrs.stroke_paint = shape_stroke_paint(block.stroke.as_ref());
+    attrs.fill_paint = shape_fill_paint(block.fill.as_ref()).map(Box::new);
+    attrs.stroke_paint = shape_stroke_paint(block.stroke.as_ref()).map(Box::new);
     attrs.effects = block.effects.clone();
-    attrs.effect_extent = block.effect_extent.clone();
-    attrs.drawing_scene = block.scene.clone();
-    attrs.text_body_properties = block.text_body_properties.clone();
+    attrs.effect_extent = block.effect_extent.clone().map(Box::new);
+    attrs.drawing_scene = block.scene.clone().map(Box::new);
+    attrs.text_body_properties = block.text_body_properties.clone().map(Box::new);
 
     let decorative = block.decorative.unwrap_or_else(|| {
         block.inner_text.is_empty() && block.title.is_none() && block.description.is_none()
@@ -7544,11 +7388,11 @@ fn emit_chart_fragment(prims: &mut Vec<Primitive>, frag: &ChartFragmentIn, block
         .or(frag.pm_end)
         .or(block.doc_end)
         .or(block.pm_end);
-    attrs.sdt = sdt_attrs_from_groups(&block.sdt_groups);
+    attrs.sdt = sdt_attrs_from_groups(&block.sdt_groups).map(Box::new);
     attrs.sdt_path = sdt_path_from_groups(&block.sdt_groups);
-    attrs.chart = Some(ChartA11yAttrs {
+    attrs.chart = Some(Box::new(ChartA11yAttrs {
         label: chart_aria_label(&chart),
-    });
+    }));
     attrs.aria_label = block.chart.title.clone();
     attrs.aria_description = block.chart.description.clone();
     attrs.decorative = block.chart.decorative.filter(|decorative| *decorative);
@@ -7707,7 +7551,7 @@ fn emit_text_box_fragment(
     prims: &mut Vec<Primitive>,
     frag: &TextBoxFragmentIn,
     block: &TextBoxBlockIn,
-    measure: &TextBoxExtentIn,
+    measure: &TextBoxExtent,
     ctx: &RenderCtx<'_>,
 ) {
     let stamp_from = prims.len();
@@ -7867,7 +7711,7 @@ fn compute_cell_grid(block: &TableBlockIn, column_widths: &[f64]) -> Vec<GridCel
 }
 
 /// Returns whole-pixel cumulative row offsets.
-fn row_y_positions(rows: &[TableRowExtentIn]) -> Vec<f64> {
+fn row_y_positions(rows: &[TableRowExtent]) -> Vec<f64> {
     let mut out = Vec::with_capacity(rows.len() + 1);
     let mut y: f64 = 0.0;
     for r in rows {
@@ -7878,7 +7722,7 @@ fn row_y_positions(rows: &[TableRowExtentIn]) -> Vec<f64> {
     out
 }
 
-pub(crate) fn table_total_width(measure: &TableExtentIn) -> f64 {
+pub(crate) fn table_total_width(measure: &TableExtent) -> f64 {
     if measure.total_width > 0.0 {
         measure.total_width
     } else {
@@ -7886,7 +7730,7 @@ pub(crate) fn table_total_width(measure: &TableExtentIn) -> f64 {
     }
 }
 
-fn nested_table_x_offset(block: &TableBlockIn, measure: &TableExtentIn, content_width: f64) -> f64 {
+fn nested_table_x_offset(block: &TableBlockIn, measure: &TableExtent, content_width: f64) -> f64 {
     let table_width = table_total_width(measure);
     match block.justification.as_deref() {
         Some("center") => ((content_width - table_width) / 2.0).max(0.0),
@@ -7920,18 +7764,18 @@ fn apply_clip_group(attrs: &mut DocAttrs, id: String, rect: ClipRect) {
     } else {
         rect
     };
-    attrs.clip_group = Some(ClipGroupMetadata {
+    attrs.clip_group = Some(Box::new(ClipGroupMetadata {
         id: Some(id),
         clip: Some(clip),
         opacity: None,
-    });
+    }));
 }
 
 fn table_metadata(
     table_id: &str,
     frag: &TableFragmentIn,
     block: &TableBlockIn,
-    measure: &TableExtentIn,
+    measure: &TableExtent,
     header_row_count: usize,
 ) -> TableMetadata {
     TableMetadata {
@@ -7952,7 +7796,7 @@ pub(crate) fn emit_table_fragment(
     prims: &mut Vec<Primitive>,
     frag: &TableFragmentIn,
     block: &TableBlockIn,
-    measure: &TableExtentIn,
+    measure: &TableExtent,
     ctx: &RenderCtx<'_>,
 ) {
     let stamp_from = prims.len();
@@ -7995,7 +7839,7 @@ pub(crate) fn emit_table_fragment(
     let table_revision = whole_table_revision(block);
     if let Some(rev) = table_revision.clone() {
         let mut attrs = block_ref.attrs();
-        attrs.structural_revision = Some(rev.clone());
+        attrs.structural_revision = Some(Box::new(rev.clone()));
         prims.push(Primitive::Rect(RectPrimitive {
             x: px(frag.x + STRUCTURAL_CHANGE_BAR_OFFSET_X),
             y: px(frag.y),
@@ -8055,7 +7899,7 @@ pub(crate) fn emit_table_fragment(
                 continue;
             }
             let mut attrs = block_ref.attrs();
-            attrs.structural_revision = Some(rev.clone());
+            attrs.structural_revision = Some(Box::new(rev.clone()));
             prims.push(Primitive::Rect(RectPrimitive {
                 x: px(frag.x + STRUCTURAL_CHANGE_BAR_OFFSET_X),
                 y: px(t),
@@ -8210,7 +8054,7 @@ pub(crate) fn emit_table_fragment(
             && let Some((t, b)) = clip(cy, cy + p.cell_h)
         {
             let mut bg_attrs = block_ref.attrs();
-            bg_attrs.cell = Some(cell_ref.clone());
+            bg_attrs.cell = Some(Box::new(cell_ref.clone()));
             prims.push(Primitive::Rect(RectPrimitive {
                 x: px(cx),
                 y: px(t),
@@ -8234,8 +8078,8 @@ pub(crate) fn emit_table_fragment(
                     Some(p.g.column_index as u64),
                 );
                 let mut attrs = block_ref.attrs();
-                attrs.cell = Some(cell_ref.clone());
-                attrs.structural_revision = Some(rev.clone());
+                attrs.cell = Some(Box::new(cell_ref.clone()));
+                attrs.structural_revision = Some(Box::new(rev.clone()));
                 prims.push(Primitive::Rect(RectPrimitive {
                     x: px(cx),
                     y: px(t),
@@ -8267,7 +8111,7 @@ pub(crate) fn emit_table_fragment(
                 // explicit ownership: the owning grid cell rides on the line so
                 // consumers associate borders exactly (no geometric fallback)
                 let line_attrs = DocAttrs {
-                    cell: Some(cell_ref.clone()),
+                    cell: Some(Box::new(cell_ref.clone())),
                     ..DocAttrs::default()
                 };
                 prims.push(Primitive::Line(LinePrimitive {
@@ -8372,7 +8216,7 @@ pub(crate) fn emit_table_fragment(
             // ownership metadata: the cut rule closes this grid cell's column
             // band at the fragment edge (borderOwner stays Fragment)
             let line_attrs = DocAttrs {
-                cell: Some(TableCellRef {
+                cell: Some(Box::new(TableCellRef {
                     row: g.row_index as u64,
                     col: g.column_index as u64,
                     row_span: g.row_span as u64,
@@ -8387,7 +8231,7 @@ pub(crate) fn emit_table_fragment(
                     owns_right_border: None,
                     owns_bottom_border: None,
                     owns_left_border: None,
-                }),
+                })),
                 ..DocAttrs::default()
             };
             prims.push(Primitive::Line(LinePrimitive {
@@ -8434,7 +8278,7 @@ pub(crate) fn emit_table_fragment(
                     inner.parent_table_id = Some(table_id.clone());
                 }
             } else {
-                attrs.table = Some(metadata.clone());
+                attrs.table = Some(Box::new(metadata.clone()));
             }
         }
     }
@@ -8446,7 +8290,7 @@ pub(crate) fn emit_table_fragment(
 fn emit_cell_content(
     prims: &mut Vec<Primitive>,
     cell: &TableCellIn,
-    measure: &TableExtentIn,
+    measure: &TableExtent,
     p: &CellPaintRef,
     cx: f64,
     cy: f64,
@@ -8494,7 +8338,7 @@ fn emit_cell_content(
     let mut prev_after = 0.0_f64;
     for (i, blk) in cell.blocks.iter().enumerate() {
         match (blk, cell_measure.blocks.get(i)) {
-            (BlockIn::Paragraph(pb), Some(MeasureIn::Paragraph(pm))) => {
+            (BlockIn::Paragraph(pb), Some(BlockExtent::Paragraph(pm))) => {
                 let spacing = pb.attrs.as_ref().and_then(|a| a.spacing);
                 let before = spacing.and_then(|s| s.before).unwrap_or(0.0);
                 let after = spacing.and_then(|s| s.after).unwrap_or(0.0);
@@ -8507,26 +8351,25 @@ fn emit_cell_content(
                     .sum::<f64>();
                 prev_after = after;
             }
-            (BlockIn::Table(_), Some(MeasureIn::Table(tm))) => {
+            (BlockIn::Table(_), Some(BlockExtent::Table(tm))) => {
                 stack_cursor += prev_after;
                 block_tops.push(stack_cursor);
                 stack_cursor += tm.total_height;
                 prev_after = 0.0;
             }
-            (BlockIn::Image(_), Some(MeasureIn::Image(image))) => {
+            (BlockIn::Image(_), Some(BlockExtent::Image(image))) => {
                 stack_cursor += prev_after;
                 block_tops.push(stack_cursor);
                 stack_cursor += image.height;
                 prev_after = 0.0;
             }
-            (BlockIn::TextBox(_), Some(MeasureIn::TextBox(text_box))) => {
+            (BlockIn::TextBox(_), Some(BlockExtent::TextBox(text_box))) => {
                 stack_cursor += prev_after;
                 block_tops.push(stack_cursor);
                 stack_cursor += text_box.height;
                 prev_after = 0.0;
             }
-            (BlockIn::Shape(_), Some(MeasureIn::Shape(sm)))
-            | (BlockIn::Chart(_), Some(MeasureIn::Chart(sm))) => {
+            (BlockIn::Shape(_), Some(BlockExtent::Shape(sm))) => {
                 stack_cursor += prev_after;
                 block_tops.push(stack_cursor);
                 stack_cursor += sm.height;
@@ -8574,7 +8417,7 @@ fn emit_cell_content(
         let Some(m) = cell_measure.blocks.get(i) else {
             continue;
         };
-        if let (BlockIn::Paragraph(pb), MeasureIn::Paragraph(pm)) = (cell_block, m) {
+        if let (BlockIn::Paragraph(pb), BlockExtent::Paragraph(pm)) = (cell_block, m) {
             // cell paragraphs never split; fabricate a whole-paragraph fragment
             let total_height: f64 = pm
                 .lines
@@ -8611,7 +8454,7 @@ fn emit_cell_content(
                 selectable,
                 Some(cell_ref),
             );
-        } else if let (BlockIn::Table(tb), MeasureIn::Table(tm)) = (cell_block, m) {
+        } else if let (BlockIn::Table(tb), BlockExtent::Table(tm)) = (cell_block, m) {
             let table_y = content_top + block_tops[i];
             let synthetic = TableFragmentIn {
                 block_id: tb.id.clone(),
@@ -8633,7 +8476,7 @@ fn emit_cell_content(
             // surface its table semantics; only clip to the outer cell fragment
             // and strip doc positions on a vmerge continuation repaint.
             postprocess_cell_primitives(prims, before, clip_top_y, clip_bottom_y, selectable, None);
-        } else if let (BlockIn::Image(image), MeasureIn::Image(image_measure)) = (cell_block, m) {
+        } else if let (BlockIn::Image(image), BlockExtent::Image(image_measure)) = (cell_block, m) {
             let image_x = content_x;
             let image_y = content_top + block_tops[i];
             let mut attrs = BlockRef::of(&image.id).attrs();
@@ -8668,7 +8511,7 @@ fn emit_cell_content(
                 selectable,
                 Some(cell_ref),
             );
-        } else if let (BlockIn::TextBox(text_box), MeasureIn::TextBox(text_box_measure)) =
+        } else if let (BlockIn::TextBox(text_box), BlockExtent::TextBox(text_box_measure)) =
             (cell_block, m)
         {
             let text_box_y = content_top + block_tops[i];
@@ -8693,7 +8536,7 @@ fn emit_cell_content(
                 selectable,
                 Some(cell_ref),
             );
-        } else if let (BlockIn::Shape(sb), MeasureIn::Shape(sm)) = (cell_block, m) {
+        } else if let (BlockIn::Shape(sb), BlockExtent::Shape(sm)) = (cell_block, m) {
             let shape_y = content_top + block_tops[i];
             let synthetic = ShapeFragmentIn {
                 block_id: sb.id.clone(),
@@ -8722,7 +8565,7 @@ fn emit_cell_content(
                 selectable,
                 Some(cell_ref),
             );
-        } else if let (BlockIn::Chart(cb), MeasureIn::Chart(cm)) = (cell_block, m) {
+        } else if let (BlockIn::Chart(cb), BlockExtent::Chart(cm)) = (cell_block, m) {
             let chart_y = content_top + block_tops[i];
             let synthetic = ChartFragmentIn {
                 block_id: cb.id.clone(),
@@ -8840,7 +8683,7 @@ fn resolve_cell_float_position(
 fn emit_cell_floating_images(
     prims: &mut Vec<Primitive>,
     cell: &TableCellIn,
-    cell_measure: &TableCellExtentIn,
+    cell_measure: &TableCellExtent,
     block_ref: &BlockRef,
     content_x: f64,
     content_top: f64,
@@ -8857,8 +8700,9 @@ fn emit_cell_floating_images(
             // non-paragraph blocks (nested tables) advance the anchor cursor by
             // their measured height, matching the painter's extractor
             match cell_measure.blocks.get(i) {
-                Some(MeasureIn::Table(tm)) => paragraph_y += tm.total_height,
-                Some(MeasureIn::Shape(sm)) | Some(MeasureIn::Chart(sm)) => paragraph_y += sm.height,
+                Some(BlockExtent::Table(tm)) => paragraph_y += tm.total_height,
+                Some(BlockExtent::Shape(sm)) => paragraph_y += sm.height,
+                Some(BlockExtent::Chart(cm)) => paragraph_y += cm.height,
                 _ => {}
             }
             continue;
@@ -8881,7 +8725,7 @@ fn emit_cell_floating_images(
             let layout_width = image_layout_width(imr);
             let layout_height = image_layout_height(imr);
             let mut attrs = block_ref.attrs();
-            attrs.cell = Some(cell_ref.clone());
+            attrs.cell = Some(Box::new(cell_ref.clone()));
             // A continuation repaint carries no document positions.
             if selectable {
                 attrs.doc_start = imr.pm_start;
@@ -8909,7 +8753,7 @@ fn emit_cell_floating_images(
             }
             prims.push(prim);
         }
-        if let Some(MeasureIn::Paragraph(pm)) = cell_measure.blocks.get(i) {
+        if let Some(BlockExtent::Paragraph(pm)) = cell_measure.blocks.get(i) {
             paragraph_y += pm.total_height;
         }
     }
@@ -8991,7 +8835,7 @@ fn strip_doc_positions(p: &mut Primitive) {
 /// carry no DocAttrs and stay untouched)
 fn set_cell_ref(p: &mut Primitive, cell: &TableCellRef) {
     if let Some(attrs) = doc_attrs_mut(p) {
-        attrs.cell = Some(cell.clone());
+        attrs.cell = Some(Box::new(cell.clone()));
     }
 }
 
@@ -9152,15 +8996,21 @@ fn resident_build_input(
         serde_json::from_slice(&wire).map_err(|e| format!("parse resident display input: {e}"))?;
     drop(wire);
 
+    // Only the block still crosses as text. The measure is the engine's own
+    // `BlockExtent` on both sides, and it is the overwhelming majority of the
+    // payload — on a 338-page document, 98 MB of the 107 MB this used to
+    // serialize and parse back was typeset advances being copied through JSON
+    // into a mirror of the type they already had.
     input.measured.reserve_exact(pagination.measured.len());
     let mut block = Vec::<u8>::new();
     for measured in &pagination.measured {
         block.clear();
-        write_normalized(&mut block, measured, "measured block")?;
-        input.measured.push(
-            serde_json::from_slice(&block)
+        write_normalized(&mut block, &measured.block, "measured block")?;
+        input.measured.push(MeasuredBlockIn {
+            block: serde_json::from_slice(&block)
                 .map_err(|e| format!("parse resident measured block: {e}"))?,
-        );
+            measure: measured.measure.clone(),
+        });
     }
     Ok(input)
 }

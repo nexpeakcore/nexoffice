@@ -22,6 +22,7 @@ import type {
   ResidentEngineWorkerRequest,
   ResidentEngineWorkerResponse,
   ResidentEngineWorkerStage,
+  YrsOpenProfile,
 } from './residentEngineWorkerProtocol';
 import {
   residentCaretDeviceRect,
@@ -96,12 +97,14 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
     const progress = (stage: ResidentEngineWorkerStage) =>
       scope.postMessage({ id: request.id, progress: stage });
     progress('received');
+    const openStarted = performance.now();
     // The worker is the origin of this document's layout, not a copy of it:
     // it lowers, measures and paginates once and nothing replays that work.
     // `bootstrap` below exists for the path where a main-thread replica laid
     // the document out first, which costs the document twice over.
     session = await createResidentEngineSession();
     progress('sessionReady');
+    const sessionAt = performance.now();
     session.loadState(request.open.state);
     session.clearFonts();
     for (const font of request.open.fonts) session.registerFont(font);
@@ -110,23 +113,39 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
       session.setSelection(request.open.selection.anchor, request.open.selection.head);
     }
     progress('stateLoaded');
+    const loadedAt = performance.now();
     // No render or measure inputs to replay: lowering and measuring happen
     // here, inside this one region layout, and nowhere else. Nothing can be
     // said while it runs, so the host is told before and after.
     progress('layingOut');
     session.layoutDocumentWithRegionsVoid(request.layoutInput);
     progress('laidOut');
+    // A document opens at its first page, so the first frame carries those.
+    // The view widens this the moment it knows its own viewport.
+    if (request.open.pageWindow) {
+      session.setPageWindow(request.open.pageWindow.start, request.open.pageWindow.count);
+    }
+    const laidOutAt = performance.now();
     layoutRevision = 1;
     subscribe();
     const started = performance.now();
     const frame = session.buildDisplayListFrame(request.extras, 0);
+    const openProfile: YrsOpenProfile = {
+      sessionMs: sessionAt - openStarted,
+      loadMs: loadedAt - sessionAt,
+      layoutMs: laidOutAt - loadedAt,
+      frameMs: performance.now() - laidOutAt,
+    };
     await replyFrame(
       request.id,
       frame,
       performance.now() - started,
       pendingUpdates,
       undefined,
-      started
+      started,
+      false,
+      false,
+      openProfile
     );
     return;
   }
@@ -135,25 +154,39 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
     const progress = (stage: ResidentEngineWorkerStage) =>
       scope.postMessage({ id: request.id, progress: stage });
     progress('received');
+    const openStarted = performance.now();
     // The worker is a genuine yrs peer. Reusing the main replica's client id
     // makes a fast structural input race overlap one client's clock range and
     // corrupt the update; a fresh id lets yrs merge queued/local operations
     // safely while the main replica applies worker updates with local origin.
     session = await createResidentEngineSession();
     progress('sessionReady');
+    const sessionAt = performance.now();
     hydrate(request.snapshot);
     progress('stateLoaded');
+    const loadedAt = performance.now();
     subscribe();
     progress('layingOut');
     const started = performance.now();
     const frame = session.buildDisplayListFrame(request.extras, request.expectedFrameEpoch);
+    // A bootstrap replays a layout the main thread already produced, so there
+    // is no layout phase of its own to report.
+    const openProfile: YrsOpenProfile = {
+      sessionMs: sessionAt - openStarted,
+      loadMs: loadedAt - sessionAt,
+      layoutMs: 0,
+      frameMs: performance.now() - started,
+    };
     await replyFrame(
       request.id,
       frame,
       performance.now() - started,
       pendingUpdates,
       undefined,
-      started
+      started,
+      false,
+      false,
+      openProfile
     );
     return;
   }
@@ -363,7 +396,8 @@ async function replyFrame(
   engineProfile?: import('./index').YrsEngineApplyProfile,
   requestStarted = performance.now(),
   requireCaret = false,
-  paintCaret = false
+  paintCaret = false,
+  openProfile?: YrsOpenProfile
 ): Promise<void> {
   retainedFrame = applyFrameDeltaOwned(retainedFrame, decodeFrameDelta(bytes));
   // The decoder's primitive-id arrays are zero-copy views into `bytes`. The
@@ -413,6 +447,7 @@ async function replyFrame(
       workerQueuedMs: requestQueuedMs,
       workerArrivedAt: requestArrivedAt,
       engineProfile,
+      openProfile,
       caret,
       selection,
       caretPainted,

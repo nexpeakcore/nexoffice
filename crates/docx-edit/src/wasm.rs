@@ -76,27 +76,15 @@ struct ParaSpan {
 /// Resolves a paragraph to its story span by walking the public segment view.
 /// Story-scoped: a `para_id` that lives in another story is "not found".
 fn find_para_span(doc: &EditingDoc, story: &str, para_id: &str) -> Result<ParaSpan, JsValue> {
-    let mut offset: u32 = 0;
-    let mut para_start: u32 = 0;
-    for segment in doc.story_segments(story).map_err(js_err)? {
-        match segment.content {
-            SegmentContent::Text(text) => offset += text.encode_utf16().count() as u32,
-            SegmentContent::Pilcrow(properties) => {
-                if properties.para_id == para_id {
-                    return Ok(ParaSpan {
-                        start: para_start,
-                        pilcrow: offset,
-                    });
-                }
-                offset += 1;
-                para_start = offset;
-            }
-            SegmentContent::OtherEmbed { .. } => offset += 1,
-        }
-    }
-    Err(js_err(format!(
-        "paragraph {para_id:?} was not found in story {story:?}"
-    )))
+    let span = doc.paragraph_span(story, para_id).map_err(|_| {
+        js_err(format!(
+            "paragraph {para_id:?} was not found in story {story:?}"
+        ))
+    })?;
+    Ok(ParaSpan {
+        start: span.start,
+        pilcrow: span.pilcrow,
+    })
 }
 
 /// `Loc { story, paraId, offset }` -> transient story-global index.
@@ -2954,6 +2942,48 @@ impl EditSession {
                             "embedKind": kind,
                             "payload": attrs_value(&payload)?,
                             "attributes": attributes,
+                        })
+                    }
+                })
+            })
+            .collect::<Result<Vec<Value>, JsValue>>()?;
+        serde_json::to_string(&items).map_err(js_err)
+    }
+
+    /// The structural outline: the same segment order as `story_segments`, with
+    /// only what a position projection reads — text as a `"len"` count, a
+    /// pilcrow's bookmarks (each one *is* a position) and nothing else of its
+    /// properties, and an embed payload without the image bytes.
+    ///
+    /// Sending the rest anyway put 9.5MB of JSON on the bridge for a 338-page
+    /// document, of which 6.3MB was twelve images and 2.4MB was the round-trip
+    /// formatting provenance the projection never opens.
+    pub fn story_outline(&self, story: &str) -> Result<String, JsValue> {
+        let segments = self.engine.doc().story_segments(story).map_err(js_err)?;
+        let items = segments
+            .into_iter()
+            .map(|segment| {
+                Ok(match segment.content {
+                    SegmentContent::Text(text) => {
+                        json!({ "kind": "text", "len": text.encode_utf16().count() })
+                    }
+                    SegmentContent::Pilcrow(properties) => {
+                        let mut item = json!({ "kind": "pilcrow", "paraId": properties.para_id });
+                        if let Some(bookmarks) = properties.values.get("bookmarks") {
+                            item["bookmarks"] = serde_json::to_value(bookmarks).map_err(js_err)?;
+                        }
+                        item
+                    }
+                    SegmentContent::OtherEmbed { kind, payload } => {
+                        let mut structure = attrs_value(&payload)?;
+                        if let Some(map) = structure.as_object_mut() {
+                            map.remove("src");
+                        }
+                        json!({
+                            "kind": "embed",
+                            "embedKind": kind,
+                            "payload": structure,
+                            "attributes": attrs_value(&segment.attributes)?,
                         })
                     }
                 })

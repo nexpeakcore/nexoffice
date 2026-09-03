@@ -124,20 +124,45 @@ pub fn yrs_doc_to_lowered_blocks(
         .map(|(lowered, _)| lowered)
 }
 
-/// FNV-1a over the yrs data a paragraph is lowered from.
+/// A hash of the yrs data a paragraph is lowered from.
 ///
 /// A keystroke re-lowers a whole story and then has to decide which paragraphs
 /// actually changed. Hashing the *built* blocks answers that, but a built block
 /// is an order of magnitude larger than the data it came from — the defaults
 /// applied to every run see to that. Hashing the source instead is the same
 /// answer for a tenth of the work.
+///
+/// Even so, this reads every character of the document on every key. A
+/// byte-at-a-time FNV-1a spent 7.7ms of a 34ms lowering pass doing it, so this
+/// takes eight bytes at a time. The keys are compared only against the ones the
+/// previous pass produced in this same process — nothing persists them, and no
+/// two builds ever have to agree on one.
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 
+/// Multiply-rotate, the shape rustc's own hasher uses.
+#[inline(always)]
+fn fold_word(hash: u64, word: u64) -> u64 {
+    (hash.rotate_left(5) ^ word).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95)
+}
+
+/// Folds `bytes` into `hash`.
+///
+/// The length joins the hash, so a fold is tied to the run of bytes it was
+/// given: `"ab"` then `"c"` no longer reads the same as `"abc"`. Callers fold
+/// one whole value at a time — a run's text, an attribute's key — so a value
+/// that arrives split differently between two passes would look changed and be
+/// rebuilt. That is the safe direction, and the keystroke benchmark's reuse
+/// count says it does not happen.
 fn fold_bytes(hash: u64, bytes: &[u8]) -> u64 {
-    let mut hash = hash;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    let mut hash = fold_word(hash, bytes.len() as u64);
+    let (words, tail) = bytes.as_chunks::<8>();
+    for word in words {
+        hash = fold_word(hash, u64::from_le_bytes(*word));
+    }
+    if !tail.is_empty() {
+        let mut padded = [0_u8; 8];
+        padded[..tail.len()].copy_from_slice(tail);
+        hash = fold_word(hash, u64::from_le_bytes(padded));
     }
     hash
 }
@@ -159,23 +184,80 @@ fn fold_serializable<T: serde::Serialize + ?Sized>(hash: u64, value: &T) -> Opti
     Some(sink.0)
 }
 
+/// Folds a yrs value directly, without formatting it as JSON first.
+///
+/// Every run attribute and every paragraph's properties are folded on every
+/// keystroke; going through `serde_json` to do it spends the lowering pass in
+/// number formatting and string escaping. The tag byte keeps variants that
+/// print alike — `1` and `"1"`, an empty array and an empty map — apart.
+fn fold_any(hash: u64, value: &Any) -> u64 {
+    match value {
+        Any::Null => fold_bytes(hash, b"\x00"),
+        Any::Undefined => fold_bytes(hash, b"\x01"),
+        Any::Bool(flag) => fold_bytes(fold_bytes(hash, b"\x02"), &[u8::from(*flag)]),
+        Any::Number(number) => fold_bytes(fold_bytes(hash, b"\x03"), &number.to_le_bytes()),
+        Any::BigInt(number) => fold_bytes(fold_bytes(hash, b"\x04"), &number.to_le_bytes()),
+        Any::String(text) => fold_bytes(fold_bytes(hash, b"\x05"), text.as_bytes()),
+        Any::Buffer(bytes) => fold_bytes(fold_bytes(hash, b"\x06"), bytes),
+        Any::Array(items) => {
+            let mut hash = fold_bytes(hash, b"\x07");
+            for item in items.iter() {
+                hash = fold_any(hash, item);
+            }
+            hash
+        }
+        // A hash map, so it is folded through a sorted view — iteration order
+        // must not decide identity.
+        Any::Map(entries) => {
+            let mut keys: Vec<&String> = entries.keys().collect();
+            keys.sort_unstable();
+            let mut hash = fold_bytes(hash, b"\x08");
+            for key in keys {
+                hash = fold_bytes(hash, key.as_bytes());
+                hash = fold_any(hash, &entries[key]);
+            }
+            hash
+        }
+    }
+}
+
+/// Folds an already-sorted map of yrs values — a paragraph's properties.
+fn fold_sorted_any<'a>(hash: u64, entries: impl Iterator<Item = (&'a str, &'a Any)>) -> u64 {
+    let mut hash = hash;
+    for (key, value) in entries {
+        hash = fold_bytes(hash, key.as_bytes());
+        hash = fold_any(hash, value);
+    }
+    hash
+}
+
 /// Run attributes are an unordered map, so they are folded through a sorted
 /// view — iteration order must not decide a paragraph's identity.
 fn fold_attrs(hash: u64, attributes: Option<&Attrs>) -> Option<u64> {
     let Some(attributes) = attributes else {
         return Some(fold_bytes(hash, b"\x00"));
     };
+    // A run carries a handful of marks at most, and this runs once per run of
+    // the document per key — so the common case sorts on the stack.
+    const INLINE: usize = 8;
+    if attributes.len() <= INLINE {
+        let mut inline: [Option<(&str, &Any)>; INLINE] = [const { None }; INLINE];
+        for (slot, (key, value)) in inline.iter_mut().zip(attributes.iter()) {
+            *slot = Some((key.as_ref(), value));
+        }
+        let entries = &mut inline[..attributes.len()];
+        entries.sort_unstable_by_key(|entry| entry.expect("filled above").0);
+        return Some(fold_sorted_any(
+            hash,
+            entries.iter().map(|entry| entry.expect("filled above")),
+        ));
+    }
     let mut entries: Vec<(&str, &Any)> = attributes
         .iter()
         .map(|(key, value)| (key.as_ref(), value))
         .collect();
-    entries.sort_by_key(|(key, _)| *key);
-    let mut hash = hash;
-    for (key, value) in entries {
-        hash = fold_bytes(hash, key.as_bytes());
-        hash = fold_serializable(hash, value)?;
-    }
-    Some(hash)
+    entries.sort_unstable_by_key(|(key, _)| *key);
+    Some(fold_sorted_any(hash, entries.into_iter()))
 }
 
 /// Everything outside a paragraph that still decides how it lowers: the render
@@ -294,7 +376,12 @@ fn lower_story<T: ReadTxn>(
                     // and the section break that may follow it.
                     let values = pilcrow_values(&pilcrow, txn);
                     paragraph_key = paragraph_key
-                        .and_then(|hash| fold_serializable(hash, &values))
+                        .map(|hash| {
+                            fold_sorted_any(
+                                hash,
+                                values.iter().map(|(key, value)| (key.as_str(), value)),
+                            )
+                        })
                         .and_then(|hash| fold_attrs(hash, attributes));
                     let paragraph_blocks = flush_paragraph_parts(
                         paragraph_runs,
@@ -310,7 +397,7 @@ fn lower_story<T: ReadTxn>(
                     pm_cursor = paragraph_pm_start + u64::from(paragraph_pm_units) + 2;
                     // The list marker is the one part of a paragraph that the
                     // paragraphs before it decide, so it joins the key.
-                    let flushed_key = paragraph_key.and_then(|hash| {
+                    let flushed_key = paragraph_key.map(|hash| {
                         let marker = match paragraph_blocks.as_slice() {
                             [LayoutBlock::Paragraph(paragraph)] => paragraph
                                 .attrs
@@ -318,7 +405,12 @@ fn lower_story<T: ReadTxn>(
                                 .and_then(|attrs| attrs.list_marker.as_deref()),
                             _ => None,
                         };
-                        fold_serializable(hash, &marker)
+                        match marker {
+                            Some(marker) => {
+                                fold_bytes(fold_bytes(hash, b"\x01"), marker.as_bytes())
+                            }
+                            None => fold_bytes(hash, b"\x00"),
+                        }
                     });
                     blocks.push_paragraph_flush(paragraph_blocks, flushed_key);
                     paragraph_key = salt;
@@ -3400,16 +3492,94 @@ mod tests {
 
     const DATE: &str = "2026-07-13T12:00:00Z";
 
+    #[test]
+    fn fold_bytes_separates_runs_of_bytes() {
+        let fold = |bytes: &[u8]| fold_bytes(FNV_OFFSET, bytes);
+        // Eight bytes is the word size, so the boundaries either side of it are
+        // where a wrong tail would show up.
+        let distinct: Vec<Vec<u8>> = vec![
+            b"".to_vec(),
+            b"a".to_vec(),
+            b"b".to_vec(),
+            b"ab".to_vec(),
+            b"ba".to_vec(),
+            b"abcdefg".to_vec(),
+            b"abcdefgh".to_vec(),
+            b"abcdefghi".to_vec(),
+            b"abcdefgh\x00".to_vec(),
+            vec![0_u8; 8],
+            vec![0_u8; 9],
+        ];
+        let mut seen = std::collections::BTreeMap::new();
+        for bytes in &distinct {
+            assert_eq!(fold(bytes), fold(bytes), "not deterministic: {bytes:?}");
+            assert!(
+                seen.insert(fold(bytes), bytes).is_none(),
+                "collided: {bytes:?} with {:?}",
+                seen[&fold(bytes)]
+            );
+        }
+    }
+
+    #[test]
+    fn fold_any_separates_values_that_print_alike() {
+        let fold = |value: &Any| fold_any(FNV_OFFSET, value);
+        let distinct = [
+            Any::Null,
+            Any::Undefined,
+            Any::Bool(true),
+            Any::Number(1.0),
+            Any::BigInt(1),
+            Any::String("1".into()),
+            Any::Buffer(Arc::from([1_u8].as_slice())),
+            Any::Array(Arc::from([].as_slice())),
+            Any::Map(Arc::new(Default::default())),
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for value in &distinct {
+            assert!(seen.insert(fold(value)), "collided: {value:?}");
+        }
+    }
+
+    #[test]
+    fn fold_any_ignores_map_order() {
+        let entry = |pairs: [(&str, i64); 2]| {
+            Any::Map(Arc::new(
+                pairs
+                    .into_iter()
+                    .map(|(key, value)| (key.to_owned(), Any::BigInt(value)))
+                    .collect(),
+            ))
+        };
+        assert_eq!(
+            fold_any(FNV_OFFSET, &entry([("a", 1), ("b", 2)])),
+            fold_any(FNV_OFFSET, &entry([("b", 2), ("a", 1)]))
+        );
+        assert_ne!(
+            fold_any(FNV_OFFSET, &entry([("a", 1), ("b", 2)])),
+            fold_any(FNV_OFFSET, &entry([("a", 2), ("b", 1)]))
+        );
+    }
+
     /// Where lowering a whole story spends its time. A keystroke re-lowers
     /// everything, so each part here is paid on every key.
     ///
     /// Reusing retained paragraphs instead of rebuilding them was tried against
     /// this and did not pay: with 2711 of 2753 paragraphs moved rather than
     /// built — identity from the content keys, positions re-stamped — lowering
-    /// moved by under 7%, and by less than the run-to-run spread. What a
-    /// keystroke spends here is the memory traffic of the block array itself,
-    /// not the work of building a paragraph's structure. Anything faster has to
-    /// stop moving the blocks around, not stop computing them.
+    /// moved by under 7%, and by less than the run-to-run spread.
+    ///
+    /// Stubbing each part out in turn says why, against a 33.5ms pass on
+    /// heavy-300p.docx: building every paragraph is 8.3ms of it, of which the
+    /// attributes are 3.7ms and the whole run pipeline — defaults, coalescing,
+    /// logical order — is 0.3ms; reading each pilcrow's properties is 3.0ms;
+    /// cutting text into runs is 5.4ms; the yrs walk is 1.0ms; copying the
+    /// finished array out to the caller is 1.7ms. There is no cliff here.
+    /// Reuse can only reach the parts a retained paragraph makes unnecessary,
+    /// and the list numbering and the section break that follows a paragraph
+    /// both need the properties and the attributes anyway — so it is worth
+    /// about 10ms of the 33.5, for a lowering loop that would have to defer
+    /// every build until its key is known.
     ///
     ///   cargo test -p betteroffice-docx-edit --release --lib lowering_cost \
     ///     -- --ignored --nocapture
