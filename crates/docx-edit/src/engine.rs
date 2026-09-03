@@ -4183,6 +4183,76 @@ mod tests {
                 mb(input.measured.len() * std::mem::size_of::<docx_layout::types::LayoutBlock>())
             );
         }
+
+        // And what the display list itself is made of.
+        {
+            use docx_layout::display_list::Primitive;
+            let display = engine.display.borrow();
+            let list = display.list.as_ref().expect("frame built");
+            let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
+            let mut text_bytes = 0;
+            let mut glyphs = 0;
+            for page in &list.pages {
+                for primitive in &page.primitives {
+                    let label = match primitive {
+                        Primitive::Text(text) => {
+                            text_bytes += text.text.capacity();
+                            "text"
+                        }
+                        Primitive::GlyphRun(run) => {
+                            text_bytes += run.text.capacity();
+                            glyphs += run.glyphs.len();
+                            "glyphRun"
+                        }
+                        Primitive::Rect(_) => "rect",
+                        Primitive::Line(_) => "line",
+                        Primitive::Image(_) => "image",
+                        Primitive::Shape(_) => "shape",
+                        Primitive::Decoration(_) => "decoration",
+                    };
+                    *kinds.entry(label).or_default() += 1;
+                }
+            }
+            {
+                use docx_layout::display_list::*;
+                macro_rules! p { ($($t:ty),*) => { $( println!("  {:<26} {:>5}B", stringify!($t), std::mem::size_of::<$t>()); )* } }
+                println!("\nprimitive variants:");
+                p!(
+                    DocAttrs,
+                    FieldMetadata,
+                    NoteRefMetadata,
+                    Revision,
+                    SdtAttrs,
+                    InlineSdtWidgetAttrs,
+                    ChartA11yAttrs,
+                    StructuralRevision,
+                    TableCellRef
+                );
+            }
+            let each = std::mem::size_of::<Primitive>();
+            let total: usize = kinds.values().sum();
+            println!(
+                "\ndisplay pages          {:>10}   primitives {total} x {each}B = {:>7.1} MB",
+                list.pages.len(),
+                mb(total * each)
+            );
+            for (kind, count) in &kinds {
+                println!("  {kind:<20} {count:>10}");
+            }
+            println!(
+                "  {:<20} {:>10}  x {:>4}B = {:>7.1} MB",
+                "glyphs",
+                glyphs,
+                std::mem::size_of::<docx_layout::display_list::PlacedGlyph>(),
+                mb(glyphs * std::mem::size_of::<docx_layout::display_list::PlacedGlyph>())
+            );
+            println!(
+                "  {:<20} {:>10}           {:>7.1} MB",
+                "primitive text",
+                "",
+                mb(text_bytes)
+            );
+        }
         drop(frame);
         drop(engine);
         stage("engine dropped");
