@@ -93,6 +93,7 @@ import {
 import { useLayoutPipeline } from './hooks/useLayoutPipeline';
 import type { ResidentFrameApplyResult } from './hooks/useDisplayList';
 import type { ResolveDisplayListQueries } from './hooks/displayListQueryEpochGate';
+import type { ResidentLayoutSource } from './hooks/useDisplayList';
 import { useRustMeasurement, type RustFontChainsProvider } from './hooks/useRustMeasurement';
 import type { YrsCoreSession } from './hooks/useYrsCoreSession';
 import { useSelectionOverlay } from './hooks/useSelectionOverlay';
@@ -278,6 +279,11 @@ export interface PagedEditorProps {
   onTotalPagesChange?: (totalPages: number) => void;
   /** Layout of each pass (null on reset) — canvas renderer plumbing. */
   onLayoutComputed?: (layout: Layout | null, engine?: YrsSession | null) => void;
+  /** Hands the document to a worker to lay out instead of paginating here. */
+  onResidentLayoutSource?: (
+    source: ResidentLayoutSource | null,
+    engine?: YrsSession | null
+  ) => void;
   /** One-call resident body-text edit supplied by the canvas frame owner. */
   applyResidentInput?: (text: string) => Promise<ResidentFrameApplyResult | null>;
   /** One-call resident body-text deletion supplied by the canvas frame owner. */
@@ -379,6 +385,8 @@ export interface PagedEditorRef {
   applyYrsCommand(command: YrsEditorCommand): boolean;
   /** Get current layout. */
   getLayout(): Layout | null;
+  /** Page heights in order — the shell's scroll geometry, without fragments. */
+  getPageHeights(): readonly number[];
   /** Force re-layout. */
   relayout(): void;
   /** Scroll the visible pages to bring a display position into view. */
@@ -477,6 +485,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       onYrsTrackedChangesChange,
       onTotalPagesChange,
       onLayoutComputed,
+      onResidentLayoutSource,
       applyResidentInput,
       applyResidentDelete,
       hyperlinkPopupData,
@@ -650,8 +659,14 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       (nextLayout: Layout | null) => onLayoutComputed?.(nextLayout, yrsCore.session),
       [onLayoutComputed, yrsCore.session]
     );
+    const handleResidentLayoutSource = useCallback(
+      (source: ResidentLayoutSource | null) =>
+        onResidentLayoutSource?.(source, yrsCore.session),
+      [onResidentLayoutSource, yrsCore.session]
+    );
     const {
       layout,
+      pageHeights,
       layoutUpdateOrigin,
       runLayoutPipeline,
       scheduleLayout,
@@ -675,6 +690,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       getScrollContainer,
       onTotalPagesChange,
       onLayoutComputed: publishResidentLayout,
+      onResidentLayoutSource: handleResidentLayoutSource,
       onAnchorPositionsChange,
     });
     runLayoutPipelineRef.current = yrsCore.session ? runLayoutPipeline : null;
@@ -1651,6 +1667,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       ref,
       yrsInputRef,
       layout,
+      pageHeights,
       runLayoutPipeline,
       scrollToPositionImpl,
       scrollToParaIdImpl,
@@ -1679,9 +1696,10 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
     // the layout pipeline does mid-pipeline (needed for scroll-restore math
     // before React commits).
     const totalHeight = useMemo(() => {
-      if (!layout) return DEFAULT_PAGE_HEIGHT_PX + VIEWPORT_PADDING_TOP + VIEWPORT_PADDING_BOTTOM;
-      return viewportMinHeightPx(layout, pageGap);
-    }, [layout, pageGap]);
+      if (pageHeights.length === 0)
+        return DEFAULT_PAGE_HEIGHT_PX + VIEWPORT_PADDING_TOP + VIEWPORT_PADDING_BOTTOM;
+      return viewportMinHeightPx(pageHeights, pageGap);
+    }, [pageHeights, pageGap]);
 
     // Canvas path: the painted `.layout-run-image` the DOM overlay measures is
     // parked, so `selectedImageInfo` never populates. Derive the selected image

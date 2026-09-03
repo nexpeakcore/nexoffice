@@ -450,6 +450,23 @@ export interface YrsResidentWorkerSnapshot {
 }
 
 /**
+ * The seeded replica handed to a worker that will then own the document's
+ * layout. Deliberately smaller than {@link YrsResidentWorkerSnapshot}: there
+ * are no recorded render/measure inputs to replay, because the point is that
+ * nobody has lowered, measured or paginated this document yet.
+ *
+ * @internal
+ */
+export interface YrsResidentWorkerOpen {
+  /** Full document state. */
+  state: Uint8Array;
+  selection: YrsSelection | null;
+  fonts: Uint8Array[];
+  /** Monotonic revision of the resident font set (bumped by register/clear). */
+  fontsRevision: number;
+}
+
+/**
  * What the sync target already holds, so a snapshot can ship deltas instead
  * of the whole world.
  *
@@ -640,6 +657,12 @@ export interface YrsSession extends CollaborationReplica {
   layoutDocumentWithRegionsVoid(input: string): void;
   /** Build display primitives against the session's resident font store. */
   buildDisplayListJson(input: string): string;
+  /**
+   * The pages the host is looking at. Pages outside travel as geometry
+   * without content; every page still reaches the host, so scroll geometry
+   * and pointer routing see the whole document. A negative count clears it.
+   */
+  setPageWindow(start: number, count: number): void;
   /** Build a binary FrameDelta v1 against the last host-applied frame. */
   buildDisplayListFrame(input: string, expectedFrameEpoch: number): Uint8Array;
   /** Caret geometry from the current resident display frame. */
@@ -660,6 +683,12 @@ export interface YrsSession extends CollaborationReplica {
   ): { frame: Uint8Array; profile: YrsEngineApplyProfile };
   /** Snapshot the inputs needed to move resident layout ownership to a worker. */
   residentWorkerSnapshot(options?: YrsResidentWorkerSyncOptions): YrsResidentWorkerSnapshot | null;
+  /**
+   * The seeded replica, for handing a document to a worker that will lay it
+   * out. Always available — unlike {@link residentWorkerSnapshot}, it does not
+   * require this session to have laid the document out first.
+   */
+  residentWorkerOpen(): YrsResidentWorkerOpen;
   /**
    * Cheap worker-sync probe: the resident layout revision when a worker
    * snapshot would be available, without encoding document state or copying
@@ -1206,6 +1235,7 @@ function wrapSession(session: EditSession, clientId: number): YrsSession {
       residentLayoutRevision += 1;
     },
     buildDisplayListJson: (input) => session.build_display_list_json(input),
+    setPageWindow: (start, count) => session.set_page_window(start, count),
     buildDisplayListFrame: (input, expectedFrameEpoch) =>
       session.build_display_list_frame(input, expectedFrameEpoch),
     residentCaretSnapshot: () =>
@@ -1263,6 +1293,12 @@ function wrapSession(session: EditSession, clientId: number): YrsSession {
         layoutRevision: residentLayoutRevision,
       };
     },
+    residentWorkerOpen: () => ({
+      state: session.encode_state(),
+      selection: JSON.parse(session.selection()) as YrsSelection | null,
+      fonts: residentFonts.map((bytes) => bytes.slice()),
+      fontsRevision: residentFontsRevision,
+    }),
     residentWorkerProbe: () => {
       if (!residentLayoutInput) return null;
       if (!residentLayoutWithRegions && residentRenderInputs.size === 0) return null;
@@ -1788,7 +1824,10 @@ function wrapSession(session: EditSession, clientId: number): YrsSession {
     },
     paragraphs: (story) => JSON.parse(session.paragraphs(story)) as YrsParagraph[],
     paragraphSpans: (story) => JSON.parse(session.paragraph_spans(story)) as YrsParagraphLength[],
-    storySegments: (story) => JSON.parse(session.story_segments(story)) as YrsStorySegment[],
+    storySegments: (story) =>
+      notingDocumentWalk('storySegments', () =>
+        JSON.parse(session.story_segments(story)) as YrsStorySegment[]
+      ),
     locateParagraph: (story, paraId) =>
       JSON.parse(session.locate_paragraph(story, paraId)) as YrsParagraphSpan,
 
@@ -1812,6 +1851,33 @@ function wrapSession(session: EditSession, clientId: number): YrsSession {
  * initializes the embedded docx-edit wasm (~440KB base64) — callers must
  * load it lazily so non-editor consumers avoid the wasm startup cost.
  */
+/**
+ * A read that walks the whole story. Its cost is the document's length, so on
+ * a long one it belongs to opening or to a command — never to a keystroke,
+ * where it is paid again for every character typed.
+ *
+ * Reported once per caller: the interesting fact is which code path asks, not
+ * how many times it did so before anyone looked.
+ */
+const DOCUMENT_WALK_BUDGET_MS = 33;
+const reportedDocumentWalks = new Set<string>();
+
+function notingDocumentWalk<T>(name: string, walk: () => T): T {
+  const startedAt = performance.now();
+  const result = walk();
+  const totalMs = performance.now() - startedAt;
+  if (totalMs <= DOCUMENT_WALK_BUDGET_MS) return result;
+  const caller = (new Error().stack ?? '')
+    .split('\n')
+    .slice(3, 6)
+    .map((line) => line.trim().replace(/^at /, '').split(' (')[0])
+    .join(' \u2190 ');
+  if (reportedDocumentWalks.has(caller)) return result;
+  reportedDocumentWalks.add(caller);
+  console.warn(`[yrs] ${name} walked the whole story in ${Math.round(totalMs)}ms, from ${caller}`);
+  return result;
+}
+
 export async function createYrsSession(options?: CreateYrsSessionOptions): Promise<YrsSession> {
   const clientId = options?.clientId ?? randomClientId();
   const wasm = await import('./wasm/index');

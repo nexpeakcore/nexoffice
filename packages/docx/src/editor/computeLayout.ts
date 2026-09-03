@@ -81,10 +81,18 @@ function orderedSections(document: Document | null): ResidentRegionLayoutRequest
     sectionId: section.id ?? section.properties.sectionId,
     properties: section.properties,
   }));
-  sections.push({
-    sectionId: body.finalSectionProperties?.sectionId,
-    properties: body.finalSectionProperties ?? {},
-  });
+  // The last modelled section already carries the body's final section
+  // properties, so appending them describes a section that owns no content.
+  // It changes no page — but it makes every ordinary document look
+  // multi-section, and the engine offers its region fast path only to
+  // single-section ones. Without that path a keystroke repaginates the whole
+  // document: two seconds each, on a long one.
+  if (sections.length === 0) {
+    sections.push({
+      sectionId: body.finalSectionProperties?.sectionId,
+      properties: body.finalSectionProperties ?? {},
+    });
+  }
   return sections;
 }
 

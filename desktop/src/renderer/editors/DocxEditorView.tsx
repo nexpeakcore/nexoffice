@@ -9,6 +9,7 @@ import {
 } from '@betteroffice/docx-fonts'
 import { en as docxEn, locales as docxLocales, type PartialLocaleStrings } from '@betteroffice/docx-i18n'
 import { countCharacters, countWords, type EditorStats } from '../services/textStats.js'
+import { noteDocumentContentPainted } from '../services/diagnostics.js'
 import { useI18n } from '../i18n.js'
 
 const editorLocales = docxLocales as Record<string, PartialLocaleStrings>
@@ -215,6 +216,7 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
             <span className="text-sm text-neutral-500">{t('editor.loading', { name: document.name })}</span>
           </div>
         }
+        onFirstPaint={noteDocumentContentPainted}
         onError={(err) => setError(err.message)}
       />
     )

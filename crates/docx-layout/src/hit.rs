@@ -938,6 +938,38 @@ pub fn caret_rect(dl: &DisplayList, pos: i64) -> Option<CaretRect> {
 /// `r_id = None` matches any band of the region kind — reserved for callers that
 /// don't disambiguate variants; passing the active part's rId is preferred so a
 /// first-page vs default variant on another page never contributes stray rects.
+/// The document range each page's body covers, as
+/// [`range_rects_in_region`] takes it. `None` for a page whose body addresses
+/// no document text — such a page can never answer a range query.
+///
+/// Building this costs one walk of the list; answering a range query without
+/// it costs one walk *per query*, because the scan has no way to know a page
+/// is irrelevant until it has looked at every primitive on it.
+pub fn page_body_doc_ranges(dl: &DisplayList) -> Vec<Option<(i64, i64)>> {
+    dl.pages
+        .iter()
+        .map(|page| {
+            page.primitives.iter().filter_map(primitive_doc_range).fold(
+                None,
+                |bound: Option<(i64, i64)>, (start, end)| match bound {
+                    Some((low, high)) => Some((low.min(start), high.max(end))),
+                    None => Some((start, end)),
+                },
+            )
+        })
+        .collect()
+}
+
+fn primitive_doc_range(primitive: &Primitive) -> Option<(i64, i64)> {
+    if let Some(range) = text_doc_range(primitive) {
+        return Some(range);
+    }
+    match primitive {
+        Primitive::Image(image) => Some((image.attrs.doc_start?, image.attrs.doc_end?)),
+        _ => None,
+    }
+}
+
 pub fn range_rects_in_region(
     dl: &DisplayList,
     region: HitRegion,
@@ -945,14 +977,43 @@ pub fn range_rects_in_region(
     from: i64,
     to: i64,
 ) -> Vec<RangeRect> {
+    range_rects_in_region_indexed(dl, region, r_id, from, to, None)
+}
+
+/// [`range_rects_in_region`] with the page index from
+/// [`page_body_doc_ranges`], which lets a body query skip the pages that
+/// cannot contain the range instead of reading every primitive on them.
+pub fn range_rects_in_region_indexed(
+    dl: &DisplayList,
+    region: HitRegion,
+    r_id: Option<&str>,
+    from: i64,
+    to: i64,
+    page_ranges: Option<&[Option<(i64, i64)>]>,
+) -> Vec<RangeRect> {
     let (from, to) = (from.min(to), from.max(to));
     let mut rects = Vec::new();
     if from == to {
         return rects;
     }
 
+    // The index describes body primitives only; a header or footer query has
+    // to read the bands themselves.
+    let body_ranges = matches!(region, HitRegion::Body)
+        .then_some(page_ranges)
+        .flatten();
     let matches = |band: &HfRegion| r_id.is_none_or(|id| id == band.r_id);
     for (page_index, page) in dl.pages.iter().enumerate() {
+        if let Some(ranges) = body_ranges {
+            match ranges.get(page_index) {
+                Some(None) => continue,
+                Some(Some((start, end))) if *end <= from || *start >= to => continue,
+                Some(Some(_)) => {}
+                // An index shorter than the list describes a different list;
+                // reading it further would skip pages that do hold the range.
+                None => {}
+            }
+        }
         let prims: Option<&[Primitive]> = match region {
             HitRegion::Body => Some(&page.primitives),
             HitRegion::Header => page

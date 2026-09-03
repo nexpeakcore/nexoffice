@@ -1,6 +1,6 @@
 /** Resident Rust layout scheduling and React paint-state publication. */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type { LayoutBlock, Layout } from '@betteroffice/docx/layout/pagination';
 import { markHeapStage } from '@betteroffice/docx/diagnostics';
@@ -22,7 +22,10 @@ import type {
   YrsStickyPosition,
 } from '@betteroffice/docx/yrs';
 
+import { canUseResidentEngineWorker } from '@betteroffice/docx/yrs';
+
 import type { LayoutSelectionGate } from '../internals/LayoutSelectionGate';
+import type { ResidentLayoutSource } from './useDisplayList';
 import type { DisplayListQueries } from '@betteroffice/docx/layout/render';
 import { viewportMinHeightPx } from '../internals/scrollUtils';
 import {
@@ -88,11 +91,18 @@ export interface UseLayoutPipelineOptions {
   onTotalPagesChange?: (totalPages: number) => void;
   /** Receives each computed layout and resets with null. */
   onLayoutComputed?: (layout: Layout | null) => void;
+  /**
+   * Receives the region request when the document is handed to a worker to
+   * lay out instead of being paginated here. Absent ⇒ this thread paginates.
+   */
+  onResidentLayoutSource?: (source: ResidentLayoutSource | null) => void;
   onAnchorPositionsChange?: (positions: Map<string, number>) => void;
 }
 
 export interface UseLayoutPipelineReturn {
   layout: Layout | null;
+  /** Page heights in order — the shell's scroll geometry, without fragments. */
+  pageHeights: readonly number[];
   layoutUpdateOrigin: LayoutUpdateOrigin;
   runLayoutPipeline: () => void;
   scheduleLayout: (origin?: LayoutUpdateOrigin) => void;
@@ -119,6 +129,7 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
     getScrollContainer,
     onTotalPagesChange,
     onLayoutComputed,
+    onResidentLayoutSource,
     onAnchorPositionsChange,
   } = opts;
 
@@ -129,6 +140,12 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
   // every parent re-render would invalidate the rAF-coalesced scheduler.
   const onTotalPagesChangeRef = useRef(onTotalPagesChange);
   const onLayoutComputedRef = useRef(onLayoutComputed);
+  const onResidentLayoutSourceRef = useRef(onResidentLayoutSource);
+  // Set once a worker that owned the layout is gone. This thread paginates
+  // from then on: a second handover would hit the same failure.
+  const residentLayoutLostRef = useRef(false);
+  // `scheduleLayout` is declared below this callback; the ref breaks the cycle.
+  const scheduleLayoutRef = useRef<((origin?: LayoutUpdateOrigin) => void) | null>(null);
   const onAnchorPositionsChangeRef = useRef(onAnchorPositionsChange);
   // Query facades are immutable per display-list build. Reading the current
   // facade through a ref keeps runLayoutPipeline identity-stable when a build
@@ -140,21 +157,54 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
   const yrsLocToDisplayPositionRef = useRef(yrsLocToDisplayPosition);
   onTotalPagesChangeRef.current = onTotalPagesChange;
   onLayoutComputedRef.current = onLayoutComputed;
+  onResidentLayoutSourceRef.current = onResidentLayoutSource;
   onAnchorPositionsChangeRef.current = onAnchorPositionsChange;
   displayListQueriesRef.current = displayListQueries;
   deferLayoutPassRef.current = deferLayoutPass;
   displayPositionToYrsLocRef.current = displayPositionToYrsLoc;
   yrsLocToDisplayPositionRef.current = yrsLocToDisplayPosition;
 
+  /**
+   * Page heights alone, which is all the shell's scroll geometry reads from a
+   * layout. Kept as its own value so the viewport can be sized by whichever
+   * side paginated — the worker owns the fragments, and shipping them back
+   * only to sum their page heights would be the whole envelope for a number
+   * per page.
+   */
+  const pageHeights = useMemo(() => {
+    if (layout) return layout.pages.map((page) => page.size.h);
+    // A worker-owned document has no layout here; the display list it sends
+    // back carries the same page geometry.
+    const queries = displayListQueries;
+    if (!queries) return [];
+    const heights: number[] = [];
+    for (let index = 0; index < queries.pageCount(); index += 1) {
+      heights.push(queries.pageSize(index)?.height ?? 0);
+    }
+    return heights;
+  }, [layout, displayListQueries]);
+
+  // The paginating branch writes the viewport height inline, before React
+  // commits, because scroll restore reads it. A worker-owned document has no
+  // such moment — the geometry arrives with the frame.
+  useLayoutEffect(() => {
+    if (layout) return;
+    const vp = viewportLayoutRef.current;
+    if (!vp || pageHeights.length === 0) return;
+    const mh = viewportMinHeightPx(pageHeights, pageGap);
+    vp.style.minHeight = `${mh}px`;
+    vp.style.marginBottom = zoom !== 1 ? `${mh * (zoom - 1)}px` : '';
+  }, [layout, pageHeights, pageGap, zoom, viewportLayoutRef]);
+
   // Total-pages notifier — fires only when count changes (including N → 0).
   const lastTotalPagesRef = useRef<number>(0);
   useEffect(() => {
     onLayoutComputedRef.current?.(layout);
-    const total = layout?.pages.length ?? 0;
+    const total = pageHeights.length;
     if (total === lastTotalPagesRef.current) return;
     lastTotalPagesRef.current = total;
     onTotalPagesChangeRef.current?.(total);
-  }, [layout]);
+  }, [layout, pageHeights]);
 
   const scrollRestoreControllerRef =
     useRef<PendingScrollRestoreController<PendingScrollRestore> | null>(null);
@@ -244,9 +294,9 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
         return;
       }
 
+      const request = buildResidentRegionLayoutRequest(document, pageGap, renderEnv);
       let measurement: ResidentMeasurementConfig | null = null;
       try {
-        const request = buildResidentRegionLayoutRequest(document, pageGap, renderEnv);
         const requirements = JSON.parse(
           session.layoutFontRequirementsJson(JSON.stringify(request))
         ) as ResidentFontRequirement[];
@@ -265,10 +315,10 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
 
       const computeInputs = { document, pageGap, session, renderEnv, measurement };
 
-      // Step 4+: paint + scroll/events with the computed values.
-      const applyComputation = (computation: LayoutComputation) => {
-        const { layout: newLayout } = computation;
-
+      // Where the reader is now, so the next geometry commit can put them
+      // back. Both branches capture it: a worker-owned relayout moves the page
+      // stack exactly as a local pagination pass does.
+      const captureScrollAnchor = () => {
         const pagesEl = pagesContainerRef.current;
         const scrollParent =
           getScrollContainer() ?? (pagesEl ? findVerticalScrollParentOrRoot(pagesEl) : null);
@@ -294,22 +344,35 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
                   ),
                 }
             : null;
-
         viewportAnchorCaptureReadyRef.current = false;
+        return { anchor, scrollParent };
+      };
+
+      const holdScroll = (captured: ReturnType<typeof captureScrollAnchor>) => {
+        if (captured.scrollParent?.isConnected && captured.anchor) {
+          scrollRestoreController.capture(captured.anchor);
+        } else {
+          scrollRestoreController.cancel();
+        }
+      };
+
+      // Step 4+: paint + scroll/events with the computed values.
+      const applyComputation = (computation: LayoutComputation) => {
+        const { layout: newLayout } = computation;
+        const captured = captureScrollAnchor();
         layoutUpdateOriginRef.current = layoutUpdateOrigin;
         setLayout(newLayout);
 
         const vp = viewportLayoutRef.current;
         if (vp) {
-          const mh = viewportMinHeightPx(newLayout, pageGap);
+          const mh = viewportMinHeightPx(
+            newLayout.pages.map((page) => page.size.h),
+            pageGap
+          );
           vp.style.minHeight = `${mh}px`;
           vp.style.marginBottom = zoom !== 1 ? `${mh * (zoom - 1)}px` : '';
         }
-        if (scrollParent?.isConnected && anchor) {
-          scrollRestoreController.capture(anchor);
-        } else {
-          scrollRestoreController.cancel();
-        }
+        holdScroll(captured);
 
         const totalTime = performance.now() - pipelineStart;
         if (totalTime > 2000) {
@@ -319,6 +382,28 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
           );
         }
       };
+
+      // The worker can lay this document out for itself. Handing it over means
+      // this thread never lowers, measures or paginates it — the duplicate
+      // that makes a long document cost two of everything.
+      if (!residentLayoutLostRef.current && canUseResidentEngineWorker()) {
+        const layoutInput = JSON.stringify({ ...request, measurement });
+        layoutUpdateOriginRef.current = layoutUpdateOrigin;
+        holdScroll(captureScrollAnchor());
+        onResidentLayoutSourceRef.current?.({
+          engine: session,
+          layoutInput,
+          onWorkerLost: () => {
+            // Nothing on this thread has a layout to paint from. Take the
+            // document back and paginate here from the next pass on.
+            residentLayoutLostRef.current = true;
+            onResidentLayoutSourceRef.current?.(null);
+            scheduleLayoutRef.current?.();
+          },
+        });
+        syncCoordinator.onLayoutComplete(currentEpoch);
+        return;
+      }
 
       // Every pagination pass performs a full relayout.
       try {
@@ -360,7 +445,7 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
         expectedScrollTopRef.current = scrollParent.scrollTop;
       });
     }
-  }, [layout, getScrollContainer, pagesContainerRef, scrollRestoreController]);
+  }, [pageHeights, getScrollContainer, pagesContainerRef, scrollRestoreController]);
 
   // A new immutable display-list/query facade is the geometry commit signal.
   useLayoutEffect(() => {
@@ -489,6 +574,7 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
       if (pendingLayoutOriginRef.current) runRef.current();
     });
   }, [scrollRestoreController]);
+  scheduleLayoutRef.current = scheduleLayout;
 
   // Clean up pending rAF on unmount
   useEffect(() => {
@@ -499,6 +585,7 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
 
   return {
     layout,
+    pageHeights,
     layoutUpdateOrigin: layoutUpdateOriginRef.current,
     runLayoutPipeline,
     scheduleLayout,

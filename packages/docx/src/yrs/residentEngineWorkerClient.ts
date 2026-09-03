@@ -1,22 +1,28 @@
 import type {
   YrsEngineApplyProfile,
   YrsResidentCaretSnapshot,
+  YrsResidentWorkerOpen,
   YrsResidentWorkerSnapshot,
   YrsSelection,
 } from './index';
 import { registerMemoryReader } from '../diagnostics';
 import type { ResidentCaretPaintStyle } from './residentCaret';
 import type {
+  ResidentEngineWorkerMessage,
   ResidentEngineWorkerRequest,
   ResidentEngineWorkerRequestWithoutId,
   ResidentEngineWorkerResponse,
+  ResidentEngineWorkerStage,
 } from './residentEngineWorkerProtocol';
+import { residentWorkerSilenceBudgetMs } from './residentWorkerDeadline';
 
 export interface ResidentEngineWorkerFrame {
   frame: Uint8Array;
   updates: Uint8Array[];
   engineMs: number;
   workerTotalMs: number;
+  /** How long the request waited inside the worker before it was handled. */
+  workerQueuedMs: number;
   engineProfile?: YrsEngineApplyProfile;
   caret: YrsResidentCaretSnapshot;
   selection: YrsSelection | null;
@@ -43,9 +49,9 @@ type PendingRequest = {
   resolve(response: ResidentEngineWorkerResponse & { ok: true }): void;
   reject(error: Error): void;
   timeout: ReturnType<typeof setTimeout> | null;
+  /** Restarts this request's silence budget after a sign of life. */
+  renew(stage: ResidentEngineWorkerStage): void;
 };
-
-const RESIDENT_ENGINE_WORKER_STARTUP_TIMEOUT_MS = 15_000;
 
 /** Dedicated-worker owner for resident input, pagination, and FrameDelta output. */
 export class ResidentEngineWorkerClient {
@@ -66,8 +72,15 @@ export class ResidentEngineWorkerClient {
       type: 'module',
       name: 'openooxml-resident-engine',
     });
-    this.worker.onmessage = (event: MessageEvent<ResidentEngineWorkerResponse>) => {
-      const response = event.data;
+    this.worker.onmessage = (event: MessageEvent<ResidentEngineWorkerMessage>) => {
+      const message = event.data;
+      if ('progress' in message) {
+        // Not a result: the worker is telling us it is still running, which is
+        // the only way to know that from outside a blocking wasm call.
+        this.pending.get(message.id)?.renew(message.progress);
+        return;
+      }
+      const response = message;
       if (response.ok && response.stateVector) {
         this.remoteVector = new Uint8Array(response.stateVector);
       }
@@ -128,6 +141,29 @@ export class ResidentEngineWorkerClient {
     return this.appliedFontsRevision;
   }
 
+  /**
+   * Hands the worker a seeded-but-unlaid-out document and lets it paginate.
+   * Unlike `bootstrap`, nothing on the main thread has lowered, measured or
+   * paginated it first, so this is the whole cost once rather than twice.
+   */
+  async open(
+    open: YrsResidentWorkerOpen,
+    layoutInput: string,
+    extras: string
+  ): Promise<ResidentEngineWorkerFrame> {
+    const fontsRevision = open.fontsRevision;
+    const response = await this.request(
+      { type: 'open', open, layoutInput, extras },
+      [open.state.buffer, ...open.fonts.map((font) => font.buffer)],
+      true
+    );
+    const result = frameResult(response);
+    this.recordSync(response, fontsRevision);
+    this.ready = true;
+    this.revision = result.layoutRevision;
+    return result;
+  }
+
   async bootstrap(
     snapshot: YrsResidentWorkerSnapshot,
     extras: string
@@ -141,10 +177,34 @@ export class ResidentEngineWorkerClient {
         expectedFrameEpoch: 0,
       },
       snapshotTransfers(snapshot),
-      RESIDENT_ENGINE_WORKER_STARTUP_TIMEOUT_MS
+      true
     );
     const result = frameResult(response);
     this.recordSync(response, fontsRevision);
+    this.ready = true;
+    this.revision = result.layoutRevision;
+    return result;
+  }
+
+  /**
+   * Re-paginates a document the worker already owns. No state travels: the
+   * worker's replica is kept current by `invalidate`, so only the region
+   * request goes over.
+   */
+  async relayout(
+    layoutInput: string,
+    extras: string,
+    expectedFrameEpoch: number,
+    paintCaret = false
+  ): Promise<ResidentEngineWorkerFrame> {
+    const response = await this.request({
+      type: 'relayout',
+      layoutInput,
+      extras,
+      expectedFrameEpoch,
+      paintCaret,
+    });
+    const result = frameResult(response);
     this.ready = true;
     this.revision = result.layoutRevision;
     return result;
@@ -177,6 +237,11 @@ export class ResidentEngineWorkerClient {
       await this.request({ type: 'buildFrame', extras, expectedFrameEpoch, paintCaret })
     );
     return result;
+  }
+
+  /** Requests posted and not yet answered — what a new one waits behind. */
+  inFlight(): number {
+    return this.pending.size;
   }
 
   async applyInput(
@@ -239,6 +304,18 @@ export class ResidentEngineWorkerClient {
     this.post({ id, type: 'eraseCaret' });
   }
 
+  /**
+   * The pages the host is looking at, so the worker can send the rest as
+   * geometry alone. Fire-and-forget: the next frame carries the change, and a
+   * window that arrives late costs one frame of stale content, never
+   * correctness.
+   */
+  setPageWindow(start: number, count: number): void {
+    if (this.destroyed) return;
+    const id = this.nextId++;
+    this.post({ id, type: 'setPageWindow', start, count });
+  }
+
   invalidate(update: Uint8Array, selection: YrsSelection | null): void {
     if (this.destroyed) return;
     this.ready = false;
@@ -281,31 +358,50 @@ export class ResidentEngineWorkerClient {
     });
   }
 
+  /**
+   * `deadlined` requests are given up on when the worker goes quiet for longer
+   * than its current stage allows — not when they take too long. A worker that
+   * reports it is laying out has proved it is alive, and killing it there would
+   * throw away the work and hand the whole document back to a main thread that
+   * is no faster.
+   */
   private request(
     request: ResidentEngineWorkerRequestWithoutId,
     transfer: Transferable[] = [],
-    timeoutMs?: number
+    deadlined = false
   ): Promise<ResidentEngineWorkerResponse & { ok: true }> {
     if (this.destroyed) return Promise.reject(new Error('Resident engine worker was destroyed'));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      const timeout = timeoutMs
-        ? setTimeout(() => {
-            const pending = this.pending.get(id);
-            if (!pending) return;
-            this.pending.delete(id);
-            const error = new Error(
-              `Resident engine worker did not acknowledge ${request.type} within ${timeoutMs}ms`
-            );
-            pending.reject(error);
-            this.failAll(error);
-            this.ready = false;
-            this.destroyed = true;
-            this.worker.terminate();
-            forgetWorkerHeap();
-          }, timeoutMs)
-        : null;
-      this.pending.set(id, { resolve, reject, timeout });
+      let stage: ResidentEngineWorkerStage | null = null;
+      const abandon = (budgetMs: number) => {
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        const since = stage ? `after reaching ${stage}` : 'before it started';
+        const error = new Error(
+          `Resident engine worker went quiet on ${request.type} ${since}, for over ${budgetMs}ms`
+        );
+        pending.reject(error);
+        this.failAll(error);
+        this.ready = false;
+        this.destroyed = true;
+        this.worker.terminate();
+        forgetWorkerHeap();
+      };
+      const arm = (): ReturnType<typeof setTimeout> | null => {
+        if (!deadlined) return null;
+        const budgetMs = residentWorkerSilenceBudgetMs(stage);
+        return setTimeout(() => abandon(budgetMs), budgetMs);
+      };
+      const renew = (next: ResidentEngineWorkerStage): void => {
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        if (pending.timeout) clearTimeout(pending.timeout);
+        stage = next;
+        pending.timeout = arm();
+      };
+      this.pending.set(id, { resolve, reject, timeout: arm(), renew });
       this.post({ ...request, id } as ResidentEngineWorkerRequest, transfer);
     });
   }
@@ -367,6 +463,7 @@ function frameResult(
     updates: (response.updates ?? []).map((update) => new Uint8Array(update)),
     engineMs: response.engineMs ?? 0,
     workerTotalMs: response.workerTotalMs ?? 0,
+    workerQueuedMs: response.workerQueuedMs ?? 0,
     engineProfile: response.engineProfile,
     caret: response.caret,
     selection: response.selection,

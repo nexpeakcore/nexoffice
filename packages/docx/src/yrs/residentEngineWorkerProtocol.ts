@@ -1,6 +1,7 @@
 import type {
   YrsEngineApplyProfile,
   YrsResidentCaretSnapshot,
+  YrsResidentWorkerOpen,
   YrsResidentWorkerSnapshot,
   YrsSelection,
 } from './index';
@@ -15,19 +16,22 @@ export type ResidentEngineWorkerRequest =
     }
   | {
       /**
-       * Opens the document in the worker, which then owns it: it seeds the
-       * replica, lowers, measures, paginates and builds the display list once.
+       * Opens the document in the worker, which then owns its layout: it takes
+       * the seeded replica, then lowers, measures, paginates and builds the
+       * display list once, for good.
        *
-       * `bootstrap` below does the same work a second time, from a main-thread
-       * replica that has already done all of it — that duplicate is what makes
-       * a long document cost two of everything and what the bootstrap budget
-       * runs out of.
+       * `bootstrap` below does that same work a second time, after a main
+       * thread that has already done all of it — the duplicate is what makes a
+       * long document cost two of everything.
+       *
+       * The replica arrives as state rather than as DOCX bytes on purpose:
+       * seeding independently would give the worker its own block keys, and
+       * the display positions the main thread maps selections through would
+       * then address a different document.
        */
       id: number;
       type: 'open';
-      bytes: Uint8Array;
-      fonts: Uint8Array[];
-      fontsRevision: number;
+      open: YrsResidentWorkerOpen;
       /** The region layout request, as `layoutDocumentWithRegionsVoid` takes it. */
       layoutInput: string;
       extras: string;
@@ -38,6 +42,20 @@ export type ResidentEngineWorkerRequest =
       snapshot: YrsResidentWorkerSnapshot;
       extras: string;
       expectedFrameEpoch: number;
+    }
+  | {
+      /**
+       * Re-paginates what the worker already holds. Its replica is kept
+       * current by `applyUpdate`, so a document it opened never needs state
+       * shipped to it again — only the instruction to lay it out, and the
+       * region request in case the page setup changed.
+       */
+      id: number;
+      type: 'relayout';
+      layoutInput: string;
+      extras: string;
+      expectedFrameEpoch: number;
+      paintCaret: boolean;
     }
   | {
       id: number;
@@ -87,6 +105,19 @@ export type ResidentEngineWorkerRequest =
       zoom: number;
       caretStyle: ResidentCaretPaintStyle;
     }
+  | {
+      /**
+       * The pages the host is looking at. Pages outside travel as geometry
+       * without content, so a long document's weight stops being something
+       * both threads carry in full. `count` below zero clears the window.
+       *
+       * Fire-and-forget: the next frame carries the change.
+       */
+      id: number;
+      type: 'setPageWindow';
+      start: number;
+      count: number;
+    }
   | { id: number; type: 'eraseCaret' }
   | { id: number; type: 'destroy' };
 
@@ -96,6 +127,30 @@ export type ResidentEngineWorkerRequestWithoutId = ResidentEngineWorkerRequest e
     : never
   : never;
 
+/**
+ * How far a long request has got. Opening a document is one message but many
+ * steps, and the host cannot otherwise tell a worker that is busy from one that
+ * is broken: a worker inside a wasm call answers nothing at all.
+ */
+export type ResidentEngineWorkerStage =
+  /** The request reached the worker thread — it exists and is running. */
+  | 'received'
+  /** The wasm module instantiated and a session exists. */
+  | 'sessionReady'
+  /** The document state is loaded and its fonts are registered. */
+  | 'stateLoaded'
+  /** Lowering, measuring and pagination have begun — one long wasm call
+   * during which the worker cannot answer anything, however healthy. */
+  | 'layingOut'
+  /** That call returned; the display list frame is being built. */
+  | 'laidOut';
+
+/** A sign of life, not a result: the request it names is still running. */
+export interface ResidentEngineWorkerProgress {
+  id: number;
+  progress: ResidentEngineWorkerStage;
+}
+
 export type ResidentEngineWorkerResponse =
   | {
       id: number;
@@ -104,6 +159,10 @@ export type ResidentEngineWorkerResponse =
       updates?: ArrayBuffer[];
       engineMs?: number;
       workerTotalMs?: number;
+      /** How long the request waited in the worker before it was handled. */
+      workerQueuedMs?: number;
+      /** The worker clock when the request arrived, for host-side comparison. */
+      workerArrivedAt?: number;
       engineProfile?: YrsEngineApplyProfile;
       caret?: YrsResidentCaretSnapshot;
       selection?: YrsSelection | null;
@@ -125,3 +184,8 @@ export type ResidentEngineWorkerResponse =
       error: string;
       residentUnavailable?: boolean;
     };
+
+/** Everything the worker posts back: a result, or word that it is still going. */
+export type ResidentEngineWorkerMessage =
+  | ResidentEngineWorkerResponse
+  | ResidentEngineWorkerProgress;

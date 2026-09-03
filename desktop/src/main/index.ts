@@ -68,6 +68,12 @@ import {
 } from '../shared/ipc.js'
 
 const isDev = !app.isPackaged
+
+// Dev builds expose the renderer to the DevTools protocol so a person — or a
+// script standing in for one — can drive the editor and read what it reports
+// without a human at the keyboard for every measurement. Never in a packaged
+// build: it is an open door onto the page.
+if (isDev) app.commandLine.appendSwitch('remote-debugging-port', '9333')
 let mainWindow: BrowserWindow | null = null
 let rendererReady = false
 let quitting = false
@@ -257,6 +263,17 @@ function createWindow(): BrowserWindow {
     closeRequested = true
     window.webContents.send(IPC.closeRequest)
   })
+
+  // Renderer console into the dev server's terminal. Diagnosing the editor
+  // otherwise means asking whoever is testing to open devtools and read it
+  // back, which loses everything that happened before they thought to look.
+  if (isDev) {
+    window.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+      if (level < 2) return
+      const where = sourceId ? ` (${sourceId}:${line})` : ''
+      console[level === 2 ? 'warn' : 'error'](`[renderer] ${message}${where}`)
+    })
+  }
 
   window.webContents.on('unresponsive', () => {
     rendererUnresponsive = true

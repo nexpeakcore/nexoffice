@@ -65,6 +65,8 @@ export function serveDiagnosticsSamples(): () => void {
 
 export function clearDocumentProfile(): void {
   openEpoch += 1
+  contentPaintedAt = null
+  awaitingContent = false
   profile = null
   timings = null
   transportTimings = {}
@@ -78,6 +80,11 @@ export function clearDocumentProfile(): void {
  */
 export function noteDocumentOpened(opened: OpenedDocument, kind: DocumentProfile['kind']): void {
   openEpoch += 1
+  contentPaintedAt = null
+  // Set here rather than by the editor itself: the editor view is loaded on
+  // demand, so it mounts after this measurement has already started and would
+  // register its promise too late to be waited for.
+  awaitingContent = REPORTS_FIRST_PAINT.has(kind)
   openedAt = performance.now()
   profile = { kind, name: opened.name, bytes: opened.data.byteLength }
   const next: OpenPhaseTimings = {}
@@ -86,6 +93,23 @@ export function noteDocumentOpened(opened: OpenedDocument, kind: DocumentProfile
   transportTimings = next
   timings = next
   publishDiagnostics()
+}
+
+/**
+ * When the editor's own content reached the screen. An editor that lays its
+ * document out on a worker leaves this thread idle while it does, so an
+ * unblocked frame no longer means the document is up — without this the open
+ * measurement reports the shell mounting and calls it done.
+ */
+let contentPaintedAt: number | null = null;
+let awaitingContent = false;
+
+/** Editors that report their first paint; the rest settle on frames alone. */
+const REPORTS_FIRST_PAINT: ReadonlySet<DocumentProfile['kind']> = new Set(['docx'])
+
+/** The editor's first content is on screen. */
+export function noteDocumentContentPainted(): void {
+  if (contentPaintedAt === null) contentPaintedAt = performance.now();
 }
 
 /** A frame this long means the main thread was busy through it rather than
@@ -98,10 +122,12 @@ const MAX_OBSERVED_FRAMES = 900
  * Measure the editor's share of the open, from the commit that mounted it.
  *
  * `mount` ends at the first painted frame — the editor shell is up, though a
- * heavy document is still parsing. `interactive` ends at the first frame the
- * main thread did not block through, which is where the document stops feeling
- * frozen. A frame budget is used rather than a settle timer so the number
- * tracks the document's real cost instead of the timer's.
+ * heavy document is still parsing. `interactive` ends at the first unblocked
+ * frame at or after the editor's content reaches the screen, which is where
+ * the document stops feeling frozen. Both halves are needed: an unblocked
+ * frame alone says only that this thread is idle, which it also is while a
+ * worker lays the document out. A frame budget is used rather than a settle
+ * timer so the number tracks the document's real cost instead of the timer's.
  */
 export function trackOpenSettle(): () => void {
   const epoch = openEpoch
@@ -133,11 +159,12 @@ export function trackOpenSettle(): () => void {
       handle = requestAnimationFrame(observe)
       return
     }
-    if (frameCost > BLOCKED_FRAME_MS && frames < MAX_OBSERVED_FRAMES) {
+    const settled = frameCost <= BLOCKED_FRAME_MS && (!awaitingContent || contentPaintedAt !== null)
+    if (!settled && frames < MAX_OBSERVED_FRAMES) {
       handle = requestAnimationFrame(observe)
       return
     }
-    finish(frameCost > BLOCKED_FRAME_MS ? null : now - mountedAt)
+    finish(settled ? now - mountedAt : null)
   }
 
   handle = requestAnimationFrame(observe)

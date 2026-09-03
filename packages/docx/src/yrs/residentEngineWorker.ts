@@ -21,6 +21,7 @@ import { memoryTotalBytes } from '../diagnostics';
 import type {
   ResidentEngineWorkerRequest,
   ResidentEngineWorkerResponse,
+  ResidentEngineWorkerStage,
 } from './residentEngineWorkerProtocol';
 import {
   residentCaretDeviceRect,
@@ -56,9 +57,21 @@ let paintedCaretKey: string | null = null;
 let caretStage: OffscreenCanvas | null = null;
 const intactBackBuffers = new Set<string>();
 
+// When the newest request arrived, against when its turn came. A keystroke
+// that is slow while the engine is fast has waited somewhere, and the two
+// candidates — this worker still busy, or the host thread not yet free to send
+// or to receive — look identical from the host.
+let requestArrivedAt = 0;
+let requestQueuedMs = 0;
+
 scope.onmessage = (event: MessageEvent<ResidentEngineWorkerRequest>) => {
+  const arrivedAt = performance.now();
   operations = operations
-    .then(() => handle(event.data))
+    .then(() => {
+      requestArrivedAt = arrivedAt;
+      requestQueuedMs = performance.now() - arrivedAt;
+      return handle(event.data);
+    })
     .catch((error) => {
       reply({
         id: event.data.id,
@@ -80,16 +93,30 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
   }
   if (request.type === 'open') {
     destroySession();
-    // The worker is the origin of this document, not a copy of it: it seeds
-    // once and nothing replays that work. `bootstrap` below exists for the
-    // path where a main-thread replica opened first, which costs the document
-    // twice over.
+    const progress = (stage: ResidentEngineWorkerStage) =>
+      scope.postMessage({ id: request.id, progress: stage });
+    progress('received');
+    // The worker is the origin of this document's layout, not a copy of it:
+    // it lowers, measures and paginates once and nothing replays that work.
+    // `bootstrap` below exists for the path where a main-thread replica laid
+    // the document out first, which costs the document twice over.
     session = await createResidentEngineSession();
+    progress('sessionReady');
+    session.loadState(request.open.state);
     session.clearFonts();
-    for (const font of request.fonts) session.registerFont(font);
-    fontsRevision = request.fontsRevision;
-    session.seedDocx(request.bytes);
+    for (const font of request.open.fonts) session.registerFont(font);
+    fontsRevision = request.open.fontsRevision;
+    if (request.open.selection) {
+      session.setSelection(request.open.selection.anchor, request.open.selection.head);
+    }
+    progress('stateLoaded');
+    // No render or measure inputs to replay: lowering and measuring happen
+    // here, inside this one region layout, and nowhere else. Nothing can be
+    // said while it runs, so the host is told before and after.
+    progress('layingOut');
     session.layoutDocumentWithRegionsVoid(request.layoutInput);
+    progress('laidOut');
+    layoutRevision = 1;
     subscribe();
     const started = performance.now();
     const frame = session.buildDisplayListFrame(request.extras, 0);
@@ -105,13 +132,19 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
   }
   if (request.type === 'bootstrap') {
     destroySession();
+    const progress = (stage: ResidentEngineWorkerStage) =>
+      scope.postMessage({ id: request.id, progress: stage });
+    progress('received');
     // The worker is a genuine yrs peer. Reusing the main replica's client id
     // makes a fast structural input race overlap one client's clock range and
     // corrupt the update; a fresh id lets yrs merge queued/local operations
     // safely while the main replica applies worker updates with local origin.
     session = await createResidentEngineSession();
+    progress('sessionReady');
     hydrate(request.snapshot);
+    progress('stateLoaded');
     subscribe();
+    progress('layingOut');
     const started = performance.now();
     const frame = session.buildDisplayListFrame(request.extras, request.expectedFrameEpoch);
     await replyFrame(
@@ -131,6 +164,23 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
     return;
   }
   if (!session) throw new Error('Resident engine worker is not initialized');
+  if (request.type === 'relayout') {
+    session.layoutDocumentWithRegionsVoid(request.layoutInput);
+    layoutRevision += 1;
+    const started = performance.now();
+    const frame = session.buildDisplayListFrame(request.extras, request.expectedFrameEpoch);
+    await replyFrame(
+      request.id,
+      frame,
+      performance.now() - started,
+      pendingUpdates,
+      undefined,
+      started,
+      false,
+      request.paintCaret
+    );
+    return;
+  }
   if (request.type === 'sync') {
     unsubscribe?.();
     unsubscribe = null;
@@ -164,6 +214,10 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
       false,
       request.paintCaret
     );
+    return;
+  }
+  if (request.type === 'setPageWindow') {
+    session.setPageWindow(request.start, request.count);
     return;
   }
   if (request.type === 'applyUpdate') {
@@ -356,6 +410,8 @@ async function replyFrame(
       updates: updateBuffers,
       engineMs,
       workerTotalMs: performance.now() - requestStarted,
+      workerQueuedMs: requestQueuedMs,
+      workerArrivedAt: requestArrivedAt,
       engineProfile,
       caret,
       selection,

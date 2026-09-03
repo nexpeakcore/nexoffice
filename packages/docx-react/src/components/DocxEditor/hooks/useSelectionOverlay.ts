@@ -169,9 +169,23 @@ export function useSelectionOverlay(opts: UseSelectionOverlayOptions): UseSelect
     return () => observer.disconnect();
   }, [containerRef, syncCoordinator, updateSelectionOverlay]);
 
+  // A new layout is the repaint signal where this thread paginates. Where a
+  // worker owns it there is none — but a frame is not a substitute: this runs
+  // on every render, and placing the overlay costs a range query over the
+  // whole document. The keystroke path already re-places the overlay from the
+  // selection it just moved; only geometry that moves without the selection
+  // moving needs this, and that is the page count changing.
+  const overlayPageCountRef = useRef<number | null>(null);
   useEffect(() => {
-    if (layout) updateSelectionOverlay();
-  }, [layout, updateSelectionOverlay]);
+    if (layout) {
+      updateSelectionOverlay();
+      return;
+    }
+    const pageCount = displayListQueries?.pageCount() ?? null;
+    if (pageCount === null || pageCount === overlayPageCountRef.current) return;
+    overlayPageCountRef.current = pageCount;
+    updateSelectionOverlay();
+  }, [layout, displayListQueries, updateSelectionOverlay]);
 
   const authoritativeRect = residentCaretAuthoritative ? residentCaret?.caretRect : null;
   const authoritativeNewer = Boolean(

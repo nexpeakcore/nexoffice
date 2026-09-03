@@ -27,6 +27,11 @@ import {
   resolveDisplayPageClientRect,
   type DisplayListQueries,
 } from '@betteroffice/docx/layout/render';
+import {
+  COMMITTED_COMPOSITION_TIMEOUT_MS,
+  type CommittedComposition,
+  CommittedCompositionHold,
+} from './committedComposition';
 import type { ResidentFrameApplyResult } from './hooks/useDisplayList';
 import type { ResolveDisplayListQueries } from './hooks/displayListQueryEpochGate';
 import { findWordBoundaries } from '@betteroffice/docx/utils';
@@ -264,6 +269,12 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
   const [positionStyle, setPositionStyle] = useState<CSSProperties>({ left: 0, top: 0, height: 1 });
   const [composingVisible, setComposingVisible] = useState(false);
   const [composingWidth, setComposingWidth] = useState(2);
+  // What an IME just committed, held on screen until the frame carrying it
+  // arrives. Without it the composition box clears on commit and the text is
+  // nowhere for the length of an engine round trip — it blinks out and back.
+  const [committedPreview, setCommittedPreview] = useState<CommittedComposition | null>(null);
+  const committedHoldRef = useRef(new CommittedCompositionHold());
+  const committedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectionEpoch, setSelectionEpoch] = useState(0);
 
   const enqueueInputOperation = useCallback((operation: () => void | Promise<void>): void => {
@@ -1071,8 +1082,18 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
     ]
   );
 
+  const clearCommittedPreview = useCallback(() => {
+    if (committedTimerRef.current !== null) {
+      clearTimeout(committedTimerRef.current);
+      committedTimerRef.current = null;
+    }
+    committedHoldRef.current.clear();
+    setCommittedPreview(null);
+  }, []);
+
   const handleCompositionStart = useCallback(
     (event: React.CompositionEvent<HTMLTextAreaElement>) => {
+      clearCommittedPreview();
       verticalCaretGoalRef.current.reset();
       composingRef.current = true;
       compositionPendingRef.current = false;
@@ -1082,7 +1103,7 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
       setComposingWidth(2);
       onCaretInterrupt?.();
     },
-    [onCaretInterrupt]
+    [clearCommittedPreview, onCaretInterrupt]
   );
 
   const handleCompositionUpdate = useCallback(
@@ -1101,6 +1122,9 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
       compositionPendingRef.current = true;
       compositionCommitRef.current =
         event.currentTarget.value || event.data || compositionCommitRef.current;
+      // Where the composition box sits, captured before it is torn down: the
+      // preview takes its place, so the text does not appear to move.
+      const box = event.currentTarget.getBoundingClientRect();
       setComposingVisible(false);
       queueMicrotask(() => {
         const text = textareaRef.current?.value || compositionCommitRef.current;
@@ -1111,6 +1135,20 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
         compositionPendingRef.current = false;
         compositionCommitRef.current = '';
         insertText(text);
+        const hold = committedHoldRef.current;
+        hold.hold(
+          { text, left: box.left, top: box.top, height: box.height || 16 },
+          pendingResidentFrameEpochRef.current,
+          Date.now()
+        );
+        setCommittedPreview(hold.visible());
+        // A commit that never reaches a frame — no resident worker, a failed
+        // layout — must not leave the text painted over a page without it.
+        if (committedTimerRef.current !== null) clearTimeout(committedTimerRef.current);
+        committedTimerRef.current = setTimeout(() => {
+          committedTimerRef.current = null;
+          if (hold.tick(Date.now())) setCommittedPreview(null);
+        }, COMMITTED_COMPOSITION_TIMEOUT_MS);
       });
     },
     [insertText]
@@ -1229,7 +1267,10 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
   useEffect(() => {
     verticalCaretGoalRef.current.reset();
     pendingResidentFrameEpochRef.current = null;
-  }, [session, story]);
+    clearCommittedPreview();
+  }, [clearCommittedPreview, session, story]);
+
+  useEffect(() => clearCommittedPreview, [clearCommittedPreview]);
 
   useEffect(() => {
     if (!enabled || !session) return;
@@ -1245,6 +1286,11 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
     if (pendingFrameEpoch !== null) {
       if (displayListFrameEpoch === null || displayListFrameEpoch < pendingFrameEpoch) return;
       pendingResidentFrameEpochRef.current = null;
+    }
+    // The frame the commit was waiting for has landed, so the page is now
+    // showing the text itself and the preview can go.
+    if (committedHoldRef.current.onFramePresented(displayListFrameEpoch)) {
+      setCommittedPreview(null);
     }
     const selection = displaySelection();
     if (!selection) return;
@@ -1370,9 +1416,37 @@ const YrsInputComponent = forwardRef<YrsInputRef, YrsInputProps>(function YrsInp
       }}
     />
   );
+  const preview = committedPreview ? (
+    <span
+      aria-hidden="true"
+      data-testid="yrs-committed-preview"
+      style={{
+        position: 'fixed',
+        left: `${committedPreview.left}px`,
+        top: `${committedPreview.top}px`,
+        height: `${committedPreview.height}px`,
+        lineHeight: `${committedPreview.height}px`,
+        fontFamily: COMPOSITION_FONT_FAMILY,
+        fontSize: `${Math.max(10, Math.round(committedPreview.height * 0.82))}px`,
+        color: '#111111',
+        background: '#ffffff',
+        whiteSpace: 'pre',
+        pointerEvents: 'none',
+        zIndex: 39,
+      }}
+    >
+      {committedPreview.text}
+    </span>
+  ) : null;
+  const mounted = (
+    <>
+      {textarea}
+      {preview}
+    </>
+  );
   return typeof document !== 'undefined' && document.body
-    ? createPortal(textarea, document.body)
-    : textarea;
+    ? createPortal(mounted, document.body)
+    : mounted;
 });
 
 export const YrsInput = memo(YrsInputComponent);

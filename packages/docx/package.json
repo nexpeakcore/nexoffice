@@ -212,6 +212,7 @@
     "dist"
   ],
   "scripts": {
+    "build:js": "NODE_OPTIONS=--max-old-space-size=8192 tsup --no-dts --no-clean && bun scripts/copy-assets.ts",
     "build": "bun ../../scripts/build-docx-wasm.ts && NODE_OPTIONS=--max-old-space-size=8192 tsup && bun scripts/copy-assets.ts",
     "typecheck": "tsc --noEmit",
     "build:wasm": "bun ../../scripts/build-docx-wasm.ts"

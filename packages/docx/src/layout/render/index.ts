@@ -86,6 +86,7 @@ export {
   type RustDisplayListSourceErrorStage,
   isSupersededSessionError,
   encodeDisplayListFrameExtras,
+  type DisplayListFrameExtras,
 } from './rustDisplayList';
 
 export {

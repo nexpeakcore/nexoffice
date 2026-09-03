@@ -9293,12 +9293,19 @@ pub fn update_resident_display_list_incremental_with_fonts_observed(
     position_deltas: &HashMap<String, i64>,
     observe_phase: &mut impl FnMut(),
 ) -> Result<bool, String> {
+    // An incremental pagination that lands on a different page count leaves
+    // the retained display list a page short or a page long. That is not a
+    // broken invariant, it is the ordinary case of typing pushing content onto
+    // a new page: report that this cannot be done incrementally and let the
+    // caller rebuild. Erroring here instead drops the whole frame, and the
+    // host then repaginates the document on its own thread to recover.
     if previous.pages.len() != layout.pages.len()
         || resident.input.layout.pages.len() != layout.pages.len()
-        || rebuilt_page_start > rebuilt_page_end
-        || rebuilt_page_end > layout.pages.len()
     {
-        return Err("resident display input no longer matches pagination pages".to_owned());
+        return Ok(false);
+    }
+    if rebuilt_page_start > rebuilt_page_end || rebuilt_page_end > layout.pages.len() {
+        return Err("resident display rebuild range is outside the layout".to_owned());
     }
 
     refresh_resident_display_pages(

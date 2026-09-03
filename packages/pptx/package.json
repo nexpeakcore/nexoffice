@@ -39,6 +39,7 @@
     "dist"
   ],
   "scripts": {
+    "build:js": "tsup --no-dts --no-clean",
     "build": "bun run build:wasm && tsup",
     "build:wasm": "bun ../../scripts/build-pptx-wasm.ts",
     "typecheck": "tsc --noEmit -p ."

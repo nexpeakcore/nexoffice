@@ -26,8 +26,8 @@ use std::collections::VecDeque;
 
 use crate::display_list::{DisplayList, DisplayPage};
 use crate::hit::{
-    VerticalDirection, hit_test_regions, parse_region, range_rects, range_rects_in_region,
-    vertical_move,
+    HitRegion, VerticalDirection, hit_test_regions, page_body_doc_ranges, parse_region,
+    range_rects_in_region_indexed, vertical_move,
 };
 
 /// Upper bound on concurrently-open handles. The facade keeps exactly one live,
@@ -35,10 +35,25 @@ use crate::hit::{
 /// evicted so the map stays bounded.
 pub const MAX_SESSIONS: usize = 8;
 
+/// A parsed display list and the page index that lets a range query skip the
+/// pages that cannot answer it. Without the index every query reads every
+/// primitive in the document, which on a long one costs more than a frame.
+struct Stored {
+    list: DisplayList,
+    page_ranges: Vec<Option<(i64, i64)>>,
+}
+
+impl Stored {
+    fn new(list: DisplayList) -> Self {
+        let page_ranges = page_body_doc_ranges(&list);
+        Stored { list, page_ranges }
+    }
+}
+
 /// The handle registry: parsed display lists keyed by handle id, plus the
 /// insertion order used for oldest-first eviction.
 struct Sessions {
-    map: HashMap<u32, DisplayList>,
+    map: HashMap<u32, Stored>,
     /// handle ids in insertion order (front = oldest); the eviction queue
     order: VecDeque<u32>,
     /// monotonic id source; never hands out 0 (a reserved "no handle" sentinel)
@@ -69,12 +84,12 @@ impl Sessions {
                 None => break,
             }
         }
-        self.map.insert(id, dl);
+        self.map.insert(id, Stored::new(dl));
         self.order.push_back(id);
         id
     }
 
-    fn get(&self, handle: u32) -> Option<&DisplayList> {
+    fn get(&self, handle: u32) -> Option<&Stored> {
         self.map.get(&handle)
     }
 
@@ -131,11 +146,11 @@ pub fn update_display_list(handle: u32, update_json: &str) -> Result<(), String>
         .and_then(|update| {
             SESSIONS.with(|s| {
                 let mut sessions = s.borrow_mut();
-                let dl = sessions
+                let stored = sessions
                     .map
                     .get_mut(&handle)
                     .ok_or_else(|| format!("unknown display-list handle {handle}"))?;
-                apply_display_list_update(dl, update)
+                apply_display_list_update(stored, update)
             })
         });
     // Any failure (including a malformed payload) closes the handle: the
@@ -147,16 +162,19 @@ pub fn update_display_list(handle: u32, update_json: &str) -> Result<(), String>
     result
 }
 
-fn apply_display_list_update(
-    dl: &mut DisplayList,
-    update: DisplayListUpdate,
-) -> Result<(), String> {
+fn apply_display_list_update(stored: &mut Stored, update: DisplayListUpdate) -> Result<(), String> {
     if update.reuse.len().saturating_add(update.replace.len()) != update.total {
         return Err("update slots do not cover the page total exactly".to_owned());
     }
+    let dl = &mut stored.list;
     let mut previous: Vec<Option<DisplayPage>> = dl.pages.drain(..).map(Some).collect();
+    let previous_ranges = std::mem::take(&mut stored.page_ranges);
     let mut next: Vec<Option<DisplayPage>> = Vec::new();
     next.resize_with(update.total, || None);
+    // A reused page keeps the range already computed for it; only a replaced
+    // page needs a fresh walk, so an incremental update stays incremental.
+    let mut ranges: Vec<Option<Option<(i64, i64)>>> = Vec::new();
+    ranges.resize_with(update.total, || None);
     for (next_index, previous_index) in update.reuse {
         let page = previous
             .get_mut(previous_index)
@@ -169,6 +187,7 @@ fn apply_display_list_update(
             return Err(format!("duplicate page target {next_index}"));
         }
         *slot = Some(page);
+        ranges[next_index] = Some(previous_ranges.get(previous_index).copied().flatten());
     }
     for (next_index, page) in update.replace {
         let slot = next
@@ -177,6 +196,7 @@ fn apply_display_list_update(
         if slot.is_some() {
             return Err(format!("duplicate page target {next_index}"));
         }
+        ranges[next_index] = Some(page_doc_range(&page));
         *slot = Some(page);
     }
     dl.pages = next
@@ -185,7 +205,16 @@ fn apply_display_list_update(
         .map(|(index, page)| page.ok_or_else(|| format!("page {index} missing from update")))
         .collect::<Result<Vec<_>, _>>()?;
     dl.contract_version = update.contract_version;
+    stored.page_ranges = ranges.into_iter().map(Option::flatten).collect();
     Ok(())
+}
+
+fn page_doc_range(page: &DisplayPage) -> Option<(i64, i64)> {
+    let single = DisplayList {
+        contract_version: None,
+        pages: vec![page.clone()],
+    };
+    page_body_doc_ranges(&single).into_iter().next().flatten()
 }
 
 /// Region-aware hit test against a stored display list — the by-handle twin of
@@ -202,7 +231,7 @@ pub fn hit_test_regions_by_handle(
         let dl = sessions
             .get(handle)
             .ok_or_else(|| format!("unknown display-list handle {handle}"))?;
-        match hit_test_regions(dl, page_index, x, y) {
+        match hit_test_regions(&dl.list, page_index, x, y) {
             Some(hit) => serde_json::to_string(&hit).map_err(|e| format!("serialize: {e}")),
             None => Ok("null".to_string()),
         }
@@ -226,7 +255,7 @@ pub fn vertical_move_by_handle(
             other => return Err(format!("unknown vertical direction {other:?}")),
         };
         serde_json::to_string(&vertical_move(
-            dl,
+            &dl.list,
             position,
             direction,
             goal_x.is_finite().then_some(goal_x),
@@ -243,7 +272,15 @@ pub fn range_rects_by_handle(handle: u32, from: i64, to: i64) -> Result<String, 
         let dl = sessions
             .get(handle)
             .ok_or_else(|| format!("unknown display-list handle {handle}"))?;
-        serde_json::to_string(&range_rects(dl, from, to)).map_err(|e| format!("serialize: {e}"))
+        serde_json::to_string(&range_rects_in_region_indexed(
+            &dl.list,
+            HitRegion::Body,
+            None,
+            from,
+            to,
+            Some(&dl.page_ranges),
+        ))
+        .map_err(|e| format!("serialize: {e}"))
     })
 }
 
@@ -265,8 +302,15 @@ pub fn range_rects_region_by_handle(
             .ok_or_else(|| format!("unknown display-list handle {handle}"))?;
         let region = parse_region(region)?;
         let r_id = if r_id.is_empty() { None } else { Some(r_id) };
-        serde_json::to_string(&range_rects_in_region(dl, region, r_id, from, to))
-            .map_err(|e| format!("serialize: {e}"))
+        serde_json::to_string(&range_rects_in_region_indexed(
+            &dl.list,
+            region,
+            r_id,
+            from,
+            to,
+            Some(&dl.page_ranges),
+        ))
+        .map_err(|e| format!("serialize: {e}"))
     })
 }
 
