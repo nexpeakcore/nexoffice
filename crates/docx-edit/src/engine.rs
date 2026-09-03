@@ -1060,7 +1060,10 @@ impl EngineSession {
             input.measured = blocks
                 .into_iter()
                 .zip(measures)
-                .map(|(block, measure)| MeasuredBlock { block, measure })
+                .map(|(block, measure)| MeasuredBlock {
+                    block,
+                    measure: std::sync::Arc::new(measure),
+                })
                 .collect();
         } else {
             apply_section_geometry(&mut input, &regions);
@@ -1654,7 +1657,7 @@ impl EngineSession {
                 measure_dirty(block_index, &key, &previous_measured.block, &mut next_block)?;
             let measured_block = MeasuredBlock {
                 block: next_block,
-                measure,
+                measure: std::sync::Arc::new(measure),
             };
             block_fingerprints.push(measured_fingerprint(&measured_block)?);
             // Taken after the measure, which may rewrite the block.
@@ -3575,7 +3578,7 @@ mod tests {
         let initial_input = LayoutInput {
             measured: vec![MeasuredBlock {
                 block,
-                measure: BlockExtent::Paragraph(extent),
+                measure: std::sync::Arc::new(BlockExtent::Paragraph(extent)),
             }],
             options: serde_json::from_value(serde_json::json!({
                 "pageSize": { "w": 200, "h": 120 },
@@ -4140,7 +4143,7 @@ mod tests {
             let input = pagination.input.as_ref().expect("laid out");
             let (mut lines, mut clusters, mut runs, mut bidi, mut segments) = (0, 0, 0, 0, 0);
             for measured in &input.measured {
-                let docx_layout::types::BlockExtent::Paragraph(extent) = &measured.measure else {
+                let docx_layout::types::BlockExtent::Paragraph(extent) = &*measured.measure else {
                     continue;
                 };
                 lines += extent.lines.len();

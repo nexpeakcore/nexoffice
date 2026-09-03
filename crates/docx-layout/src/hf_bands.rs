@@ -243,7 +243,7 @@ mod tests {
 fn stacked_height(measured: &[MeasuredBlockIn]) -> f64 {
     measured
         .iter()
-        .map(|mb| match &mb.measure {
+        .map(|mb| match &*mb.measure {
             crate::types::BlockExtent::Paragraph(p) => p.total_height,
             crate::types::BlockExtent::Table(t) => t.total_height,
             crate::types::BlockExtent::Image(i) => i.height,
@@ -394,7 +394,7 @@ fn compose_region(
     let mut cursor = 0.0_f64;
 
     for mb in &v.measured {
-        match (&mb.block, &mb.measure) {
+        match (&mb.block, &*mb.measure) {
             (BlockIn::Paragraph(block), crate::types::BlockExtent::Paragraph(measure)) => {
                 let spacing_before = block
                     .attrs

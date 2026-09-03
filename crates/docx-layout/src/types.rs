@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // shared scalars
@@ -1291,7 +1292,11 @@ pub enum BlockExtent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeasuredBlock {
     pub block: LayoutBlock,
-    pub measure: BlockExtent,
+    /// Shared, not owned: a keystroke carries every unchanged block's extent
+    /// forward and the display list retains its own view of the same arena, so
+    /// two copies of every typeset advance in the document is what owning it
+    /// costs. On a 338-page fixture that is 21.8MB per copy.
+    pub measure: Arc<BlockExtent>,
 }
 
 // ---------------------------------------------------------------------------

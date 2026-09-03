@@ -109,7 +109,7 @@ pub fn measure_keep_with_next_group(group: &KeepWithNextGroup, measured: &[Measu
     let follower_measure = group
         .follower
         .and_then(|index| measured.get(index))
-        .map(|mb| &mb.measure);
+        .map(|mb| &*mb.measure);
     let witness_line = match follower_measure {
         Some(BlockExtent::Paragraph(p)) if !p.lines.is_empty() => p.lines[0].line_height,
         Some(BlockExtent::Table(t)) => t.rows.first().map_or(0.0, |row| row.height),
@@ -121,7 +121,7 @@ pub fn measure_keep_with_next_group(group: &KeepWithNextGroup, measured: &[Measu
     let mut budget = witness_line;
     for &index in &group.members {
         let MeasuredBlock { block, measure } = &measured[index];
-        let (LayoutBlock::Paragraph(block), BlockExtent::Paragraph(measure)) = (block, measure)
+        let (LayoutBlock::Paragraph(block), BlockExtent::Paragraph(measure)) = (block, &**measure)
         else {
             continue;
         };
@@ -238,7 +238,10 @@ mod tests {
         blocks
             .into_iter()
             .zip(measures)
-            .map(|(block, measure)| MeasuredBlock { block, measure })
+            .map(|(block, measure)| MeasuredBlock {
+                block,
+                measure: std::sync::Arc::new(measure),
+            })
             .collect()
     }
 
