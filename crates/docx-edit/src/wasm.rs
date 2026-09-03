@@ -76,27 +76,15 @@ struct ParaSpan {
 /// Resolves a paragraph to its story span by walking the public segment view.
 /// Story-scoped: a `para_id` that lives in another story is "not found".
 fn find_para_span(doc: &EditingDoc, story: &str, para_id: &str) -> Result<ParaSpan, JsValue> {
-    let mut offset: u32 = 0;
-    let mut para_start: u32 = 0;
-    for segment in doc.story_segments(story).map_err(js_err)? {
-        match segment.content {
-            SegmentContent::Text(text) => offset += text.encode_utf16().count() as u32,
-            SegmentContent::Pilcrow(properties) => {
-                if properties.para_id == para_id {
-                    return Ok(ParaSpan {
-                        start: para_start,
-                        pilcrow: offset,
-                    });
-                }
-                offset += 1;
-                para_start = offset;
-            }
-            SegmentContent::OtherEmbed { .. } => offset += 1,
-        }
-    }
-    Err(js_err(format!(
-        "paragraph {para_id:?} was not found in story {story:?}"
-    )))
+    let span = doc.paragraph_span(story, para_id).map_err(|_| {
+        js_err(format!(
+            "paragraph {para_id:?} was not found in story {story:?}"
+        ))
+    })?;
+    Ok(ParaSpan {
+        start: span.start,
+        pilcrow: span.pilcrow,
+    })
 }
 
 /// `Loc { story, paraId, offset }` -> transient story-global index.

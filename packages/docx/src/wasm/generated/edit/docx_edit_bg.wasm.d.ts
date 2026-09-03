@@ -111,8 +111,8 @@ export const editsession_yrs_blocks_for_story: (a: number, b: number, c: number,
 export const heap_live_bytes: () => number;
 export const heap_reset_peak: () => void;
 export const heap_stats_available: () => number;
-export const editsession_load: (a: number, b: number, c: number) => [number, number];
 export const heap_peak_bytes: () => number;
+export const editsession_load: (a: number, b: number, c: number) => [number, number];
 export const parse_docx_relationships: (a: number, b: number) => [number, number, number, number];
 export const parse_docx_s2: (a: number, b: number) => [number, number, number, number];
 export const parse_docx_s3: (a: number, b: number) => [number, number, number, number];

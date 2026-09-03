@@ -233,6 +233,14 @@ pub struct ResolvedCommentAnchor {
     pub end: u32,
 }
 
+/// A paragraph's span in its story's unit domain.
+pub struct ParagraphSpan {
+    /// Story index of the paragraph's first unit (after the previous pilcrow).
+    pub start: u32,
+    /// Story index of the paragraph's own pilcrow embed.
+    pub pilcrow: u32,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum EditError {
     StoryExists(String),
@@ -545,6 +553,37 @@ impl EditingDoc {
             .collect())
     }
 
+    /// Where a paragraph sits in its story's unit domain.
+    ///
+    /// Every op that takes a `Loc` resolves it through here, and a caret is one
+    /// paragraph. Answering it from `story_segments` read every pilcrow's
+    /// properties and every run's marks in the document first — so a keystroke
+    /// deep in a long file paid for the whole file, twice, before it began.
+    /// This walks the story and stops at the paragraph.
+    pub fn paragraph_span(&self, story_id: &str, para_id: &str) -> EditResult<ParagraphSpan> {
+        let txn = self.doc.transact();
+        let story = story_ref(&txn, story_id)?;
+        let mut offset = 0_u32;
+        let mut start = 0_u32;
+        for diff in story.diff(&txn, YChange::identity) {
+            if let Out::YMap(map) = &diff.insert
+                && is_pilcrow(map, &txn)
+            {
+                if map_string(map, &txn, PARA_ID).as_deref() == Some(para_id) {
+                    return Ok(ParagraphSpan {
+                        start,
+                        pilcrow: offset,
+                    });
+                }
+                offset += 1;
+                start = offset;
+                continue;
+            }
+            offset += out_len(&diff.insert);
+        }
+        Err(EditError::ParagraphNotFound(para_id.to_owned()))
+    }
+
     pub fn paragraphs(&self, story_id: &str) -> EditResult<Vec<ParagraphSnapshot>> {
         let mut paragraphs = Vec::new();
         let mut text = String::new();
@@ -824,6 +863,82 @@ mod tests {
         doc.create_story("header:rId7", "Header", "Header", "center")
             .unwrap();
         doc
+    }
+
+    /// The span every `Loc` resolves through, checked against the segment walk
+    /// it replaced — for every paragraph, and for one that is not there.
+    #[test]
+    fn paragraph_span_agrees_with_the_segment_walk() {
+        let doc = seed("first second third fourth");
+        for at in [5, 12, 18] {
+            doc.split_paragraph(&local("A"), Position::new("body", at), None)
+                .unwrap();
+        }
+
+        let mut offset = 0_u32;
+        let mut start = 0_u32;
+        let mut expected = Vec::new();
+        for segment in doc.story_segments("body").unwrap() {
+            match segment.content {
+                SegmentContent::Text(text) => offset += text.encode_utf16().count() as u32,
+                SegmentContent::Pilcrow(properties) => {
+                    expected.push((properties.para_id, start, offset));
+                    offset += 1;
+                    start = offset;
+                }
+                SegmentContent::OtherEmbed { .. } => offset += 1,
+            }
+        }
+        assert!(expected.len() >= 4);
+        for (para_id, start, pilcrow) in expected {
+            let span = doc.paragraph_span("body", &para_id).unwrap();
+            assert_eq!((span.start, span.pilcrow), (start, pilcrow), "{para_id}");
+        }
+        assert!(matches!(
+            doc.paragraph_span("body", "body:absent"),
+            Err(EditError::ParagraphNotFound(_))
+        ));
+    }
+
+    /// Resolving one `Loc`, which every op that takes one begins with.
+    ///
+    ///   cargo test -p betteroffice-docx-edit --release --lib loc_resolution_cost \
+    ///     -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx"]
+    fn loc_resolution_cost() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        let bytes = std::fs::read(&path).expect("fixture");
+        let doc = EditingDoc::new(4011);
+        crate::seed_from_docx(&doc, &bytes).expect("seed");
+        let paragraphs = doc.paragraphs("body").unwrap();
+        let elapsed = |s: std::time::Instant| s.elapsed().as_secs_f64() * 1000.0;
+        const ROUNDS: usize = 5;
+        for (label, index) in [
+            ("first paragraph", 0),
+            ("middle", paragraphs.len() / 2),
+            ("last paragraph", paragraphs.len() - 1),
+        ] {
+            let para_id = &paragraphs[index].para_id;
+            let mut direct = 0.0;
+            let mut segments = 0.0;
+            for _ in 0..ROUNDS {
+                let started = std::time::Instant::now();
+                doc.paragraph_span("body", para_id).unwrap();
+                direct += elapsed(started);
+                let started = std::time::Instant::now();
+                std::hint::black_box(doc.story_segments("body").unwrap().len());
+                segments += elapsed(started);
+            }
+            let per = |value: f64| value / ROUNDS as f64;
+            println!(
+                "{label:<16} direct {:>7.2}ms   via story_segments {:>7.1}ms",
+                per(direct),
+                per(segments)
+            );
+        }
+        println!("paragraphs          {}", paragraphs.len());
     }
 
     fn peers(text: &str, a_id: u64, b_id: u64) -> (EditingDoc, EditingDoc) {
