@@ -3931,7 +3931,9 @@ mod tests {
 
         stage("before anything");
         let engine = EngineSession::new(3009);
-        crate::seed_from_docx(engine.doc(), &bytes).expect("seed");
+        let envelope = crate::seed::parse_docx_for_edit(&bytes).expect("parse");
+        stage("docx parsed");
+        crate::seed::seed_parsed_docx(engine.doc(), envelope).expect("seed");
         stage("seeded (yrs doc)");
         engine.layout_document_with_regions_void(&request).unwrap();
         stage("laid out");
