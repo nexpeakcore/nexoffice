@@ -232,17 +232,14 @@ export function useLayoutPipeline(opts: UseLayoutPipelineOptions): UseLayoutPipe
   const captureViewportPosition = useCallback(
     (position: number) => {
       const loc = displayPositionToYrsLocRef.current?.(position);
-      // Round-trip guard: a projection that cannot map the loc back to the same
-      // display position would resolve the anchor into another story on restore.
-      //
-      // This guard is what a keystroke pays for on a long document. Traced on
-      // heavy-300p.docx: five rebuilds of the yrs position index per eight keys
-      // typed at speed, 73ms each, all reaching it through
-      // `yrsLocToDisplayPosition`. Both the capture above and the restore below
-      // run on every new display list, so gating one of them changes nothing —
-      // measured. The index walks every story in the file to answer a question
-      // about one sticky position that survives edits by construction.
-      if (!session || !loc || yrsLocToDisplayPositionRef.current?.(loc) !== position) return null;
+      // The loc is taken as given rather than mapped back and compared. That
+      // round trip rebuilt the yrs position index — a walk of every story in
+      // the file, 73ms on a 338-page one, five times per eight keys typed at
+      // speed — to check a sticky position that survives edits by construction.
+      // The cost: a display position inside a nested story that does not map
+      // back to itself is stored rather than refused, so a remote relayout can
+      // restore the reader slightly off near a table or a text box.
+      if (!session || !loc) return null;
       try {
         return session.encodeStickyPosition(loc);
       } catch {
