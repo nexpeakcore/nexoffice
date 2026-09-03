@@ -2998,6 +2998,45 @@ mod tests {
         );
 
         drop(regions);
+
+        // An edit that arrives before the unrestricted pass does must not
+        // shorten the document: it takes the fallback, which lays out all of
+        // it, and the typed text is in the story either way.
+        let extras = serde_json::json!({"fontChains": {"calibri|0|0": [font_id]}}).to_string();
+        engine.build_display_list_frame(&extras, 0).unwrap();
+        let epoch = engine.display.borrow().binary_frame_epoch;
+        engine
+            .doc()
+            .insert_text(
+                &ctx,
+                crate::Position::new("body", 0),
+                "ZQX",
+                crate::FormatPolicy::Inherit,
+            )
+            .unwrap();
+        engine.apply_and_layout("body", epoch).unwrap();
+        assert_eq!(
+            engine
+                .pagination
+                .borrow()
+                .layout
+                .as_ref()
+                .unwrap()
+                .pages
+                .len(),
+            whole,
+            "an edit during the prefix window laid the whole document out"
+        );
+        assert!(
+            engine
+                .doc()
+                .paragraphs("body")
+                .unwrap()
+                .first()
+                .is_some_and(|paragraph| paragraph.text.starts_with("ZQXParagraph 0")),
+            "the text typed during the prefix window is in the story"
+        );
+
         assert!(
             !engine
                 .layout_document_with_regions_void(&request(Some(PARAGRAPHS * 2)))
