@@ -1537,17 +1537,16 @@ impl EngineSession {
         if keys.len() != blocks.len() {
             return Err("resident lowering did not key every block".to_owned());
         }
-        let (previous, previous_fingerprints, previous_keys) = {
-            let pagination = self.pagination.borrow();
-            (
-                pagination
-                    .input
-                    .clone()
-                    .ok_or_else(|| "resident pagination input is not built".to_owned())?,
-                pagination.block_fingerprints.clone(),
-                pagination.content_keys.clone(),
-            )
-        };
+        // Borrowed, not copied. Pagination keeps these — the incremental pass
+        // that follows diffs against them — so a copy here is a second measured
+        // document per keystroke, and all this pass takes from one is an extent
+        // to reuse and a fingerprint to carry forward.
+        let pagination = self.pagination.borrow();
+        let previous = pagination
+            .input
+            .as_ref()
+            .ok_or_else(|| "resident pagination input is not built".to_owned())?;
+        let previous_fingerprints = &pagination.block_fingerprints;
         let paragraph_merge = blocks.len().checked_add(1) == Some(previous.measured.len());
         if blocks.len() != previous.measured.len() && !paragraph_merge {
             return Err("resident plain-text input changed the block structure".to_owned());
@@ -1559,15 +1558,20 @@ impl EngineSession {
         // Retained from the last pass when it left one, so an unchanged block is
         // recognised by the key lowering already computed rather than by
         // fingerprinting the built block again.
-        let previous_keys = (previous_keys.len() == previous.measured.len())
-            .then_some(previous_keys)
-            .unwrap_or_else(|| vec![None; previous.measured.len()]);
+        let unkeyed;
+        let previous_keys: &[Option<BlockIdentity>] =
+            if pagination.content_keys.len() == previous.measured.len() {
+                &pagination.content_keys
+            } else {
+                unkeyed = vec![None; previous.measured.len()];
+                &unkeyed
+            };
         let mut previous_blocks = previous
             .measured
-            .into_iter()
+            .iter()
             .zip(previous_fingerprints)
             .zip(previous_keys)
-            .map(|((measured, fingerprint), key)| (measured, fingerprint, key))
+            .map(|((measured, fingerprint), key)| (measured, *fingerprint, *key))
             .peekable();
         let mut skipped_merged_paragraph = false;
         let mut measured = Vec::with_capacity(blocks.len());
@@ -1624,7 +1628,7 @@ impl EngineSession {
                 }
                 measured.push(MeasuredBlock {
                     block: next_block,
-                    measure: previous_measured.measure,
+                    measure: previous_measured.measure.clone(),
                 });
                 block_fingerprints.push(previous_fingerprint);
                 content_keys.push(Some(next_identity));
@@ -1638,7 +1642,7 @@ impl EngineSession {
             if unchanged {
                 measured.push(MeasuredBlock {
                     block: next_block,
-                    measure: previous_measured.measure,
+                    measure: previous_measured.measure.clone(),
                 });
                 block_fingerprints.push(previous_fingerprint);
                 content_keys.push(Some(next_identity));
@@ -1687,7 +1691,7 @@ impl EngineSession {
         Ok(ResidentLayoutInput {
             input: LayoutInput {
                 measured,
-                options: previous.options,
+                options: previous.options.clone(),
             },
             block_fingerprints,
             content_keys,
