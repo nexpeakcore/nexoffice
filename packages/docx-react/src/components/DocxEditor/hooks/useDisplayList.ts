@@ -1,4 +1,8 @@
-import { openingBlockPrefix, openingPageWindow } from '../pageWindow';
+import {
+  completesAPartialOpen,
+  openRequestFor,
+  residentLayoutRequest,
+} from './residentLayoutPasses';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   buildRustDisplayFrame,
@@ -800,32 +804,31 @@ export function useRustDisplayList(
             '[CanvasRenderer] a display-list rebuild was queued while a keystroke was in flight'
           );
         }
-        const repaginating = !opening && workerLayoutInputRef.current !== owned.layoutInput;
-        // A cleared input is this hook laying out the rest of a document it
-        // opened the start of, not the host changing the request underneath.
-        if (repaginating && workerLayoutInputRef.current !== null) {
+        const request = residentLayoutRequest(
+          opening,
+          workerLayoutInputRef.current,
+          owned.layoutInput
+        );
+        if (request === 'relayout' && !completesAPartialOpen(workerLayoutInputRef.current)) {
           // Not a keystroke's cost. Seeing this per keystroke means something
           // is rebuilding the region request every pass.
           console.warn('[CanvasRenderer] the region request changed; repaginating the document');
         }
-        const workerFrame = opening
-          ? worker.open(
-              {
-                ...hostEngine.residentWorkerOpen(),
-                pageWindow: openingPageWindow(),
-                firstBlocks: openingBlockPrefix(),
-              },
-              owned.layoutInput,
-              extras
-            )
-          : repaginating
-            ? worker.relayout(
+        const workerFrame =
+          request === 'open'
+            ? worker.open(
+                openRequestFor(hostEngine.residentWorkerOpen()),
                 owned.layoutInput,
-                extras,
-                previousFrame?.frameEpoch ?? 0,
-                paintCaret
+                extras
               )
-            : worker.buildFrame(extras, previousFrame?.frameEpoch ?? 0, paintCaret);
+            : request === 'relayout'
+              ? worker.relayout(
+                  owned.layoutInput,
+                  extras,
+                  previousFrame?.frameEpoch ?? 0,
+                  paintCaret
+                )
+              : worker.buildFrame(extras, previousFrame?.frameEpoch ?? 0, paintCaret);
         workerOwnedEngineRef.current = hostEngine;
         workerLayoutInputRef.current = owned.layoutInput;
         pending = workerFrame
