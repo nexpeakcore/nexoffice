@@ -2502,8 +2502,9 @@ fn workbook_xml_with_template(
 }
 
 /// Patches retained `definedName` elements from the model, which the sheet ops
-/// have already rescoped, rewritten or dropped. Source entries the model no
-/// longer carries are dropped; every other byte of the element survives.
+/// have already rescoped, rewritten, reordered or dropped. Source entries the
+/// model no longer carries are dropped and names it gained are written out;
+/// every other byte of the element survives.
 fn render_defined_names(
     fragment: &[u8],
     wb: &Workbook,
@@ -2519,26 +2520,33 @@ fn render_defined_names(
     }
     let ambiguous =
         ambiguous_defined_names(&package.original_workbook.defined_names, &wb.defined_names);
-    let mut current = wb.defined_names.iter().peekable();
+    // The model decides which names exist and in what order; a source entry is
+    // claimed by name, at most once, only to inherit its markup. Walking the
+    // two in lockstep instead dropped every entry from the first disagreement
+    // on, so reordering a workbook's names deleted most of them.
+    let mut unclaimed = vec![true; sources.len()];
     let mut replacements = Vec::new();
-    for (source, original) in sources.iter().zip(&package.original_workbook.defined_names) {
-        let Some(defined) = current
-            .peek()
-            .filter(|defined| defined.name == original.name)
-        else {
+    for defined in &wb.defined_names {
+        let claimed = (!ambiguous.contains(defined.name.as_str()))
+            .then(|| {
+                package
+                    .original_workbook
+                    .defined_names
+                    .iter()
+                    .enumerate()
+                    .find(|(index, original)| unclaimed[*index] && original.name == defined.name)
+            })
+            .flatten();
+        let Some((index, original)) = claimed else {
+            replacements.push(template.qualify_fragment(&written_defined_name(defined)?)?);
             continue;
         };
-        let defined = *defined;
-        current.next();
-        if defined == original && !ambiguous.contains(defined.name.as_str()) {
-            replacements.push(source.bytes.clone());
+        unclaimed[index] = false;
+        if defined == original {
+            replacements.push(sources[index].bytes.clone());
             continue;
         }
-        let patched = if ambiguous.contains(defined.name.as_str()) {
-            written_defined_name(defined)?
-        } else {
-            patch_defined_name(&source.bytes, defined)?
-        };
+        let patched = patch_defined_name(&sources[index].bytes, defined)?;
         replacements.push(template.qualify_fragment(&patched)?);
     }
     if replacements.is_empty() {

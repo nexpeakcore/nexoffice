@@ -1080,6 +1080,71 @@ fn does_not_reattach_duplicate_defined_name_markup() {
     assert!(written.contains("Sheet1!$B$1"), "{written}");
 }
 
+/// Reordering the names used to walk the source and the model in lockstep, so
+/// the first pair that disagreed dropped its entry and every later one with it.
+#[test]
+fn keeps_every_defined_name_when_they_are_reordered() {
+    let workbook_xml = concat!(
+        r#"<workbook><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>"#,
+        r#"<definedNames>"#,
+        r#"<definedName name="Alpha">Sheet1!$A$1</definedName>"#,
+        r#"<definedName name="Bravo">Sheet1!$B$1</definedName>"#,
+        r#"<definedName name="Charlie">Sheet1!$C$1</definedName>"#,
+        r#"</definedNames></workbook>"#,
+    );
+    let mut parts = package(r#"<sheetData/>"#, &[], false);
+    parts[0] = (
+        "xl/workbook.xml".to_owned(),
+        workbook_xml.as_bytes().to_vec(),
+    );
+
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+    let mut workbook = parsed.workbook.clone();
+    workbook.defined_names.reverse();
+
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+    let written = String::from_utf8(part_bytes(&saved, "xl/workbook.xml")).unwrap();
+    for name in ["Alpha", "Bravo", "Charlie"] {
+        assert!(
+            written.contains(&format!(r#"name="{name}""#)),
+            "{name} was dropped: {written}"
+        );
+    }
+
+    let reparsed = parse_workbook(&saved).unwrap();
+    assert_eq!(reparsed.defined_names, workbook.defined_names);
+}
+
+/// A name with no source entry to inherit markup from is written from the
+/// model, rather than left out because the source had nothing to say about it.
+#[test]
+fn writes_a_defined_name_the_model_gained() {
+    let workbook_xml = concat!(
+        r#"<workbook><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>"#,
+        r#"<definedNames>"#,
+        r#"<definedName name="Alpha">Sheet1!$A$1</definedName>"#,
+        r#"</definedNames></workbook>"#,
+    );
+    let mut parts = package(r#"<sheetData/>"#, &[], false);
+    parts[0] = (
+        "xl/workbook.xml".to_owned(),
+        workbook_xml.as_bytes().to_vec(),
+    );
+
+    let parsed = parse_workbook_with_package(&parts).unwrap();
+    let mut workbook = parsed.workbook.clone();
+    workbook.defined_names.push(DefinedName {
+        name: "Bravo".to_owned(),
+        formula: "Sheet1!$B$1".to_owned(),
+        local_sheet: None,
+        hidden: false,
+    });
+
+    let saved = serialize_workbook_with_package(&workbook, &parsed.package).unwrap();
+    let reparsed = parse_workbook(&saved).unwrap();
+    assert_eq!(reparsed.defined_names, workbook.defined_names);
+}
+
 /// A long root prefix used to be repeated on every generated element, turning
 /// a bounded input into quadratic output.
 #[test]
