@@ -1920,6 +1920,20 @@ function notingDocumentWalk<T>(name: string, walk: () => T): T {
   return result;
 }
 
+/**
+ * Compile the editing core before a document asks for it.
+ *
+ * `createYrsSession` reaches the core through two dynamic imports and an 11MB
+ * compile, and it runs after the editor's own bundle has loaded and mounted —
+ * four steps in a row that a host which already knows a DOCX is coming can
+ * overlap by starting this one early. Idempotent, and a failure here is not
+ * one: the session path does the same work again and reports it.
+ */
+export async function warmYrsEngine(): Promise<void> {
+  const wasm = await import('./wasm/index');
+  await wasm.preloadEditWasm();
+}
+
 export async function createYrsSession(options?: CreateYrsSessionOptions): Promise<YrsSession> {
   const clientId = options?.clientId ?? randomClientId();
   const wasm = await import('./wasm/index');
