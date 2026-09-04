@@ -363,6 +363,11 @@ function selectLocale(locale: LocaleCode): void {
 }
 
 function noteRecent(filePath: string): void {
+  // A file the app cannot open has no business in a list whose whole purpose
+  // is reopening things. One used to land here anyway: the entry was written
+  // as soon as the bytes were read, and only the renderer decided the kind was
+  // unsupported — leaving a Recents entry that refuses itself on every click.
+  if (!kindFromPath(filePath)) return
   addRecent(filePath)
   app.addRecentDocument(filePath)
   rebuildMenu()
