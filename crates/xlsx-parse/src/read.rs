@@ -370,6 +370,17 @@ fn parse_worksheet(
                             Some(v) => CellRef::parse_a1(&v).map_err(|_| {
                                 ParseError::Malformed(format!("bad cell ref {v:?}"))
                             })?,
+                            // A reference past the last column is refused above;
+                            // one counted out from the previous cell has to be
+                            // refused the same way. Placing the cell anyway mints
+                            // a column the format cannot express, and the sheet
+                            // then saves an `r="XFE1"` nothing can read back.
+                            None if col_cursor >= MAX_COLS => {
+                                return Err(ParseError::Malformed(format!(
+                                    "row {} has more cells than the sheet has columns",
+                                    cur_row.map_or(1, |row| row.saturating_add(1))
+                                )));
+                            }
                             None => CellRef::new(cur_row.unwrap_or(0), col_cursor),
                         };
                         col_cursor = addr.col;
