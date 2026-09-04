@@ -1,4 +1,4 @@
-import { openingPageWindow } from '../pageWindow';
+import { openingBlockPrefix, openingPageWindow } from '../pageWindow';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   buildRustDisplayFrame,
@@ -217,6 +217,9 @@ export function useRustDisplayList(
   // carries while the main thread keeps the authoritative layout.
   const workerOwnedEngineRef = useRef<YrsSession | null>(null);
   const workerLayoutInputRef = useRef<string | null>(null);
+  // Bumped once an open that laid out only the document's start is on the
+  // screen, to re-run this effect for the pass that lays out the rest.
+  const [layoutCompletions, setLayoutCompletions] = useState(0);
   const workerInputQueueRef = useRef<Promise<void>>(Promise.resolve());
   const suppressWorkerInvalidationRef = useRef(0);
   const [workerSurfacesActive, setWorkerSurfacesActive] = useState(false);
@@ -723,6 +726,7 @@ export function useRustDisplayList(
             queryEngine: engine,
             workerProduced: false,
             caretPainted: false,
+            layoutPartial: false,
           }))
         : buildRustDisplayFrame(buildInputs, engine ?? undefined, snapshotRef.current.frame).then(
             (result) => ({
@@ -731,6 +735,7 @@ export function useRustDisplayList(
               queryEngine: engine,
               workerProduced: false,
               caretPainted: false,
+              layoutPartial: false,
             })
           );
     };
@@ -742,6 +747,8 @@ export function useRustDisplayList(
       queryEngine: RustDisplayListEngine | null | undefined;
       workerProduced: boolean;
       caretPainted: boolean;
+      /** The layout behind this frame stops short of the document's end. */
+      layoutPartial: boolean;
     }>;
     if (owned) {
       const hostEngine = owned.engine;
@@ -794,14 +801,20 @@ export function useRustDisplayList(
           );
         }
         const repaginating = !opening && workerLayoutInputRef.current !== owned.layoutInput;
-        if (repaginating) {
+        // A cleared input is this hook laying out the rest of a document it
+        // opened the start of, not the host changing the request underneath.
+        if (repaginating && workerLayoutInputRef.current !== null) {
           // Not a keystroke's cost. Seeing this per keystroke means something
           // is rebuilding the region request every pass.
           console.warn('[CanvasRenderer] the region request changed; repaginating the document');
         }
         const workerFrame = opening
           ? worker.open(
-              { ...hostEngine.residentWorkerOpen(), pageWindow: openingPageWindow() },
+              {
+                ...hostEngine.residentWorkerOpen(),
+                pageWindow: openingPageWindow(),
+                firstBlocks: openingBlockPrefix(),
+              },
               owned.layoutInput,
               extras
             )
@@ -832,6 +845,7 @@ export function useRustDisplayList(
               queryEngine: null,
               workerProduced: true,
               caretPainted: result.caretPainted,
+              layoutPartial: result.openProfile?.partial === true,
             };
           })
           .catch(lost);
@@ -909,6 +923,7 @@ export function useRustDisplayList(
               queryEngine: null,
               workerProduced: true,
               caretPainted: result.caretPainted,
+              layoutPartial: false,
             };
           })
           .catch(fallback);
@@ -953,6 +968,12 @@ export function useRustDisplayList(
         setSnapshot(nextSnapshot);
         setError(null);
         setLoading(false);
+        // Nothing else will ask for the rest of the document, and until it
+        // lands this one is short: no page count, no keystroke fast path.
+        if (result.layoutPartial) {
+          workerLayoutInputRef.current = null;
+          setLayoutCompletions((completions) => completions + 1);
+        }
         const workerProduced = Boolean(
           result.workerProduced && (owned || probe) && workerRef.current?.client.isReady()
         );
@@ -985,6 +1006,7 @@ export function useRustDisplayList(
       });
   }, [
     layout,
+    layoutCompletions,
     residentOpen,
     overrides,
     fontChainsProviderRef,
@@ -1159,7 +1181,7 @@ function noteResidentOpenCost(profile: YrsOpenProfile | undefined): void {
   console.warn(
     `[CanvasRenderer] resident open phases: session ${ms(profile.sessionMs)}ms · ` +
       `load ${ms(profile.loadMs)}ms · layout ${ms(profile.layoutMs)}ms · ` +
-      `frame ${ms(profile.frameMs)}ms`
+      `frame ${ms(profile.frameMs)}ms${profile.partial ? ' (the document\'s start only)' : ''}`
   );
 }
 

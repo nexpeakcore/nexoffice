@@ -71,6 +71,55 @@ describe('handing a document to a worker to lay out', () => {
     }
   });
 
+  it('lays out only the leading blocks an open restricts it to, and says so', async () => {
+    const bytes = new Uint8Array(readFileSync(DOCX));
+    const font = new Uint8Array(readFileSync(FONT));
+    const parsed = await parseDocx(bytes.buffer as ArrayBuffer, { preloadFonts: false });
+
+    const main = await createYrsSession({ clientId: 73001 });
+    const worker = await createYrsSession({ clientId: 73002 });
+    try {
+      main.seedFromDocx(bytes);
+      const request = {
+        ...buildResidentRegionLayoutRequest(parsed, 24, RENDER_ENV),
+        measurement: measurementFor(main.registerFont(font)),
+      };
+      // Long enough that one block is nowhere near the whole body.
+      const paragraph = main.paragraphs('body')[0];
+      main.insertText(
+        { story: 'body', paraId: paragraph.paraId, offset: 0 },
+        'lorem ipsum dolor sit amet '.repeat(400)
+      );
+
+      const open = main.residentWorkerOpen();
+      worker.loadState(open.state);
+      worker.clearFonts();
+      for (const bytes of open.fonts) worker.registerFont(bytes);
+
+      expect(worker.layoutDocumentWithRegionsVoid(JSON.stringify({ ...request, firstBlocks: 1 })))
+        .toBe(true);
+      const prefix = applyFrameDelta(null, decodeFrameDelta(worker.buildDisplayListFrame('{}', 0)));
+
+      expect(worker.layoutDocumentWithRegionsVoid(JSON.stringify(request))).toBe(false);
+      const whole = applyFrameDelta(
+        prefix,
+        decodeFrameDelta(worker.buildDisplayListFrame('{}', prefix.frameEpoch))
+      );
+
+      expect(prefix.displayList.pages.length).toBeGreaterThan(0);
+      expect(whole.displayList.pages.length).toBeGreaterThan(prefix.displayList.pages.length);
+      const onMain = JSON.parse(main.layoutDocumentWithRegionsSlimJson(JSON.stringify(request))) as {
+        layout: Layout;
+      };
+      expect(whole.displayList.pages.map((page) => page.height)).toEqual(
+        onMain.layout.pages.map((page) => page.size.h)
+      );
+    } finally {
+      main.destroy();
+      worker.destroy();
+    }
+  });
+
   it('re-paginates from updates it was sent, without state being shipped again', async () => {
     const bytes = new Uint8Array(readFileSync(DOCX));
     const font = new Uint8Array(readFileSync(FONT));

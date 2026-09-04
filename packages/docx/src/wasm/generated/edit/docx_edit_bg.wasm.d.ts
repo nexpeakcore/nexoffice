@@ -53,7 +53,7 @@ export const editsession_insert_watermark: (a: number, b: number, c: number, d: 
 export const editsession_layout_document_json: (a: number, b: number, c: number) => [number, number, number, number];
 export const editsession_layout_document_with_regions_json: (a: number, b: number, c: number) => [number, number, number, number];
 export const editsession_layout_document_with_regions_slim_json: (a: number, b: number, c: number) => [number, number, number, number];
-export const editsession_layout_document_with_regions_void: (a: number, b: number, c: number) => [number, number];
+export const editsession_layout_document_with_regions_void: (a: number, b: number, c: number) => [number, number, number];
 export const editsession_layout_font_requirements_json: (a: number, b: number, c: number) => [number, number, number, number];
 export const editsession_list_revisions: (a: number) => [number, number, number, number];
 export const editsession_load_json: (a: number, b: number, c: number) => [number, number, number, number];

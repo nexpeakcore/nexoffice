@@ -221,9 +221,10 @@ export class EditSession {
      */
     layout_document_with_regions_slim_json(input: string): string;
     /**
-     * The pass alone, for hosts that want only the retained state.
+     * The pass alone, for hosts that want only the retained state. `true`
+     * means the request restricted it to a prefix of the body.
      */
-    layout_document_with_regions_void(input: string): void;
+    layout_document_with_regions_void(input: string): boolean;
     layout_font_requirements_json(input: string): string;
     /**
      * Every tracked-change run/paragraph-mark revision across all stories,
@@ -784,7 +785,7 @@ export interface InitOutput {
     readonly editsession_layout_document_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly editsession_layout_document_with_regions_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly editsession_layout_document_with_regions_slim_json: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly editsession_layout_document_with_regions_void: (a: number, b: number, c: number) => [number, number];
+    readonly editsession_layout_document_with_regions_void: (a: number, b: number, c: number) => [number, number, number];
     readonly editsession_layout_font_requirements_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly editsession_list_revisions: (a: number) => [number, number, number, number];
     readonly editsession_load_json: (a: number, b: number, c: number) => [number, number, number, number];

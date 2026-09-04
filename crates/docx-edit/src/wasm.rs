@@ -1083,8 +1083,9 @@ impl EditSession {
             .map_err(|error| JsValue::from_str(&error))
     }
 
-    /// The pass alone, for hosts that want only the retained state.
-    pub fn layout_document_with_regions_void(&self, input: &str) -> Result<(), JsValue> {
+    /// The pass alone, for hosts that want only the retained state. `true`
+    /// means the request restricted it to a prefix of the body.
+    pub fn layout_document_with_regions_void(&self, input: &str) -> Result<bool, JsValue> {
         self.engine
             .layout_document_with_regions_void(input)
             .map_err(|error| JsValue::from_str(&error))

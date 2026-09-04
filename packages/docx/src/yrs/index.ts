@@ -490,6 +490,12 @@ export interface YrsResidentWorkerOpen {
    * document out did.
    */
   pageWindow?: { start: number; count: number };
+  /**
+   * Lay out only this many leading blocks. What the reader waits for is the
+   * first page, not the last; the host paints this pass and then asks for the
+   * document again without a restriction.
+   */
+  firstBlocks?: number;
 }
 
 /**
@@ -679,8 +685,11 @@ export interface YrsSession extends CollaborationReplica {
   layoutDocumentWithRegionsJson(input: string): string;
   /** The same pass without the measured blocks, which stay retained here. */
   layoutDocumentWithRegionsSlimJson(input: string): string;
-  /** The same pass with no envelope at all, for retained state only. */
-  layoutDocumentWithRegionsVoid(input: string): void;
+  /**
+   * The same pass with no envelope at all, for retained state only. `true`
+   * means `firstBlocks` restricted it to the start of the body.
+   */
+  layoutDocumentWithRegionsVoid(input: string): boolean;
   /** Build display primitives against the session's resident font store. */
   buildDisplayListJson(input: string): string;
   /**
@@ -1257,10 +1266,11 @@ function wrapSession(session: EditSession, clientId: number): YrsSession {
       return output;
     },
     layoutDocumentWithRegionsVoid: (input) => {
-      session.layout_document_with_regions_void(input);
+      const partial = session.layout_document_with_regions_void(input);
       residentLayoutInput = input;
       residentLayoutWithRegions = true;
       residentLayoutRevision += 1;
+      return partial;
     },
     buildDisplayListJson: (input) => session.build_display_list_json(input),
     setPageWindow: (start, count) => session.set_page_window(start, count),

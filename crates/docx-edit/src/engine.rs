@@ -68,6 +68,12 @@ struct MeasurementState {
     resident_reused_blocks: u64,
 }
 
+/// What one region pass settled, beyond the layout it retained.
+struct RegionPass {
+    notes_converged: bool,
+    partial: bool,
+}
+
 #[derive(Debug)]
 struct ResidentRegionState {
     request_json: String,
@@ -993,9 +999,12 @@ impl EngineSession {
 
     /// The pass alone, for hosts that want only the retained state. Building
     /// an envelope nobody reads is what the resident worker used to do.
-    pub fn layout_document_with_regions_void(&self, input_json: &str) -> Result<(), String> {
+    /// Returns whether the pass covered only a prefix of the body
+    /// (`firstBlocks`), which the host answers with a second, unrestricted
+    /// pass once the first one is on the screen.
+    pub fn layout_document_with_regions_void(&self, input_json: &str) -> Result<bool, String> {
         self.layout_document_with_regions_value(input_json)
-            .map(drop)
+            .map(|pass| pass.partial)
     }
 
     fn region_layout_envelope(
@@ -1003,7 +1012,9 @@ impl EngineSession {
         input_json: &str,
         include_measured: bool,
     ) -> Result<String, String> {
-        let notes_converged = self.layout_document_with_regions_value(input_json)?;
+        let notes_converged = self
+            .layout_document_with_regions_value(input_json)?
+            .notes_converged;
         let pagination = self.pagination.borrow();
         let regions_state = self.regions.borrow();
         let state = regions_state
@@ -1027,10 +1038,11 @@ impl EngineSession {
     /// The full region pass minus the JSON envelope: pagination, note
     /// stabilization, and header/footer measurement all land in retained
     /// state. `apply_input`'s fallback consumes this directly so a keystroke
-    /// never serializes a layout nobody reads. Returns `notes_converged`.
-    fn layout_document_with_regions_value(&self, input_json: &str) -> Result<bool, String> {
+    /// never serializes a layout nobody reads.
+    fn layout_document_with_regions_value(&self, input_json: &str) -> Result<RegionPass, String> {
         let request: RegionLayoutInput =
             serde_json::from_str(input_json).map_err(|error| format!("parse: {error}"))?;
+        let first_blocks = request.first_blocks;
         let (mut input, regions, mut notes, measurement, render_env, body_story) = request.split();
         let parsed_render_env = if render_env.is_null() {
             None
@@ -1041,6 +1053,7 @@ impl EngineSession {
             )
         };
         let resident_body = body_story.is_some();
+        let mut partial = false;
         if let Some(story) = body_story.as_deref() {
             let render_env = parsed_render_env
                 .as_ref()
@@ -1048,6 +1061,10 @@ impl EngineSession {
             let mut blocks = self
                 .with_lowered_story(story, render_env, <[LayoutBlock]>::to_vec)
                 .map_err(|error| error.to_string())?;
+            if let Some(prefix) = first_blocks.filter(|prefix| *prefix < blocks.len()) {
+                blocks.truncate(prefix);
+                partial = true;
+            }
             apply_section_geometry_to_blocks(&mut blocks, &mut input.options, &regions);
             let widths = region_measurement_widths(&blocks, &input, &regions);
             let geometry = initial_float_page_geometry(&input, &regions);
@@ -1159,17 +1176,36 @@ impl EngineSession {
         // baked into the retained headers/footers payload. With one section,
         // an unchanged page count implies unchanged labels.
         let single_section = regions.sections.len() <= 1;
+        // Replaying a prefix request would lay the document out short of its
+        // end, so what is retained for the fallback pass is the same request
+        // without the restriction.
+        let retained_request = if partial {
+            let mut value: serde_json::Value =
+                serde_json::from_str(input_json).map_err(|error| format!("parse: {error}"))?;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("firstBlocks");
+            }
+            serde_json::to_string(&value).map_err(|error| format!("serialize request: {error}"))?
+        } else {
+            input_json.to_owned()
+        };
         drop(pagination);
         self.regions.replace(Some(ResidentRegionState {
-            request_json: input_json.to_owned(),
+            request_json: retained_request,
             headers_footers,
-            fast_path: (resident_body && single_section).then(|| RegionFastPathState {
+            // A prefix pass paginated a document that stops early. Nothing may
+            // edit against it, so the keystroke fast path stays shut until the
+            // unrestricted pass replaces this state.
+            fast_path: (resident_body && single_section && !partial).then(|| RegionFastPathState {
                 regions: Rc::new(regions),
                 measurement: Rc::new(measurement),
                 notes_clear,
             }),
         }));
-        Ok(notes_converged)
+        Ok(RegionPass {
+            notes_converged,
+            partial,
+        })
     }
 
     fn measure_resident_notes(
@@ -2859,6 +2895,167 @@ mod tests {
         }
     }
 
+    /// A prefix pass paints the document's start without measuring its end.
+    #[test]
+    fn first_blocks_paginates_a_prefix_and_keeps_the_fallback_whole() {
+        const FONT: &[u8] =
+            include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
+        const PARAGRAPHS: usize = 120;
+        docx_layout::clear_measure_fonts();
+        let font_id = docx_layout::register_measure_font(FONT).unwrap();
+        let engine = EngineSession::new(141);
+        engine
+            .doc()
+            .create_story("body", "", "Normal", "left")
+            .unwrap();
+        let ctx = crate::EditCtx::local("", "");
+        let mut cursor = 0_u32;
+        for index in 0..PARAGRAPHS {
+            let text = format!("Paragraph {index}: the quick brown fox jumps over the lazy dog.");
+            engine
+                .doc()
+                .insert_text(
+                    &ctx,
+                    crate::Position::new("body", cursor),
+                    &text,
+                    crate::FormatPolicy::Inherit,
+                )
+                .unwrap();
+            cursor += text.chars().count() as u32;
+            if index + 1 < PARAGRAPHS {
+                engine
+                    .doc()
+                    .split_paragraph(&ctx, crate::Position::new("body", cursor), None)
+                    .unwrap();
+                cursor += 1;
+            }
+        }
+        let request = |first_blocks: Option<usize>| {
+            let mut value = serde_json::json!({
+                "bodyStory": "body",
+                "regions": {"sections": [{
+                    "sectionId": "main",
+                    "pageSize": {"w": 816, "h": 1056},
+                    "margins": {"top": 96, "right": 96, "bottom": 96, "left": 96,
+                                "header": 48, "footer": 48}
+                }]},
+                "measurement": {
+                    "fontChains": {"calibri|0|0": [font_id]},
+                    "defaults": {"fontSize": 11, "fontFamily": "Calibri"},
+                    "authoritativeShaping": true
+                },
+                "renderEnv": {}
+            });
+            if let Some(first_blocks) = first_blocks {
+                value["firstBlocks"] = serde_json::json!(first_blocks);
+            }
+            value.to_string()
+        };
+
+        assert!(
+            !engine
+                .layout_document_with_regions_void(&request(None))
+                .unwrap(),
+            "an unrestricted request is never partial"
+        );
+        let whole = engine
+            .pagination
+            .borrow()
+            .layout
+            .as_ref()
+            .unwrap()
+            .pages
+            .len();
+
+        assert!(
+            engine
+                .layout_document_with_regions_void(&request(Some(12)))
+                .unwrap(),
+            "a request that stops short of the body reports itself partial"
+        );
+        let prefix = engine
+            .pagination
+            .borrow()
+            .layout
+            .as_ref()
+            .unwrap()
+            .pages
+            .len();
+        assert!(
+            prefix < whole,
+            "{prefix} pages is the whole {whole}-page body"
+        );
+
+        let regions = engine.regions.borrow();
+        let state = regions.as_ref().expect("region state is retained");
+        assert!(
+            state.fast_path.is_none(),
+            "nothing may edit against a truncated document"
+        );
+        assert!(
+            !state.request_json.contains("firstBlocks"),
+            "the fallback pass must lay out the whole body"
+        );
+
+        drop(regions);
+
+        // An edit that arrives before the unrestricted pass does must not
+        // shorten the document: it takes the fallback, which lays out all of
+        // it, and the typed text is in the story either way.
+        let extras = serde_json::json!({"fontChains": {"calibri|0|0": [font_id]}}).to_string();
+        engine.build_display_list_frame(&extras, 0).unwrap();
+        let epoch = engine.display.borrow().binary_frame_epoch;
+        engine
+            .doc()
+            .insert_text(
+                &ctx,
+                crate::Position::new("body", 0),
+                "ZQX",
+                crate::FormatPolicy::Inherit,
+            )
+            .unwrap();
+        engine.apply_and_layout("body", epoch).unwrap();
+        assert_eq!(
+            engine
+                .pagination
+                .borrow()
+                .layout
+                .as_ref()
+                .unwrap()
+                .pages
+                .len(),
+            whole,
+            "an edit during the prefix window laid the whole document out"
+        );
+        assert!(
+            engine
+                .doc()
+                .paragraphs("body")
+                .unwrap()
+                .first()
+                .is_some_and(|paragraph| paragraph.text.starts_with("ZQXParagraph 0")),
+            "the text typed during the prefix window is in the story"
+        );
+
+        assert!(
+            !engine
+                .layout_document_with_regions_void(&request(Some(PARAGRAPHS * 2)))
+                .unwrap(),
+            "a prefix past the end of the body restricts nothing"
+        );
+        assert_eq!(
+            engine
+                .pagination
+                .borrow()
+                .layout
+                .as_ref()
+                .unwrap()
+                .pages
+                .len(),
+            whole
+        );
+    }
+
     /// Compares resident and full region passes on a paragraph-heavy document.
     /// Run: `cargo test -p betteroffice-docx-edit --release --lib -- --ignored perf_probe --nocapture`
     #[test]
@@ -4060,6 +4257,101 @@ mod tests {
             "\"paragraph\" strings",
             paragraphs,
             mb(node_type_bytes)
+        );
+    }
+
+    /// What opening a document waits on, stage by stage, against what the
+    /// reader actually waits for: the pass that paints the first pages.
+    ///
+    ///   cargo test -p betteroffice-docx-edit --release --features yrs-cursor \
+    ///     --lib open_timing -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx"]
+    fn open_timing() {
+        const FONT: &[u8] =
+            include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        const FIRST_BLOCKS: usize = 96;
+        let bytes = std::fs::read(&path).expect("fixture");
+        docx_layout::clear_measure_fonts();
+        let font_id = docx_layout::register_measure_font(FONT).unwrap();
+        let request = serde_json::json!({
+            "bodyStory": "body",
+            "options": {"pageGap": 24},
+            "regions": {
+                "sections": [{
+                    "sectionId": "main",
+                    "pageSize": {"w": 816, "h": 1056},
+                    "margins": {"top": 96, "right": 96, "bottom": 96, "left": 96,
+                                "header": 48, "footer": 48}
+                }]
+            },
+            "notes": {"contents": []},
+            "measurement": {
+                "fontChains": {"calibri|0|0": [font_id], "calibri|0|1": [font_id],
+                               "calibri|1|0": [font_id]},
+                "defaults": {"fontSize": 24, "fontFamily": "Calibri"},
+                "authoritativeShaping": true
+            },
+            "renderEnv": {}
+        })
+        .to_string();
+
+        let mut at = std::time::Instant::now();
+        let mut stage = |label: &str| {
+            println!(
+                "{label:<24} {:>8.1} ms",
+                at.elapsed().as_secs_f64() * 1000.0
+            );
+            at = std::time::Instant::now();
+        };
+
+        let engine = EngineSession::new(3009);
+        let envelope = crate::seed::parse_docx_for_edit(&bytes).expect("parse");
+        stage("parse");
+        crate::seed::seed_parsed_docx(engine.doc(), envelope).expect("seed");
+        stage("seed");
+        let state = engine.doc().encode_state_as_update_v1();
+        stage("encode state");
+        let replica = EngineSession::new(4011);
+        replica.doc().apply_update_v1(&state).expect("load");
+        stage("load state");
+        let mut prefixed: serde_json::Value = serde_json::from_str(&request).unwrap();
+        prefixed["firstBlocks"] = serde_json::json!(FIRST_BLOCKS);
+        assert!(
+            replica
+                .layout_document_with_regions_void(&prefixed.to_string())
+                .unwrap()
+        );
+        stage("layout (prefix)");
+        replica.set_page_window(Some(0..12));
+        let first = replica.build_display_list_frame("{}", 0).unwrap();
+        stage("frame  (prefix)");
+        let pages = |session: &EngineSession| {
+            session
+                .pagination
+                .borrow()
+                .layout
+                .as_ref()
+                .unwrap()
+                .pages
+                .len()
+        };
+        println!(
+            "  {} pages, {:.1} MB  <- what the reader waits for\n",
+            pages(&replica),
+            first.len() as f64 / (1024.0 * 1024.0)
+        );
+
+        replica.layout_document_with_regions_void(&request).unwrap();
+        stage("layout (whole)");
+        let frame = replica.build_display_list_frame("{}", 0).unwrap();
+        stage("frame  (whole)");
+        println!(
+            "  {} pages, {:.1} MB",
+            pages(&replica),
+            frame.len() as f64 / (1024.0 * 1024.0)
         );
     }
 

@@ -371,6 +371,12 @@ pub struct RegionLayoutInput {
     pub measurement: MeasurementConfig,
     #[serde(default)]
     pub render_env: Value,
+    /// Lay out only this many leading blocks. A document opens at its first
+    /// page, and measuring every block before painting any of them is what a
+    /// long document waits on; the host asks for a prefix, paints, then asks
+    /// again without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_blocks: Option<usize>,
 }
 
 impl RegionLayoutInput {
