@@ -1145,6 +1145,56 @@ fn writes_a_defined_name_the_model_gained() {
     assert_eq!(reparsed.defined_names, workbook.defined_names);
 }
 
+/// A spilled result reopens as the formula's own output. Without the array
+/// reference the values look like somebody else's data, and the formula that
+/// wrote them refuses to spill over them.
+#[test]
+fn an_array_formulas_result_survives_the_round_trip() {
+    let body = concat!(
+        r#"<sheetData>"#,
+        r#"<row r="1"><c r="A1"><f t="array" ref="A1:A3">SEQUENCE(3)</f><v>1</v></c></row>"#,
+        r#"<row r="2"><c r="A2"><v>2</v></c></row>"#,
+        r#"<row r="3"><c r="A3"><v>3</v></c></row>"#,
+        r#"</sheetData>"#,
+    );
+    let wb = parse_workbook(&package(body, &[], false)).unwrap();
+    let sheet = &wb.sheets[0];
+    assert_eq!(
+        sheet.spill(CellRef::parse_a1("A1").unwrap()),
+        Some(CellRange::parse_a1("A1:A3").unwrap()),
+        "the region the formula reaches"
+    );
+    assert_eq!(
+        sheet.spill_owner(CellRef::parse_a1("A2").unwrap()),
+        Some(CellRef::parse_a1("A1").unwrap()),
+        "and who owns the cells inside it"
+    );
+
+    let saved = serialize_workbook(&wb).unwrap();
+    let written = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(
+        written.contains(r#"<f t="array" ref="A1:A3">"#),
+        "{written}"
+    );
+    let reparsed = parse_workbook(&saved).unwrap();
+    assert_eq!(
+        reparsed.sheets[0].spill(CellRef::parse_a1("A1").unwrap()),
+        sheet.spill(CellRef::parse_a1("A1").unwrap())
+    );
+}
+
+/// An ordinary formula keeps its plain `<f>`.
+#[test]
+fn a_formula_that_reaches_one_cell_writes_no_array_reference() {
+    let body = r#"<sheetData><row r="1"><c r="A1"><f>1+1</f><v>2</v></c></row></sheetData>"#;
+    let wb = parse_workbook(&package(body, &[], false)).unwrap();
+    assert_eq!(wb.sheets[0].spill(CellRef::parse_a1("A1").unwrap()), None);
+    let saved = serialize_workbook(&wb).unwrap();
+    let written = String::from_utf8(part_bytes(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(written.contains("<f>1+1</f>"), "{written}");
+    assert!(!written.contains("t=\"array\""), "{written}");
+}
+
 /// A long root prefix used to be repeated on every generated element, turning
 /// a bounded input into quadratic output.
 #[test]

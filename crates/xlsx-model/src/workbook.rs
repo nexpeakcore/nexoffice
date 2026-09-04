@@ -115,6 +115,11 @@ pub struct Sheet {
     pub manual_hidden_rows: BTreeSet<RowId>,
     pub auto_filter: Option<AutoFilter>,
     pub comments: BTreeMap<(RowId, ColId), Comment>,
+    /// Where an array formula's result reaches, keyed by the cell holding the
+    /// formula. The rest of the region is written as ordinary cells so every
+    /// reader sees the values; this says who owns them, so a recalculation can
+    /// take them back and an edit can be refused.
+    spills: BTreeMap<(RowId, ColId), CellRange>,
     /// Charts anchored on this sheet, parsed for display only — edits never
     /// touch them and saves re-emit the preserved source parts.
     pub drawings: Vec<SheetDrawing>,
@@ -166,6 +171,35 @@ impl Sheet {
 
     pub fn cell(&self, at: CellRef) -> Option<&Cell> {
         self.cells.get(&(at.row, at.col))
+    }
+
+    /// The region the array formula at `anchor` reaches, `anchor` included.
+    pub fn spill(&self, anchor: CellRef) -> Option<CellRange> {
+        self.spills.get(&(anchor.row, anchor.col)).copied()
+    }
+
+    /// The array formula whose result `at` belongs to, if any. The anchor
+    /// itself belongs to its own region.
+    pub fn spill_owner(&self, at: CellRef) -> Option<CellRef> {
+        self.spills
+            .iter()
+            .find(|(_, range)| range.contains(at))
+            .map(|(&(row, col), _)| CellRef::new(row, col))
+    }
+
+    pub fn set_spill(&mut self, anchor: CellRef, region: CellRange) {
+        self.spills.insert((anchor.row, anchor.col), region);
+    }
+
+    /// Forget the region without touching the cells it covered.
+    pub fn clear_spill(&mut self, anchor: CellRef) -> Option<CellRange> {
+        self.spills.remove(&(anchor.row, anchor.col))
+    }
+
+    pub fn iter_spills(&self) -> impl Iterator<Item = (CellRef, CellRange)> + '_ {
+        self.spills
+            .iter()
+            .map(|(&(row, col), range)| (CellRef::new(row, col), *range))
     }
 
     pub fn set_cell(&mut self, at: CellRef, cell: Cell) {

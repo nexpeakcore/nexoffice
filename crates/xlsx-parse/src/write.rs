@@ -10,7 +10,7 @@ use quick_xml::Writer;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use xlsx_model::addr::{ColId, MAX_COLS, MAX_ROWS, RowId};
 use xlsx_model::styles::{Alignment, Border, BorderEdge, Color, Fill, Font, Stylesheet, Xf};
-use xlsx_model::{Cell, CellRef, CellValue, DateSystem, Sheet, Workbook};
+use xlsx_model::{Cell, CellRange, CellRef, CellValue, DateSystem, Sheet, Workbook};
 
 use crate::ParseError;
 use crate::drawing_write::{self, EmittedDrawing};
@@ -3586,7 +3586,7 @@ fn write_row(
                 .or_else(|| sst_index.get(value.as_str()).copied()),
             _ => None,
         };
-        write_cell(w, addr, cell, sst_index, retained)?;
+        write_cell(w, addr, cell, sst_index, retained, sheet.spill(addr))?;
     }
     w.write_event(Event::End(BytesEnd::new("row")))?;
     Ok(())
@@ -3600,6 +3600,7 @@ fn write_cell(
     cell: &Cell,
     sst_index: &HashMap<&str, usize>,
     retained: Option<usize>,
+    spill: Option<CellRange>,
 ) -> io::Result<()> {
     let a1 = addr.to_a1();
     let has_formula = cell.formula.is_some();
@@ -3643,8 +3644,19 @@ fn write_cell(
     }
     w.write_event(Event::Start(start))?;
     if let Some(f) = &cell.formula {
-        w.create_element("f")
-            .write_text_content(BytesText::new(f))?;
+        let element = match spill {
+            // The legacy array-formula spelling, which every reader of the
+            // format understands: the anchor owns a region, the cells in it
+            // carry the values. Without it a reopened workbook sees this
+            // formula's own result as somebody else's data and refuses to
+            // spill over it.
+            Some(region) => w
+                .create_element("f")
+                .with_attribute(("t", "array"))
+                .with_attribute(("ref", region.to_a1().as_str())),
+            None => w.create_element("f"),
+        };
+        element.write_text_content(BytesText::new(f))?;
     }
     if let Some(v) = &value {
         w.create_element("v")
