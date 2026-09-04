@@ -140,6 +140,7 @@
     "saved": "{path} disimpan",
     "saveCanceled": "Penyimpanan dibatalkan",
     "saveFailed": "Gagal menyimpan: {message}",
+    "saveProducedNothing": "editor tidak dapat menghasilkan dokumen, jadi tidak ada yang ditulis",
     "saveRefused": "Tidak tersimpan — {message}",
     "openFirst": "Buka dokumen terlebih dahulu",
     "openWordFirst": "Buka dokumen Word terlebih dahulu",

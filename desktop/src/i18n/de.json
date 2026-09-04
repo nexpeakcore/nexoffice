@@ -140,6 +140,7 @@
     "saved": "{path} gespeichert",
     "saveCanceled": "Speichern abgebrochen",
     "saveFailed": "Speichern fehlgeschlagen: {message}",
+    "saveProducedNothing": "Der Editor konnte das Dokument nicht erzeugen, daher wurde nichts geschrieben",
     "saveRefused": "Nicht gespeichert — {message}",
     "openFirst": "Öffnen Sie zuerst ein Dokument",
     "openWordFirst": "Öffnen Sie zuerst ein Word-Dokument",

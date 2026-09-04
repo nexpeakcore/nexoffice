@@ -140,6 +140,7 @@
     "saved": "Saved {path}",
     "saveCanceled": "Save canceled",
     "saveFailed": "Save failed: {message}",
+    "saveProducedNothing": "the editor could not produce the document, so nothing was written",
     "saveRefused": "Not saved — {message}",
     "openFirst": "Open a document first",
     "openWordFirst": "Open a Word document first",

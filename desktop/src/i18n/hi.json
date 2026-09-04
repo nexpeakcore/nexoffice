@@ -140,6 +140,7 @@
     "saved": "{path} सहेजा गया",
     "saveCanceled": "सहेजना रद्द किया गया",
     "saveFailed": "सहेजना विफल: {message}",
+    "saveProducedNothing": "संपादक दस्तावेज़ नहीं बना सका, इसलिए कुछ भी नहीं लिखा गया",
     "saveRefused": "सहेजा नहीं गया — {message}",
     "openFirst": "पहले कोई दस्तावेज़ खोलें",
     "openWordFirst": "पहले कोई Word दस्तावेज़ खोलें",

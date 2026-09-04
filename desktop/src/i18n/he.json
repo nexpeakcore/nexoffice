@@ -140,6 +140,7 @@
     "saved": "{path} נשמר",
     "saveCanceled": "השמירה בוטלה",
     "saveFailed": "השמירה נכשלה: {message}",
+    "saveProducedNothing": "העורך לא הצליח להפיק את המסמך, ולכן דבר לא נכתב",
     "saveRefused": "לא נשמר — {message}",
     "openFirst": "פתח מסמך תחילה",
     "openWordFirst": "פתח מסמך Word תחילה",

@@ -74,6 +74,18 @@ export function saveRefusal(error: unknown): string | null {
   return fault?.undoingHelps === true ? fault.reason : null
 }
 
+/**
+ * Whether the bytes a document opened with still stand for its content.
+ *
+ * They do until something is edited. After that the edit lives nowhere but the
+ * editor, so an editor that cannot produce bytes has failed to write — saving
+ * the seed there would report success for the document as it was before the
+ * first keystroke, and leave the file on disk missing every change.
+ */
+export function seedStandsIn(editGeneration: number, savedGeneration: number): boolean {
+  return editGeneration === savedGeneration
+}
+
 export function saveOutcomeStatus(outcome: SaveOutcome): StatusMessage {
   switch (outcome.status) {
     case 'saved':

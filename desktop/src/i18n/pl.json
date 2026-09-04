@@ -140,6 +140,7 @@
     "saved": "Zapisano {path}",
     "saveCanceled": "Zapisywanie anulowane",
     "saveFailed": "Zapisywanie nie powiodło się: {message}",
+    "saveProducedNothing": "edytor nie mógł utworzyć dokumentu, więc nic nie zostało zapisane",
     "saveRefused": "Nie zapisano — {message}",
     "openFirst": "Najpierw otwórz dokument",
     "openWordFirst": "Najpierw otwórz dokument Word",

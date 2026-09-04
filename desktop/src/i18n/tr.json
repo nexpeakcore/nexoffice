@@ -140,6 +140,7 @@
     "saved": "{path} kaydedildi",
     "saveCanceled": "Kaydetme iptal edildi",
     "saveFailed": "Kaydetme başarısız: {message}",
+    "saveProducedNothing": "düzenleyici belgeyi oluşturamadı, bu yüzden hiçbir şey yazılmadı",
     "saveRefused": "Kaydedilmedi — {message}",
     "openFirst": "Önce bir belge açın",
     "openWordFirst": "Önce bir Word belgesi açın",
