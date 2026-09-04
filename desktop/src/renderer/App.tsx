@@ -77,6 +77,20 @@ const PptxEditorView = lazy(() =>
   import('./editors/PptxEditorView.js').then((m) => ({ default: m.PptxEditorView })),
 )
 
+/**
+ * Start compiling the DOCX editing core the moment a DOCX is known to be
+ * opening, rather than after the editor's bundle has loaded and mounted. The
+ * core is reached through two dynamic imports and an 11MB compile that all sit
+ * behind the mount today; this puts them alongside it. Speculative for nothing
+ * — the format is already decided — and a failure is not one, because the
+ * session path does the same work again and reports it.
+ */
+function warmDocxEngine(): void {
+  void import('@betteroffice/docx/yrs')
+    .then((yrs) => yrs.warmYrsEngine())
+    .catch(() => {})
+}
+
 const ZOOM_MIN = 0.5
 const ZOOM_MAX = 2
 const ZOOM_STEP = 0.25
@@ -424,6 +438,7 @@ export function App() {
       setStatus({ key: 'status.unsupported', vars: { name: opened.name } })
       return
     }
+    if (kind === 'docx') warmDocxEngine()
     savedGenerationRef.current = editGenerationRef.current
     setRefusal(null)
     setStaleExportTarget(null)
