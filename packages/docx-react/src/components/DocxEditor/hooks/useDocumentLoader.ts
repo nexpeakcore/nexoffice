@@ -16,6 +16,8 @@ import {
   type DocxInput,
 } from '@betteroffice/docx/utils';
 import type { FontOption } from '@betteroffice/docx/utils/fontOptions';
+import type { BundledFontProvider } from '@betteroffice/docx/layout';
+import { warmMeasurementFaces } from './warmMeasurementFaces';
 import type { UseHistoryReturn } from '../../../hooks/useHistory';
 import type { PagedEditorRef } from '../PagedEditor';
 import type { CommentIdAllocator } from '../commentFactories';
@@ -44,6 +46,7 @@ export function useDocumentLoader({
   commentsLoadedRef,
   commentIdAllocator,
   setDocumentFonts,
+  measurementFontProvider,
 }: {
   documentBuffer: DocxInput | null | undefined;
   initialDocument: Document | null | undefined;
@@ -66,6 +69,9 @@ export function useDocumentLoader({
   // (embedded or system-resolved), surfaced in the picker's "Document fonts"
   // group.
   setDocumentFonts: (fonts: FontOption[]) => void;
+  // The measurement face resolver, so this document's families can be fetched
+  // as soon as they are known rather than mid-layout. See `warmMeasurementFaces`.
+  measurementFontProvider?: BundledFontProvider;
 }) {
   // The live history document changes after every edit, but yrs must only be
   // reseeded when a new source document is loaded. Keep that load boundary
@@ -164,6 +170,9 @@ export function useDocumentLoader({
       setDocumentFonts(
         [...new Map(documentFonts.map((font) => [font.name.toLowerCase(), font])).values()]
       );
+      if (measurementFontProvider) {
+        warmMeasurementFaces(measurementFontProvider, host.referencedFonts);
+      }
       // This document's own claim, taken before the previous one is given
       // back: a face both documents embed is registered once, and releasing
       // the old claim first would take it away from under this load.
@@ -197,7 +206,7 @@ export function useDocumentLoader({
           console.warn('Failed to load document fonts:', error);
         });
     },
-    [loadGeneration, history, setDocumentFonts, setLoadingState]
+    [loadGeneration, history, measurementFontProvider, setDocumentFonts, setLoadingState]
   );
 
   const failHostDocument = useCallback(
