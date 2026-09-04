@@ -79,18 +79,39 @@ const PptxEditorView = lazy(() =>
 )
 
 /**
- * Start compiling the DOCX editing core the moment a DOCX is known to be
- * opening, rather than after the editor's bundle has loaded and mounted. The
- * core is reached through two dynamic imports and an 11MB compile that all sit
- * behind the mount today; this puts them alongside it. Speculative for nothing
- * — the format is already decided — and a failure is not one, because the
- * session path does the same work again and reports it.
+ * Start the work a DOCX open ends up waiting on, the moment one is known to be
+ * opening rather than after the editor's bundle has loaded and mounted.
+ *
+ * The editing core is reached through two dynamic imports and an 11MB compile.
+ * The last-resort faces are fetched only once measurement has loaded the
+ * document's own font and found a glyph missing from it, which puts two font
+ * loads in series behind the layout — 680ms of a 2.2s open, and the second
+ * round starts only when the first lands.
+ *
+ * Speculative for nothing: the format is already decided, and every document
+ * that reaches measurement reaches the last resort. A failure here is not one
+ * either, because both paths do the same work again and report it.
  */
-function warmDocxEngine(): void {
+function warmDocxOpen(): void {
   void import('@betteroffice/docx/yrs')
     .then((yrs) => yrs.warmYrsEngine())
     .catch(() => {})
+  void import('@betteroffice/docx-fonts')
+    .then(({ loadBundledFontBytes, resolveLastResortFace }) =>
+      Promise.all(
+        LAST_RESORT_STYLES.map(([bold, italic]) =>
+          loadBundledFontBytes(resolveLastResortFace('Arial', bold, italic)),
+        ),
+      ),
+    )
+    .catch(() => {})
 }
+
+const LAST_RESORT_STYLES: ReadonlyArray<readonly [boolean, boolean]> = [
+  [false, false],
+  [true, false],
+  [false, true],
+]
 
 const ZOOM_MIN = 0.5
 const ZOOM_MAX = 2
@@ -443,7 +464,7 @@ export function App() {
       setStatus({ key: 'status.unsupported', vars: { name: opened.name } })
       return
     }
-    if (kind === 'docx') warmDocxEngine()
+    if (kind === 'docx') warmDocxOpen()
     savedGenerationRef.current = editGenerationRef.current
     setRefusal(null)
     setStaleExportTarget(null)
