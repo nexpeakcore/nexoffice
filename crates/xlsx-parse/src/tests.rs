@@ -3358,3 +3358,29 @@ fn cache_only_chart_series_round_trip_as_literals() {
     assert_eq!(series.values, [10.0, 25.0]);
     assert_eq!(series.categories, ["North", "South"]);
 }
+
+/// A row whose implicit columns run past XFD used to mint column 16384: the
+/// sheet opened, then saved an `r="XFE1"` that neither Excel nor this parser
+/// could read back.
+#[test]
+fn a_row_running_past_the_last_column_is_refused_like_a_bad_reference() {
+    let implicit =
+        r#"<sheetData><row r="1"><c r="XFD1"><v>1</v></c><c><v>2</v></c></row></sheetData>"#;
+    let error = parse_workbook(&package(implicit, &[], false)).expect_err("no column follows XFD");
+    assert!(matches!(error, ParseError::Malformed(_)), "{error:?}");
+
+    // Which is how the same address spelled out has always been treated.
+    let explicit = r#"<sheetData><row r="1"><c r="XFE1"><v>2</v></c></row></sheetData>"#;
+    assert!(parse_workbook(&package(explicit, &[], false)).is_err());
+
+    // The last column itself still counts out from its neighbour.
+    let ok = r#"<sheetData><row r="1"><c r="XFC1"><v>1</v></c><c><v>2</v></c></row></sheetData>"#;
+    let wb = parse_workbook(&package(ok, &[], false)).unwrap();
+    assert!(
+        wb.sheets[0]
+            .cell(CellRef::parse_a1("XFD1").unwrap())
+            .is_some()
+    );
+    let saved = serialize_workbook(&wb).unwrap();
+    parse_workbook(&saved).expect("what this writes, it can read back");
+}
