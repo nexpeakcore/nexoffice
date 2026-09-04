@@ -304,6 +304,10 @@ struct CellBuild {
     value_text: Option<String>,
     inline_text: Option<String>,
     formula: Option<String>,
+    /// `<f t="array" ref="A1:A3">`: where this formula's result reaches. The
+    /// cells it covers are read as ordinary values, and this is what says they
+    /// belong to the formula rather than to whoever typed them.
+    array_ref: Option<CellRange>,
 }
 
 /// in-progress auto-filter column state: the modeled criteria plus the offset
@@ -399,9 +403,15 @@ fn parse_worksheet(
                         }
                     }
                     b"f" => {
+                        let array = matches!(attr(&e, b"t")?.as_deref(), Some("array"))
+                            .then(|| attr(&e, b"ref"))
+                            .transpose()?
+                            .flatten()
+                            .and_then(|reference| CellRange::parse_a1(&reference).ok());
                         let text = collect_text(&mut reader, &mut buf, &mut depth)?;
                         if let Some(c) = cur.as_mut() {
                             c.formula = Some(text);
+                            c.array_ref = array;
                         }
                     }
                     b"is" => {
@@ -803,6 +813,12 @@ fn finalize_cell(
     };
     if cell != Cell::default() {
         sheet.set_cell(addr, cell);
+    }
+    // Recorded even for a single-cell `ref`: it is what tells a recalculation
+    // that the cells under it are this formula's own output, so growing back
+    // over them is not blocked by them.
+    if let Some(region) = c.array_ref {
+        sheet.set_spill(addr, region);
     }
     Ok(())
 }

@@ -8,6 +8,14 @@ use xlsx_model::{CellRange, CellRef, ColId, DefinedName, RowId, SheetId, Workboo
 use crate::deps::references;
 use crate::parser::{Expr, parse_formula};
 
+/// Whether two rectangles share a cell.
+fn overlaps(a: CellRange, b: CellRange) -> bool {
+    a.start.row <= b.end.row
+        && b.start.row <= a.end.row
+        && a.start.col <= b.end.col
+        && b.start.col <= a.end.col
+}
+
 /// a formula cell, normalized so `$`-anchoring never splits a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct NodeKey {
@@ -45,6 +53,11 @@ pub struct DepGraph {
     by_sheet: HashMap<SheetId, Vec<(CellRange, NodeKey)>>,
     /// formula cells that must re-evaluate every recalc regardless of edits.
     volatile: HashSet<NodeKey>,
+    /// Where each array formula's result reaches, snapshot at build time.
+    /// A formula reading any cell of a region depends on the cell that wrote
+    /// it, not on the empty spot the value happens to sit in — without this
+    /// the reader can be evaluated before the writer.
+    spills: HashMap<NodeKey, CellRange>,
 }
 
 impl DepGraph {
@@ -71,9 +84,13 @@ impl DepGraph {
             deps: HashMap::new(),
             by_sheet: HashMap::new(),
             volatile: HashSet::new(),
+            spills: HashMap::new(),
         };
         for (i, sheet) in wb.sheets.iter().enumerate() {
             let sid = SheetId(i as u32);
+            for (anchor, region) in sheet.iter_spills() {
+                g.spills.insert(NodeKey::new(sid, anchor), region);
+            }
             for (cell, c) in sheet.iter_cells() {
                 if let Some(src) = &c.formula {
                     g.install(NodeKey::new(sid, cell), src);
@@ -110,13 +127,37 @@ impl DepGraph {
         sheet: SheetId,
         cell: CellRef,
     ) -> impl Iterator<Item = (SheetId, CellRef)> + '_ {
-        let target = CellRef::new(cell.row, cell.col);
+        // A cell that spills answers for its whole region: the values out
+        // there are this formula's output, so whoever reads them reads it.
+        let reach = self
+            .spills
+            .get(&NodeKey::new(sheet, cell))
+            .copied()
+            .unwrap_or_else(|| CellRange::new(cell, cell));
         self.by_sheet
             .get(&sheet)
             .into_iter()
             .flatten()
-            .filter(move |(range, _)| range.contains(target))
+            .filter(move |(range, _)| overlaps(*range, reach))
             .map(|(_, node)| (node.sheet, node.cell()))
+    }
+
+    /// Replace what this graph believes a formula's result reaches. Returns
+    /// whether it moved, which is the signal that the order it produced no
+    /// longer holds.
+    pub fn set_spill(
+        &mut self,
+        sheet: SheetId,
+        anchor: CellRef,
+        region: Option<CellRange>,
+    ) -> bool {
+        let key = NodeKey::new(sheet, anchor);
+        let before = self.spills.get(&key).copied();
+        match region {
+            Some(region) => self.spills.insert(key, region),
+            None => self.spills.remove(&key),
+        };
+        before != region
     }
 
     /// whether a cell is a (parseable) formula node.

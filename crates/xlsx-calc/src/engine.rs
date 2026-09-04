@@ -4,9 +4,13 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
-use xlsx_model::{CellProvider, CellRef, CellValue, ColId, RowId, SheetId, Workbook};
+use xlsx_model::{
+    CellProvider, CellRange, CellRef, CellValue, ColId, ErrorValue, MAX_COLS, MAX_ROWS, RowId,
+    SheetId, Workbook,
+};
 
 use crate::eval::{EvalContext, EvaluationBudget, MAX_RECALCULATION_CELL_VISITS, evaluate};
+use crate::functions::arrays::ArrayValue;
 use crate::graph::DepGraph;
 use crate::parser::parse_formula;
 
@@ -37,8 +41,49 @@ pub fn recalc_after(
     dirty_seeds: &[(SheetId, CellRef)],
     now_serial: Option<f64>,
 ) -> RecalcResult {
-    let recompute = collect_recompute(graph, dirty_seeds);
-    run_recalc(wb, graph, recompute, now_serial)
+    settle(wb, graph, dirty_seeds.to_vec(), now_serial)
+}
+
+/// A spill that changed shape invalidates the order the pass was run in: the
+/// cells it just took or gave back are read by formulas that were sequenced
+/// against the old region. So the graph is told where the result now reaches
+/// and the affected formulas are run again, until nothing moves.
+///
+/// Bounded because it has to be — a pair of array formulas can push each other
+/// back and forth forever, and Excel stops too.
+const MAX_SPILL_ROUNDS: usize = 8;
+
+fn settle(
+    wb: &mut Workbook,
+    graph: &mut DepGraph,
+    mut seeds: Vec<(SheetId, CellRef)>,
+    now_serial: Option<f64>,
+) -> RecalcResult {
+    let mut merged = RecalcResult {
+        changed: Vec::new(),
+        cycle_cells: Vec::new(),
+        limited_cells: Vec::new(),
+    };
+    for _ in 0..MAX_SPILL_ROUNDS {
+        let recompute = collect_recompute(graph, &seeds);
+        let (result, respilled) = run_recalc(wb, graph, recompute, now_serial);
+        merged.changed.extend(result.changed);
+        merged.cycle_cells.extend(result.cycle_cells);
+        merged.limited_cells.extend(result.limited_cells);
+        if respilled.is_empty() {
+            break;
+        }
+        seeds = respilled
+            .iter()
+            .map(|(sheet, anchor, _)| (*sheet, *anchor))
+            .collect();
+        for (sheet, anchor, region) in respilled {
+            graph.set_spill(sheet, anchor, region);
+        }
+    }
+    merged.changed.sort_by(sort_key);
+    merged.changed.dedup();
+    merged
 }
 
 /// rebuild the graph from scratch and recalc every formula in dependency order.
@@ -46,9 +91,32 @@ pub fn rebuild_and_recalc_all(
     wb: &mut Workbook,
     now_serial: Option<f64>,
 ) -> (DepGraph, RecalcResult) {
-    let graph = DepGraph::build(wb);
-    let recompute: HashSet<Key> = graph.formula_cells().map(|(s, c)| key(s, c)).collect();
-    let result = run_recalc(wb, &graph, recompute, now_serial);
+    let mut graph = DepGraph::build(wb);
+    let seeds: Vec<(SheetId, CellRef)> = graph.formula_cells().collect();
+    let recompute: HashSet<Key> = seeds.iter().map(|(s, c)| key(*s, *c)).collect();
+    let (first, respilled) = run_recalc(wb, &graph, recompute, now_serial);
+    if respilled.is_empty() {
+        return (graph, first);
+    }
+    // The first pass discovered where the array formulas reach; the order it
+    // ran in did not know, so anything reading a spilled cell runs again.
+    for (sheet, anchor, region) in &respilled {
+        graph.set_spill(*sheet, *anchor, *region);
+    }
+    let mut result = settle(
+        wb,
+        &mut graph,
+        respilled
+            .iter()
+            .map(|(sheet, anchor, _)| (*sheet, *anchor))
+            .collect(),
+        now_serial,
+    );
+    result.changed.extend(first.changed);
+    result.cycle_cells.extend(first.cycle_cells);
+    result.limited_cells.extend(first.limited_cells);
+    result.changed.sort_by(sort_key);
+    result.changed.dedup();
     (graph, result)
 }
 
@@ -87,26 +155,44 @@ fn collect_recompute(graph: &DepGraph, seeds: &[(SheetId, CellRef)]) -> HashSet<
 
 /// topologically order `recompute` and evaluate it, writing changed values into
 /// `wb`. cells caught in a cycle are zeroed and reported separately.
+type Respilled = Vec<(SheetId, CellRef, Option<CellRange>)>;
+
 fn run_recalc(
     wb: &mut Workbook,
     graph: &DepGraph,
     recompute: HashSet<Key>,
     now_serial: Option<f64>,
-) -> RecalcResult {
+) -> (RecalcResult, Respilled) {
     let (order, cycle) = topo_order(graph, &recompute);
     let budget = Rc::new(EvaluationBudget::new(MAX_RECALCULATION_CELL_VISITS));
 
     let mut changed: Vec<(SheetId, CellRef)> = Vec::new();
     let mut limited_cells = Vec::new();
+    let mut respilled: Vec<(SheetId, CellRef, Option<CellRange>)> = Vec::new();
     for u in &order {
-        let (value, limited) = eval_node(wb, *u, now_serial, Rc::clone(&budget));
+        let (produced, limited) = eval_node(wb, *u, now_serial, Rc::clone(&budget));
         if limited {
             limited_cells.push((u.0, cell_of(*u)));
         }
-        if let Some(value) = value
-            && write_if_changed(wb, *u, value)
-        {
-            changed.push((u.0, cell_of(*u)));
+        match produced {
+            Produced::Nothing => {}
+            Produced::Value(value) => {
+                // A formula that stopped producing a rectangle takes back the
+                // cells the last one reached.
+                if release_spill(wb, *u, &mut changed).is_some() {
+                    respilled.push((u.0, cell_of(*u), None));
+                }
+                if write_if_changed(wb, *u, value) {
+                    changed.push((u.0, cell_of(*u)));
+                }
+            }
+            Produced::Array(array) => {
+                let before = wb.sheet(u.0).and_then(|sheet| sheet.spill(cell_of(*u)));
+                let after = spill(wb, *u, &array, &mut changed);
+                if before != after {
+                    respilled.push((u.0, cell_of(*u), after));
+                }
+            }
         }
     }
 
@@ -119,11 +205,14 @@ fn run_recalc(
     }
 
     changed.sort_by(sort_key);
-    RecalcResult {
-        changed,
-        cycle_cells,
-        limited_cells,
-    }
+    (
+        RecalcResult {
+            changed,
+            cycle_cells,
+            limited_cells,
+        },
+        respilled,
+    )
 }
 
 /// kahn's sort over the sub-graph induced by `recompute`: returns the evaluable
@@ -182,29 +271,172 @@ fn topo_order(graph: &DepGraph, recompute: &HashSet<Key>) -> (Vec<Key>, Vec<Key>
 
 /// evaluate one formula node; `None` when the cell has no formula or it no
 /// longer parses (cached value left untouched).
+/// What a formula produced this pass.
+enum Produced {
+    /// No formula, or one that does not parse.
+    Nothing,
+    Value(CellValue),
+    /// A rectangle to spill from this cell.
+    Array(ArrayValue),
+}
+
 fn eval_node(
     wb: &Workbook,
     u: Key,
     now_serial: Option<f64>,
     budget: Rc<EvaluationBudget>,
-) -> (Option<CellValue>, bool) {
+) -> (Produced, bool) {
     let Some(src) = wb.formula(u.0, cell_of(u)).map(str::to_string) else {
-        return (None, false);
+        return (Produced::Nothing, false);
     };
     let Ok(expr) = parse_formula(&src) else {
-        return (None, false);
+        return (Produced::Nothing, false);
     };
     let mut ctx = EvalContext::with_budget(wb, u.0, budget);
     ctx.now_serial = now_serial;
+    if let Some(produced) = crate::evaluate_array(&expr, &ctx) {
+        let exhausted = ctx.exhausted();
+        return match produced {
+            Ok(array) => (Produced::Array(array), exhausted),
+            Err(value) => (Produced::Value(value), exhausted),
+        };
+    }
     let value = evaluate(&expr, &ctx);
     if !ctx.has_unhandled_budget_error() {
-        return (Some(value), ctx.exhausted());
+        return (Produced::Value(value), ctx.exhausted());
     }
     if matches!(wb.value(u.0, cell_of(u)), CellValue::Empty) {
-        (Some(value), true)
+        (Produced::Value(value), true)
     } else {
-        (None, true)
+        (Produced::Nothing, true)
     }
+}
+
+/// Take back the cells an earlier pass spilled from `u`, leaving the anchor
+/// itself alone.
+fn release_spill(
+    wb: &mut Workbook,
+    u: Key,
+    changed: &mut Vec<(SheetId, CellRef)>,
+) -> Option<CellRange> {
+    let anchor = cell_of(u);
+    let sheet = wb.sheet_mut(u.0)?;
+    let region = sheet.clear_spill(anchor)?;
+    clear_cells(sheet, u.0, region, None, anchor, changed);
+    Some(region)
+}
+
+/// Empty every cell of `region` that `keep` does not cover, anchor excepted.
+fn clear_cells(
+    sheet: &mut xlsx_model::Sheet,
+    id: SheetId,
+    region: CellRange,
+    keep: Option<CellRange>,
+    anchor: CellRef,
+    changed: &mut Vec<(SheetId, CellRef)>,
+) {
+    for at in cells_of(region) {
+        if at == anchor || keep.is_some_and(|keep| keep.contains(at)) {
+            continue;
+        }
+        if sheet.cell(at).is_some() {
+            sheet.set_cell(at, xlsx_model::Cell::default());
+            changed.push((id, at));
+        }
+    }
+}
+
+/// Write `array` from `u` across the sheet.
+///
+/// The anchor keeps its formula and takes the first value; the rest become
+/// ordinary cells, so every reader — the renderer, a save, the formulas that
+/// read them — sees the values without having to know what put them there.
+///
+/// Anything already standing in the way that this formula did not write itself
+/// makes the whole result `#SPILL!`. That is Excel's rule and the only honest
+/// one available: quietly writing over somebody's data to make room would be
+/// worse than not answering.
+fn spill(
+    wb: &mut Workbook,
+    u: Key,
+    array: &ArrayValue,
+    changed: &mut Vec<(SheetId, CellRef)>,
+) -> Option<CellRange> {
+    let anchor = cell_of(u);
+    let held = wb.sheet_mut(u.0)?.clear_spill(anchor);
+    let Some(region) = reach(anchor, array) else {
+        refuse_spill(wb, u, held, changed);
+        return None;
+    };
+    let sheet = wb.sheet_mut(u.0)?;
+    let blocked = cells_of(region).any(|at| {
+        at != anchor
+            && !held.is_some_and(|held| held.contains(at))
+            && sheet
+                .cell(at)
+                .is_some_and(|cell| *cell != xlsx_model::Cell::default())
+    });
+    if blocked {
+        refuse_spill(wb, u, held, changed);
+        return None;
+    }
+    for (index, at) in cells_of(region).enumerate() {
+        let value = array.at(index / array.cols(), index % array.cols()).clone();
+        let mut cell = sheet.cell(at).cloned().unwrap_or_default();
+        if cell.value == value {
+            continue;
+        }
+        cell.value = value;
+        sheet.set_cell(at, cell);
+        changed.push((u.0, at));
+    }
+    if let Some(held) = held {
+        clear_cells(sheet, u.0, held, Some(region), anchor, changed);
+    }
+    sheet.set_spill(anchor, region);
+    Some(region)
+}
+
+/// The anchor reports `#SPILL!` and gives back whatever it held.
+fn refuse_spill(
+    wb: &mut Workbook,
+    u: Key,
+    held: Option<CellRange>,
+    changed: &mut Vec<(SheetId, CellRef)>,
+) {
+    if let Some(held) = held
+        && let Some(sheet) = wb.sheet_mut(u.0)
+    {
+        clear_cells(sheet, u.0, held, None, cell_of(u), changed);
+    }
+    if write_if_changed(
+        wb,
+        u,
+        CellValue::Error {
+            value: ErrorValue::Spill,
+        },
+    ) {
+        changed.push((u.0, cell_of(u)));
+    }
+}
+
+/// Where an array anchored at `anchor` reaches, or `None` when it runs off the
+/// end of the sheet.
+fn reach(anchor: CellRef, array: &ArrayValue) -> Option<CellRange> {
+    let last_row = anchor
+        .row
+        .checked_add(array.rows().checked_sub(1)? as RowId)?;
+    let last_col = anchor
+        .col
+        .checked_add(array.cols().checked_sub(1)? as ColId)?;
+    (last_row < MAX_ROWS && last_col < MAX_COLS)
+        .then(|| CellRange::new(anchor, CellRef::new(last_row, last_col)))
+}
+
+fn cells_of(region: CellRange) -> impl Iterator<Item = CellRef> {
+    (region.start.row..=region.end.row).flat_map(move |row| {
+        (region.start.col..=region.end.col).map(move |col| CellRef::new(row, col))
+    })
 }
 
 /// write `value` only if it differs from the stored value; returns whether
@@ -273,6 +505,107 @@ mod tests {
         let mut wb = Workbook::default();
         wb.sheets.push(Sheet::new("Sheet1"));
         (wb, SheetId(0))
+    }
+
+    #[test]
+    fn an_array_formula_spills_into_the_cells_below_it() {
+        let (mut wb, sheet) = one_sheet();
+        put_formula(&mut wb, sheet, "A1", "SEQUENCE(3)");
+        let (_, result) = rebuild_and_recalc_all(&mut wb, None);
+
+        assert_eq!(value(&wb, sheet, "A1"), num(1.0));
+        assert_eq!(value(&wb, sheet, "A2"), num(2.0));
+        assert_eq!(value(&wb, sheet, "A3"), num(3.0));
+        assert_eq!(changed_a1(&result), ["A1", "A2", "A3"]);
+        assert_eq!(
+            wb.sheet(sheet).unwrap().spill(a1("A1")),
+            Some(CellRange::new(a1("A1"), a1("A3")))
+        );
+        // Only the anchor keeps the formula; the rest are ordinary cells.
+        assert!(wb.formula(sheet, a1("A2")).is_none());
+    }
+
+    #[test]
+    fn a_formula_reading_a_spilled_cell_is_evaluated_after_the_one_that_wrote_it() {
+        let (mut wb, sheet) = one_sheet();
+        // B1 sorts before A1 by nothing in particular; what orders them is
+        // that A1 writes A3, and without the spill edge B1 could read a stale
+        // (or empty) A3 and answer 0.
+        put_formula(&mut wb, sheet, "B1", "A3*10");
+        put_formula(&mut wb, sheet, "A1", "SEQUENCE(3)");
+        rebuild_and_recalc_all(&mut wb, None);
+        assert_eq!(value(&wb, sheet, "B1"), num(30.0));
+
+        // And on an incremental pass, through the same edge.
+        put_formula(&mut wb, sheet, "A1", "SEQUENCE(3,1,100)");
+        let mut graph = DepGraph::build(&wb);
+        recalc_after(&mut wb, &mut graph, &[(sheet, a1("A1"))], None);
+        assert_eq!(value(&wb, sheet, "A3"), num(102.0));
+        assert_eq!(value(&wb, sheet, "B1"), num(1020.0));
+    }
+
+    #[test]
+    fn something_in_the_way_makes_the_whole_result_spill() {
+        let (mut wb, sheet) = one_sheet();
+        put_num(&mut wb, sheet, "A3", 99.0);
+        put_formula(&mut wb, sheet, "A1", "SEQUENCE(3)");
+        rebuild_and_recalc_all(&mut wb, None);
+
+        assert_eq!(
+            value(&wb, sheet, "A1"),
+            CellValue::Error {
+                value: ErrorValue::Spill
+            }
+        );
+        // Nothing was written over, and nothing was half-written either.
+        assert_eq!(value(&wb, sheet, "A2"), CellValue::Empty);
+        assert_eq!(value(&wb, sheet, "A3"), num(99.0));
+        assert_eq!(wb.sheet(sheet).unwrap().spill(a1("A1")), None);
+    }
+
+    #[test]
+    fn a_result_that_shrinks_gives_back_what_it_no_longer_reaches() {
+        let (mut wb, sheet) = one_sheet();
+        put_formula(&mut wb, sheet, "A1", "SEQUENCE(3)");
+        let (mut graph, _) = rebuild_and_recalc_all(&mut wb, None);
+
+        put_formula(&mut wb, sheet, "A1", "SEQUENCE(1)");
+        recalc_after(&mut wb, &mut graph, &[(sheet, a1("A1"))], None);
+        assert_eq!(value(&wb, sheet, "A1"), num(1.0));
+        assert_eq!(value(&wb, sheet, "A2"), CellValue::Empty);
+        assert_eq!(value(&wb, sheet, "A3"), CellValue::Empty);
+        assert_eq!(
+            wb.sheet(sheet).unwrap().spill(a1("A1")),
+            Some(CellRange::new(a1("A1"), a1("A1")))
+        );
+    }
+
+    #[test]
+    fn a_formula_that_stops_producing_a_rectangle_takes_its_cells_back() {
+        let (mut wb, sheet) = one_sheet();
+        put_formula(&mut wb, sheet, "A1", "SEQUENCE(3)");
+        let (mut graph, _) = rebuild_and_recalc_all(&mut wb, None);
+
+        put_formula(&mut wb, sheet, "A1", "1+1");
+        recalc_after(&mut wb, &mut graph, &[(sheet, a1("A1"))], None);
+        assert_eq!(value(&wb, sheet, "A1"), num(2.0));
+        assert_eq!(value(&wb, sheet, "A2"), CellValue::Empty);
+        assert_eq!(wb.sheet(sheet).unwrap().spill(a1("A1")), None);
+    }
+
+    #[test]
+    fn a_result_growing_over_its_own_cells_is_not_blocked_by_them() {
+        let (mut wb, sheet) = one_sheet();
+        put_formula(&mut wb, sheet, "A1", "SEQUENCE(2)");
+        let (mut graph, _) = rebuild_and_recalc_all(&mut wb, None);
+
+        put_formula(&mut wb, sheet, "A1", "SEQUENCE(4)");
+        recalc_after(&mut wb, &mut graph, &[(sheet, a1("A1"))], None);
+        assert_eq!(value(&wb, sheet, "A4"), num(4.0));
+        assert_eq!(
+            wb.sheet(sheet).unwrap().spill(a1("A1")),
+            Some(CellRange::new(a1("A1"), a1("A4")))
+        );
     }
 
     #[test]
