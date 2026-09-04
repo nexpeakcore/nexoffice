@@ -47,11 +47,35 @@ pub enum OpError {
         sheet: SheetId,
         index: usize,
     },
+    /// A cell holding part of an array formula's result.
+    SpilledCell {
+        sheet: SheetId,
+        at: CellRef,
+        anchor: CellRef,
+    },
+    /// A change that would leave an array formula's result in pieces.
+    SpillTorn {
+        sheet: SheetId,
+        anchor: CellRef,
+        region: CellRange,
+    },
 }
 
 impl fmt::Display for OpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            OpError::SpilledCell { at, anchor, .. } => write!(
+                f,
+                "{} holds part of the result of the formula in {}",
+                at.to_a1(),
+                anchor.to_a1()
+            ),
+            OpError::SpillTorn { anchor, region, .. } => write!(
+                f,
+                "the formula in {} fills {}, which this would leave in pieces",
+                anchor.to_a1(),
+                region.to_a1()
+            ),
             OpError::SheetNotFound(id) => write!(f, "sheet {} not found", id.0),
             OpError::SheetIndexOutOfRange(i) => write!(f, "sheet index {i} out of range"),
             OpError::FormulaNotRewritable { sheet, cell } => write!(
@@ -92,6 +116,28 @@ pub fn apply(wb: &mut Workbook, op: &Op) -> Result<InvertedOp, OpError> {
     match op {
         Op::SetCell { sheet, at, cell } => {
             let s = sheet_mut(wb, *sheet)?;
+            // A cell inside a spilled result belongs to the formula that wrote
+            // it. Excel refuses rather than tear a result in half, and the
+            // alternative here is worse than a refusal: the next
+            // recalculation either writes over what was typed or reports the
+            // whole result as `#SPILL!` because of it.
+            if let Some(anchor) = s.spill_owner(*at).filter(|anchor| anchor != at) {
+                return Err(OpError::SpilledCell {
+                    sheet: *sheet,
+                    at: *at,
+                    anchor,
+                });
+            }
+            // Replacing the formula that produced a result takes the result
+            // with it. Only the anchor is restored on the way back: with the
+            // formula in place again, recalculation writes the rest.
+            if let Some(region) = s.clear_spill(*at) {
+                for cell in cells_of(region) {
+                    if cell != *at {
+                        s.set_cell(cell, Cell::default());
+                    }
+                }
+            }
             let old = s.cell(*at).map(CellState::from).unwrap_or_default();
             s.set_cell(*at, cell.clone().into());
             Ok(InvertedOp(vec![Op::SetCell {
@@ -203,6 +249,7 @@ pub fn apply(wb: &mut Workbook, op: &Op) -> Result<InvertedOp, OpError> {
             key_col,
             ascending,
         } => {
+            guard_spills(wb, *sheet, *range)?;
             let s = sheet_mut(wb, *sheet)?;
             if let Some(merge) = find_sort_merge_conflict(s, *range) {
                 return Err(OpError::MergeConflict {
@@ -232,6 +279,7 @@ pub fn apply(wb: &mut Workbook, op: &Op) -> Result<InvertedOp, OpError> {
             range,
             moves,
         } => {
+            guard_spills(wb, *sheet, *range)?;
             let s = sheet_mut(wb, *sheet)?;
             let outcome = move_row_cells(s, *sheet, *range, moves)?;
             Ok(InvertedOp(outcome.into_inverse(*sheet, *range)))
@@ -514,6 +562,47 @@ fn apply_ops_in_place(wb: &mut Workbook, ops: &[Op]) -> Result<Vec<Op>, OpError>
         inverse.extend(chunk);
     }
     Ok(inverse)
+}
+
+/// The spilled result a change over `range` would leave in pieces.
+fn spill_in_the_way(s: &Sheet, range: CellRange) -> Option<(CellRef, CellRange)> {
+    s.iter_spills()
+        .find(|(_, region)| ranges_intersect(*region, range))
+}
+
+/// Refuse when a change over `range` would tear a spilled result apart.
+fn guard_spills(wb: &Workbook, sheet: SheetId, range: CellRange) -> Result<(), OpError> {
+    let s = wb.sheet(sheet).ok_or(OpError::SheetNotFound(sheet))?;
+    match spill_in_the_way(s, range) {
+        Some((anchor, region)) => Err(OpError::SpillTorn {
+            sheet,
+            anchor,
+            region,
+        }),
+        None => Ok(()),
+    }
+}
+
+/// Everything from `row` to the bottom of the sheet, which is what inserting
+/// or deleting rows there moves.
+fn rows_from(row: RowId) -> CellRange {
+    CellRange::new(
+        CellRef::new(row, 0),
+        CellRef::new(MAX_ROWS - 1, MAX_COLS - 1),
+    )
+}
+
+fn cols_from(col: ColId) -> CellRange {
+    CellRange::new(
+        CellRef::new(0, col),
+        CellRef::new(MAX_ROWS - 1, MAX_COLS - 1),
+    )
+}
+
+fn cells_of(region: CellRange) -> impl Iterator<Item = CellRef> {
+    (region.start.row..=region.end.row).flat_map(move |row| {
+        (region.start.col..=region.end.col).map(move |col| CellRef::new(row, col))
+    })
 }
 
 fn ranges_intersect(left: CellRange, right: CellRange) -> bool {
@@ -905,6 +994,7 @@ fn insert_rows(
     op: &Op,
 ) -> Result<InvertedOp, OpError> {
     wb.sheet(sheet).ok_or(OpError::SheetNotFound(sheet))?;
+    guard_spills(wb, sheet, rows_from(at))?;
     let restores = remap_formulas(wb, op)?;
     let defined_name_restore = remap_defined_names(wb, op)?;
     let hyperlink_restores = remap_hyperlink_locations(wb, op);
@@ -951,6 +1041,7 @@ fn delete_rows(
     op: &Op,
 ) -> Result<InvertedOp, OpError> {
     wb.sheet(sheet).ok_or(OpError::SheetNotFound(sheet))?;
+    guard_spills(wb, sheet, rows_from(at))?;
     let restores = remap_formulas(wb, op)?;
     let defined_name_restore = remap_defined_names(wb, op)?;
     let hyperlink_restores = remap_hyperlink_locations(wb, op);
@@ -1007,6 +1098,7 @@ fn insert_cols(
     op: &Op,
 ) -> Result<InvertedOp, OpError> {
     wb.sheet(sheet).ok_or(OpError::SheetNotFound(sheet))?;
+    guard_spills(wb, sheet, cols_from(at))?;
     let restores = remap_formulas(wb, op)?;
     let defined_name_restore = remap_defined_names(wb, op)?;
     let hyperlink_restores = remap_hyperlink_locations(wb, op);
@@ -1052,6 +1144,7 @@ fn delete_cols(
     op: &Op,
 ) -> Result<InvertedOp, OpError> {
     wb.sheet(sheet).ok_or(OpError::SheetNotFound(sheet))?;
+    guard_spills(wb, sheet, cols_from(at))?;
     let restores = remap_formulas(wb, op)?;
     let defined_name_restore = remap_defined_names(wb, op)?;
     let hyperlink_restores = remap_hyperlink_locations(wb, op);
@@ -1612,6 +1705,145 @@ mod tests {
             cell: num(1.0),
         };
         assert_eq!(remap_ref(r("Z9"), &op), Some(r("Z9")));
+    }
+
+    /// A1 holds `=SEQUENCE(3)` and owns A1:A3.
+    fn wb_with_a_spill() -> Workbook {
+        let mut wb = wb_one_sheet();
+        let sheet = wb.sheet_mut(SheetId(0)).unwrap();
+        sheet.set_cell(
+            r("A1"),
+            Cell {
+                value: CellValue::Number { value: 1.0 },
+                formula: Some("SEQUENCE(3)".into()),
+                style: None,
+            },
+        );
+        for (at, value) in [("A2", 2.0), ("A3", 3.0)] {
+            sheet.set_cell(
+                r(at),
+                Cell {
+                    value: CellValue::Number { value },
+                    ..Cell::default()
+                },
+            );
+        }
+        sheet.set_spill(r("A1"), rng("A1:A3"));
+        wb
+    }
+
+    #[test]
+    fn typing_into_a_spilled_result_is_refused() {
+        let mut wb = wb_with_a_spill();
+        let error = apply(
+            &mut wb,
+            &Op::SetCell {
+                sheet: SheetId(0),
+                at: r("A2"),
+                cell: num(99.0),
+            },
+        )
+        .expect_err("A2 belongs to the formula in A1");
+        assert!(matches!(
+            error,
+            OpError::SpilledCell { at, anchor, .. } if at == r("A2") && anchor == r("A1")
+        ));
+        assert_eq!(
+            wb.value(SheetId(0), r("A2")),
+            CellValue::Number { value: 2.0 },
+            "and nothing was written"
+        );
+    }
+
+    #[test]
+    fn replacing_the_formula_takes_its_result_with_it() {
+        let mut wb = wb_with_a_spill();
+        let inverse = apply(
+            &mut wb,
+            &Op::SetCell {
+                sheet: SheetId(0),
+                at: r("A1"),
+                cell: num(7.0),
+            },
+        )
+        .expect("the anchor is the one cell that may be replaced");
+
+        assert_eq!(
+            wb.value(SheetId(0), r("A1")),
+            CellValue::Number { value: 7.0 }
+        );
+        assert_eq!(wb.value(SheetId(0), r("A2")), CellValue::Empty);
+        assert_eq!(wb.value(SheetId(0), r("A3")), CellValue::Empty);
+        assert_eq!(wb.sheet(SheetId(0)).unwrap().spill(r("A1")), None);
+
+        // Undo restores the formula and nothing else: with it back in place,
+        // recalculation writes the rest. Restoring the values here instead
+        // would leave them standing in the formula's way.
+        for op in &inverse.0 {
+            apply(&mut wb, op).unwrap();
+        }
+        assert_eq!(
+            wb.formula(SheetId(0), r("A1")),
+            Some("SEQUENCE(3)"),
+            "the formula is back"
+        );
+        assert_eq!(wb.value(SheetId(0), r("A2")), CellValue::Empty);
+    }
+
+    #[test]
+    fn structural_changes_that_would_tear_a_result_are_refused() {
+        for op in [
+            Op::InsertRows {
+                sheet: SheetId(0),
+                at: 1,
+                count: 1,
+            },
+            Op::DeleteRows {
+                sheet: SheetId(0),
+                at: 1,
+                count: 1,
+            },
+            Op::InsertCols {
+                sheet: SheetId(0),
+                at: 0,
+                count: 1,
+            },
+            Op::SortRange {
+                sheet: SheetId(0),
+                range: rng("A1:A3"),
+                key_col: 0,
+                ascending: true,
+            },
+        ] {
+            let mut wb = wb_with_a_spill();
+            let error = apply(&mut wb, &op).expect_err("A1:A3 is one result");
+            assert!(
+                matches!(error, OpError::SpillTorn { anchor, .. } if anchor == r("A1")),
+                "{op:?} was not refused: {error:?}"
+            );
+            assert_eq!(
+                wb.value(SheetId(0), r("A3")),
+                CellValue::Number { value: 3.0 }
+            );
+        }
+    }
+
+    #[test]
+    fn a_change_clear_of_every_result_still_applies() {
+        let mut wb = wb_with_a_spill();
+        apply(
+            &mut wb,
+            &Op::InsertRows {
+                sheet: SheetId(0),
+                at: 9,
+                count: 1,
+            },
+        )
+        .expect("row 10 is nowhere near A1:A3");
+        assert_eq!(
+            wb.value(SheetId(0), r("A3")),
+            CellValue::Number { value: 3.0 }
+        );
     }
 
     #[test]
