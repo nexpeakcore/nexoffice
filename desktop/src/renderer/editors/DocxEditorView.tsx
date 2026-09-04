@@ -14,6 +14,16 @@ import { useI18n } from '../i18n.js'
 
 const editorLocales = docxLocales as Record<string, PartialLocaleStrings>
 
+/** Run `task` once the thread has nothing better to do. Returns its canceller. */
+function whenIdle(task: () => void): () => void {
+  if (typeof requestIdleCallback === 'function') {
+    const handle = requestIdleCallback(task)
+    return () => cancelIdleCallback(handle)
+  }
+  const handle = setTimeout(task, IDLE_FALLBACK_MS)
+  return () => clearTimeout(handle)
+}
+
 export interface DocxEditorViewRef {
   save: () => Promise<ArrayBuffer | null>
   getText: () => string
@@ -68,6 +78,8 @@ function extractText(blocks: unknown[]): string {
 }
 
 const TEXT_REFRESH_DELAY_MS = 500
+/** Where `requestIdleCallback` is absent, long enough for a document to open. */
+const IDLE_FALLBACK_MS = 2000
 
 export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>(
   function DocxEditorView({ document, onChange, onPrintRequest }, ref) {
@@ -112,11 +124,16 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
 
       let unsubscribe: (() => void) | null = null
       let refreshTimer: ReturnType<typeof setTimeout> | null = null
+      let firstRefresh: (() => void) | null = null
       const sessionPoll = setInterval(() => {
         const session = editorRef.current?.getEditorRef()?.getYrsSession()
         if (!session) return
         clearInterval(sessionPoll)
-        refreshText()
+        // The session exists as soon as the document is seeded — while the
+        // engine is still laying it out. Projecting it here costs the open
+        // half a second before the worker is even handed the document, for a
+        // word count nobody is reading yet, so it waits for an idle thread.
+        firstRefresh = whenIdle(refreshText)
         unsubscribe = session.onUpdate((_update, origin) => {
           if (origin !== 'local') return
           onChangeRef.current?.()
@@ -127,6 +144,7 @@ export const DocxEditorView = forwardRef<DocxEditorViewRef, DocxEditorViewProps>
 
       return () => {
         clearInterval(sessionPoll)
+        firstRefresh?.()
         if (refreshTimer) clearTimeout(refreshTimer)
         unsubscribe?.()
       }
