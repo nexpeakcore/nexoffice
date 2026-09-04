@@ -23,6 +23,7 @@ pub mod printer;
 
 pub use deps::references;
 pub use engine::{RecalcResult, rebuild_and_recalc_all, recalc_after};
-pub use eval::{EvalContext, evaluate};
+pub use eval::{EvalContext, evaluate, evaluate_array};
+pub use functions::arrays::ArrayValue;
 pub use lexer::{ParseError, TokKind, Token, lex};
 pub use parser::{BinaryOp, Expr, MAX_DEPTH, UnaryOp, parse_formula};

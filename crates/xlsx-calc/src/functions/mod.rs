@@ -6,6 +6,7 @@ use xlsx_model::{CellValue, ErrorValue};
 use crate::eval::{EvalContext, as_area, err, evaluate, num, parse_num, to_number};
 use crate::parser::Expr;
 
+pub mod arrays;
 pub mod criteria;
 pub mod datetime;
 pub mod info;

@@ -216,9 +216,32 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext<'_>) -> CellValue {
         },
         Expr::FuncCall { name, args } => match crate::functions::lookup(name) {
             Some(f) => f(args, ctx),
+            // An array function reached in scalar position. Nothing here can
+            // consume a rectangle yet, and answering with its first cell would
+            // make `SUM(SEQUENCE(3))` quietly 1 instead of 6, so it is refused
+            // as the wrong kind of value rather than the wrong number.
+            None if crate::functions::arrays::lookup(name).is_some() => err(ErrorValue::Value),
             None => err(ErrorValue::Name),
         },
     }
+}
+
+/// The rectangle this formula produces, when it produces one.
+///
+/// Only a whole formula spills. The same function nested inside another
+/// expression is consumed there — `=SUM(SEQUENCE(3))` is one number — so this
+/// answers for a top-level call and nothing else.
+pub fn evaluate_array(
+    expr: &Expr,
+    ctx: &EvalContext<'_>,
+) -> Option<Result<crate::functions::arrays::ArrayValue, CellValue>> {
+    let Expr::FuncCall { name, args } = expr else {
+        return None;
+    };
+    if crate::functions::lookup(name).is_some() {
+        return None;
+    }
+    Some(crate::functions::arrays::lookup(name)?(args, ctx))
 }
 
 /// a defined name identified by the sheet its lookup resolved against.
