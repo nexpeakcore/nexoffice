@@ -866,6 +866,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     initialDocument,
     externalContent: false,
     history,
+    measurementFontProvider,
     pagedEditorRef,
     setLoadingState: useCallback((s: { isLoading: boolean; parseError: string | null }) => {
       setState((prev) => ({ ...prev, isLoading: s.isLoading, parseError: s.parseError }));
