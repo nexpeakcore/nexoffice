@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { PptxSaveFaultCode } from '@betteroffice/pptx'
-import { createTranslator } from '../../i18n/index.js'
+import { createTranslator, SUPPORTED_LOCALES } from '../../i18n/index.js'
 import { ALL_EDIT_CAPABILITIES } from '../../shared/ipc.js'
 import {
   editCapabilities,
@@ -8,6 +8,7 @@ import {
   exportedStatusKey,
   saveOutcomeStatus,
   saveRefusal,
+  seedStandsIn,
   unsavedStep,
 } from './documentPolicy.js'
 
@@ -230,6 +231,19 @@ describe('exportSuffixes', () => {
 
 // The i18n check only follows translator calls with a literal key, so the keys
 // these helpers hand to the translator are covered here instead.
+describe('seedStandsIn', () => {
+  test('the opened bytes stand for a document nobody has edited', () => {
+    expect(seedStandsIn(0, 0)).toBe(true)
+    expect(seedStandsIn(9, 9)).toBe(true)
+  })
+
+  test('they never stand for one with an edit the editor did not hand back', () => {
+    // Writing them here is the silent loss: the save reports success and the
+    // file on disk is the document as it was before the first keystroke.
+    expect(seedStandsIn(10, 9)).toBe(false)
+  })
+})
+
 describe('translated keys', () => {
   const t = createTranslator('en')
 
@@ -250,5 +264,12 @@ describe('translated keys', () => {
       ),
     ]
     for (const key of keys) expect(t(key)).not.toBe(key)
+  })
+
+  test('every locale can say that a save produced nothing', () => {
+    for (const locale of SUPPORTED_LOCALES) {
+      const translate = createTranslator(locale)
+      expect(translate('status.saveProducedNothing')).not.toBe('status.saveProducedNothing')
+    }
   })
 })

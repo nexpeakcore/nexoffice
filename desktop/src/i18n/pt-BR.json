@@ -140,6 +140,7 @@
     "saved": "{path} salvo",
     "saveCanceled": "Salvamento cancelado",
     "saveFailed": "Falha ao salvar: {message}",
+    "saveProducedNothing": "o editor não conseguiu gerar o documento, então nada foi gravado",
     "saveRefused": "Não salvo — {message}",
     "openFirst": "Abra um documento primeiro",
     "openWordFirst": "Abra um documento do Word primeiro",

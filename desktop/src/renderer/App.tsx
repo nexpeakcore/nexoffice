@@ -21,6 +21,7 @@ import {
   exportedStatusKey,
   saveOutcomeStatus,
   saveRefusal,
+  seedStandsIn,
   unsavedStep,
   type SaveOutcome,
   type StatusMessage,
@@ -293,11 +294,15 @@ export function App() {
         setRefusal(null)
         if (bytes) return { ok: true, bytes }
       }
-      // No editor yet (still loading) means the bytes the document opened with
-      // are the only ones there are.
-      return { ok: true, bytes: current.seed }
+      // Reached with no bytes: either no editor is mounted yet, or one is and
+      // it could not produce any. The seed answers the first case and only the
+      // first — see `seedStandsIn`.
+      if (seedStandsIn(editGenerationRef.current, savedGenerationRef.current)) {
+        return { ok: true, bytes: current.seed }
+      }
+      throw new Error(t('status.saveProducedNothing'))
     },
-    [],
+    [t],
   )
 
   const performSave = useCallback(

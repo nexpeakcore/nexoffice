@@ -140,6 +140,7 @@
     "saved": "{path} enregistré",
     "saveCanceled": "Enregistrement annulé",
     "saveFailed": "Échec de l'enregistrement : {message}",
+    "saveProducedNothing": "l'éditeur n'a pas pu produire le document, rien n'a donc été écrit",
     "saveRefused": "Non enregistré — {message}",
     "openFirst": "Ouvrez d'abord un document",
     "openWordFirst": "Ouvrez d'abord un document Word",

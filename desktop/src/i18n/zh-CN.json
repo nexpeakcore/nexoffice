@@ -140,6 +140,7 @@
     "saved": "已保存 {path}",
     "saveCanceled": "已取消保存",
     "saveFailed": "保存失败：{message}",
+    "saveProducedNothing": "编辑器无法生成文档，因此未写入任何内容",
     "saveRefused": "未保存 — {message}",
     "openFirst": "请先打开一个文档",
     "openWordFirst": "请先打开一个 Word 文档",

@@ -140,6 +140,7 @@
     "saved": "Đã lưu {path}",
     "saveCanceled": "Đã hủy lưu",
     "saveFailed": "Lưu thất bại: {message}",
+    "saveProducedNothing": "trình soạn thảo không tạo được tài liệu nên chưa ghi gì cả",
     "saveRefused": "Chưa lưu — {message}",
     "openFirst": "Hãy mở một tài liệu trước",
     "openWordFirst": "Hãy mở một tài liệu Word trước",
