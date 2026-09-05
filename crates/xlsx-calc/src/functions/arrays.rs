@@ -19,7 +19,7 @@ use crate::parser::Expr;
 
 /// Excel's own ceiling on a spilled result. A formula asking for more is
 /// `#NUM!` rather than an allocation the size of the sheet.
-const MAX_CELLS: usize = 1_048_576;
+pub(crate) const MAX_CELLS: usize = 1_048_576;
 
 /// A rectangle of values, in row-major order.
 #[derive(Debug, Clone, PartialEq)]
@@ -44,8 +44,26 @@ impl ArrayValue {
         self.cols
     }
 
+    /// One value as a 1x1 rectangle.
+    pub fn scalar(value: CellValue) -> Self {
+        Self::new(1, 1, vec![value])
+    }
+
     pub fn at(&self, row: usize, col: usize) -> &CellValue {
         &self.values[row * self.cols + col]
+    }
+
+    pub fn values(&self) -> &[CellValue] {
+        &self.values
+    }
+
+    /// The same rectangle with `f` applied to every cell.
+    pub fn map(self, f: impl Fn(CellValue) -> CellValue) -> Self {
+        Self {
+            rows: self.rows,
+            cols: self.cols,
+            values: self.values.into_iter().map(f).collect(),
+        }
     }
 
     fn nth(&self, index: usize) -> &CellValue {
@@ -126,22 +144,14 @@ impl Axis {
     }
 }
 
-/// Read an argument as a rectangle: a reference, another array function, or a
-/// lone value standing in for a 1x1.
+/// Read an argument as a rectangle, or a lone value standing in for a 1x1.
 fn as_rectangle(arg: &Expr, ctx: &EvalContext<'_>) -> Result<ArrayValue, CellValue> {
     if let Some(area) = crate::eval::as_area(arg, ctx) {
-        let values = area.values(ctx).map_err(err)?;
-        return Ok(ArrayValue::new(area.rows, area.cols, values));
-    }
-    if let Expr::FuncCall { name, args } = arg
-        && crate::functions::lookup(name).is_none()
-        && let Some(produce) = lookup(name)
-    {
-        return produce(args, ctx);
+        return area.into_array(ctx).map_err(err);
     }
     match evaluate(arg, ctx) {
         refused @ CellValue::Error { .. } => Err(refused),
-        value => Ok(ArrayValue::new(1, 1, vec![value])),
+        value => Ok(ArrayValue::scalar(value)),
     }
 }
 
@@ -418,7 +428,7 @@ impl Key {
 mod tests {
     use super::*;
     use crate::{evaluate, evaluate_array, parse_formula};
-    use xlsx_model::{Cell, CellRef, Sheet, SheetId, Workbook};
+    use xlsx_model::{Cell, CellRef, DefinedName, Sheet, SheetId, Workbook};
 
     fn sheet_with(cells: &[(&str, CellValue)]) -> Workbook {
         let mut workbook = Workbook::default();
@@ -446,10 +456,27 @@ mod tests {
         produced_in(&sheet_with(&[]), formula)
     }
 
-    fn shown(formula: &str) -> CellValue {
-        let workbook = sheet_with(&[]);
+    fn shown_in(workbook: &Workbook, formula: &str) -> CellValue {
         let expr = parse_formula(formula).expect("parses");
-        evaluate(&expr, &EvalContext::new(&workbook, SheetId(0)))
+        evaluate(&expr, &EvalContext::new(workbook, SheetId(0)))
+    }
+
+    fn shown(formula: &str) -> CellValue {
+        shown_in(&sheet_with(&[]), formula)
+    }
+
+    /// `A1:A4` holds 3, 1, 2, 1 and `B1:B4` tags them x, y, x, y.
+    fn tagged() -> Workbook {
+        sheet_with(&[
+            ("A1", n(3.0)),
+            ("A2", n(1.0)),
+            ("A3", n(2.0)),
+            ("A4", n(1.0)),
+            ("B1", t("x")),
+            ("B2", t("y")),
+            ("B3", t("x")),
+            ("B4", t("y")),
+        ])
     }
 
     /// A rectangle as nested rows, so a test can state the answer as a grid.
@@ -543,16 +570,23 @@ mod tests {
     }
 
     #[test]
-    fn a_rectangle_is_refused_where_a_value_was_wanted() {
-        // Until something can spill it, a rectangle has nowhere to go. Saying
-        // so beats answering with its first cell, which would make
-        // `SUM(SEQUENCE(3))` quietly 1 — and `#NAME?` would claim the function
-        // does not exist, which is no longer true.
+    fn a_rectangle_is_refused_where_one_value_was_wanted() {
+        // ROUND takes a number; it is not lifted across a rectangle here.
+        // Saying so beats answering with the first cell, which would be a
+        // wrong number rather than a wrong kind — and `#NAME?` would claim
+        // the function does not exist, which is not true.
         let refused = CellValue::Error {
             value: ErrorValue::Value,
         };
         assert_eq!(shown("SEQUENCE(3)"), refused);
-        assert_eq!(shown("SUM(SEQUENCE(3))"), refused);
+        assert_eq!(shown("ROUND(SEQUENCE(3),0)"), refused);
+    }
+
+    #[test]
+    fn a_function_that_reads_a_range_reads_a_rectangle_the_same_way() {
+        assert_eq!(shown("SUM(SEQUENCE(3))"), n(6.0));
+        assert_eq!(shown("COUNTA(SEQUENCE(2,2))"), n(4.0));
+        assert_eq!(shown("MAX(SEQUENCE(3,1,10,-1))"), n(10.0));
     }
 
     #[test]
@@ -768,6 +802,140 @@ mod tests {
         let workbook = sheet_with(&[("A1", n(1.0)), ("A2", n(1.0)), ("A3", n(2.0))]);
         let once = produced_in(&workbook, "UNIQUE(A1:A3,,TRUE)").expect("a rectangle");
         assert_eq!(grid(&once), [[n(2.0)]]);
+    }
+
+    #[test]
+    fn a_comparison_across_a_column_is_the_mask_a_filter_reads() {
+        // The way FILTER is written: the condition is an operator applied to
+        // a range, not a column of TRUE/FALSE prepared in advance.
+        let kept = produced_in(&tagged(), "FILTER(A1:A4,B1:B4=\"x\")").expect("a rectangle");
+        assert_eq!(grid(&kept), [[n(3.0)], [n(2.0)]]);
+
+        // Two conditions are multiplied, which is how AND is spelled across
+        // a rectangle.
+        let both =
+            produced_in(&tagged(), "FILTER(A1:A4,(B1:B4=\"x\")*(A1:A4>2))").expect("a rectangle");
+        assert_eq!(grid(&both), [[n(3.0)]]);
+    }
+
+    #[test]
+    fn a_function_that_reads_a_range_reads_what_a_rectangle_produced() {
+        let workbook = tagged();
+        assert_eq!(
+            shown_in(&workbook, "SUM(FILTER(A1:A4,B1:B4=\"x\"))"),
+            n(5.0)
+        );
+        assert_eq!(shown_in(&workbook, "COUNTA(UNIQUE(A1:A4))"), n(3.0));
+        assert_eq!(
+            shown_in(&workbook, "ROWS(FILTER(A1:A4,B1:B4=\"x\"))"),
+            n(2.0)
+        );
+        assert_eq!(
+            shown_in(&workbook, "SUMPRODUCT((B1:B4=\"x\")*A1:A4)"),
+            n(5.0)
+        );
+        assert_eq!(shown_in(&workbook, "SUM(A1:A4*2)"), n(14.0));
+        assert_eq!(
+            shown_in(&workbook, "TEXTJOIN(\",\",TRUE,UNIQUE(B1:B4))"),
+            t("x,y")
+        );
+        assert_eq!(shown_in(&workbook, "INDEX(SORT(A1:A4),1)"), n(1.0));
+        assert_eq!(shown_in(&workbook, "COUNTIF(UNIQUE(A1:A4),\">1\")"), n(2.0));
+    }
+
+    #[test]
+    fn an_operator_runs_across_a_rectangle_cell_by_cell() {
+        let doubled = produced_in(&tagged(), "A1:A4*2").expect("a rectangle");
+        assert_eq!(grid(&doubled), [[n(6.0)], [n(2.0)], [n(4.0)], [n(2.0)]]);
+        let negated = produced("-SEQUENCE(2)").expect("a rectangle");
+        assert_eq!(grid(&negated), [[n(-1.0)], [n(-2.0)]]);
+        let percent = produced("SEQUENCE(2)%").expect("a rectangle");
+        assert_eq!(grid(&percent), [[n(0.01)], [n(0.02)]]);
+    }
+
+    #[test]
+    fn sides_that_disagree_pad_with_na_and_a_column_against_a_row_is_every_pairing() {
+        let na = CellValue::Error {
+            value: ErrorValue::NA,
+        };
+        let padded = produced("SEQUENCE(3)+SEQUENCE(2)").expect("a rectangle");
+        assert_eq!(grid(&padded), [[n(2.0)], [n(4.0)], [na]]);
+
+        let table = produced("SEQUENCE(3)*SEQUENCE(1,2)").expect("a rectangle");
+        assert_eq!(
+            grid(&table),
+            [[n(1.0), n(2.0)], [n(2.0), n(4.0)], [n(3.0), n(6.0)]]
+        );
+        assert_eq!(
+            produced("SEQUENCE(1024)*SEQUENCE(1,1025)"),
+            refused(ErrorValue::Num),
+            "every pairing of those is more cells than a sheet has"
+        );
+    }
+
+    #[test]
+    fn a_lone_cell_is_a_value_and_does_not_make_a_rectangle() {
+        // `=A1*2` must not spill: a formula that spills is saved as an array
+        // formula, and that would turn every plain formula in a workbook
+        // into one.
+        let workbook = tagged();
+        let ctx = EvalContext::new(&workbook, SheetId(0));
+        for formula in ["A1*2", "A1", "-A1", "A1&B1", "SUM(A1:A4)*2"] {
+            let expr = parse_formula(formula).expect("parses");
+            assert!(evaluate_array(&expr, &ctx).is_none(), "{formula}");
+        }
+    }
+
+    #[test]
+    fn a_producer_that_fails_is_read_as_the_error_it_produced() {
+        let workbook = tagged();
+        let calc = CellValue::Error {
+            value: ErrorValue::Calc,
+        };
+        assert_eq!(shown_in(&workbook, "SUM(FILTER(A1:A4,B1:B4=\"z\"))"), calc);
+        assert_eq!(
+            shown_in(&workbook, "IFERROR(SUM(FILTER(A1:A4,B1:B4=\"z\")),0)"),
+            n(0.0)
+        );
+        // Excel's answer too: COUNTA counts an error as something, and the
+        // failed filter is one error. The common idiom is ROWS, above.
+        assert_eq!(
+            shown_in(&workbook, "COUNTA(FILTER(A1:A4,B1:B4=\"z\"))"),
+            n(1.0)
+        );
+    }
+
+    #[test]
+    fn a_name_is_whatever_it_is_defined_as() {
+        let mut workbook = tagged();
+        workbook.defined_names.push(DefinedName {
+            name: "Scores".into(),
+            formula: "Sheet1!A1:A4".into(),
+            local_sheet: None,
+            hidden: false,
+        });
+        workbook.defined_names.push(DefinedName {
+            name: "Top".into(),
+            formula: "Sheet1!A1".into(),
+            local_sheet: None,
+            hidden: false,
+        });
+        let ctx = EvalContext::new(&workbook, SheetId(0));
+        let doubled = evaluate_array(&parse_formula("Scores*2").unwrap(), &ctx)
+            .expect("a rectangle")
+            .expect("produced");
+        assert_eq!(grid(&doubled), [[n(6.0)], [n(2.0)], [n(4.0)], [n(2.0)]]);
+        assert!(evaluate_array(&parse_formula("Top*2").unwrap(), &ctx).is_none());
+    }
+
+    #[test]
+    fn a_function_that_wants_a_reference_does_not_take_a_rectangle_for_one() {
+        assert_eq!(
+            shown_in(&tagged(), "ROW(SORT(A1:A4))"),
+            CellValue::Error {
+                value: ErrorValue::Value
+            }
+        );
     }
 
     #[test]

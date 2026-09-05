@@ -3,7 +3,7 @@
 
 use std::cmp::Ordering;
 
-use xlsx_model::{CellValue, ErrorValue};
+use xlsx_model::{CellRef, CellValue, ErrorValue};
 
 use crate::eval::{Area, EvalContext, as_area, cmp_values, err, evaluate, num};
 use crate::parser::Expr;
@@ -253,12 +253,12 @@ pub(crate) fn choose(args: &[Expr], ctx: &EvalContext<'_>) -> CellValue {
 /// ROW([reference]): the 1-based row of the reference's top-left cell;
 /// referenceless form is #VALUE! (calling cell unknown).
 pub(crate) fn row(args: &[Expr], ctx: &EvalContext<'_>) -> CellValue {
-    reference_scalar(args, ctx, |area| area.start.row as f64 + 1.0)
+    reference_scalar(args, ctx, |origin| origin.row as f64 + 1.0)
 }
 
 /// COLUMN([reference]): the 1-based column of the reference's top-left cell.
 pub(crate) fn column(args: &[Expr], ctx: &EvalContext<'_>) -> CellValue {
-    reference_scalar(args, ctx, |area| area.start.col as f64 + 1.0)
+    reference_scalar(args, ctx, |origin| origin.col as f64 + 1.0)
 }
 
 /// ROWS(area): the number of rows in a reference.
@@ -289,12 +289,13 @@ fn approximate_row(
     found
 }
 
-fn reference_scalar(args: &[Expr], ctx: &EvalContext<'_>, pick: fn(&Area) -> f64) -> CellValue {
+/// A reference's position; a rectangle that was computed has none.
+fn reference_scalar(args: &[Expr], ctx: &EvalContext<'_>, pick: fn(CellRef) -> f64) -> CellValue {
     if args.len() != 1 {
         return err(ErrorValue::Value);
     }
-    match as_area(&args[0], ctx) {
-        Some(area) => num(pick(&area)),
+    match as_area(&args[0], ctx).and_then(|area| area.origin()) {
+        Some(origin) => num(pick(origin)),
         None => err(ErrorValue::Value),
     }
 }
