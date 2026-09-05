@@ -594,6 +594,38 @@ mod tests {
     }
 
     #[test]
+    fn a_range_or_an_operator_over_one_spills_and_a_plain_formula_does_not() {
+        let (mut wb, sheet) = one_sheet();
+        for (cell, value) in [("A1", 1.0), ("A2", 2.0), ("A3", 3.0)] {
+            put_num(&mut wb, sheet, cell, value);
+        }
+        put_formula(&mut wb, sheet, "C1", "A1:A3");
+        put_formula(&mut wb, sheet, "D1", "A1:A3*10");
+        put_formula(&mut wb, sheet, "E1", "A1*10");
+        put_formula(&mut wb, sheet, "F1", "SUM(A1:A3)*10");
+        let (mut graph, _) = rebuild_and_recalc_all(&mut wb, None);
+
+        assert_eq!(value(&wb, sheet, "C3"), num(3.0));
+        assert_eq!(value(&wb, sheet, "D3"), num(30.0));
+        assert_eq!(
+            wb.sheet(sheet).unwrap().spill(a1("D1")),
+            Some(CellRange::new(a1("D1"), a1("D3")))
+        );
+        // A plain formula is a value. Were it a one-cell spill it would be
+        // saved as an array formula, and so would every other one.
+        assert_eq!(value(&wb, sheet, "E1"), num(10.0));
+        assert_eq!(wb.sheet(sheet).unwrap().spill(a1("E1")), None);
+        assert_eq!(value(&wb, sheet, "F1"), num(60.0));
+        assert_eq!(wb.sheet(sheet).unwrap().spill(a1("F1")), None);
+
+        // The range inside the operator is a dependency like any other.
+        put_num(&mut wb, sheet, "A2", 5.0);
+        recalc_after(&mut wb, &mut graph, &[(sheet, a1("A2"))], None);
+        assert_eq!(value(&wb, sheet, "C2"), num(5.0));
+        assert_eq!(value(&wb, sheet, "D2"), num(50.0));
+    }
+
+    #[test]
     fn a_filtered_result_resizes_when_the_data_it_reads_changes() {
         // `SEQUENCE` only changes size when the formula does. A filter changes
         // size because a cell somewhere else changed, which is the case the

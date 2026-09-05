@@ -237,6 +237,14 @@ fn logical_functions() {
         ("IF(TRUE, 1, 1/0)", n(1.0)),
         ("IFERROR(1, 1/0)", n(1.0)),
         ("SUM(1,,2)", n(3.0)),
+        ("SUM(FILTER(A1:A5, B1:B5=\"apple\"))", n(90.0)),
+        ("SUMPRODUCT((B1:B5=\"apple\")*A1:A5)", n(90.0)),
+        ("COUNTA(UNIQUE(B1:B5))", n(3.0)),
+        (
+            "TEXTJOIN(\",\", TRUE, UNIQUE(B1:B5))",
+            t("apple,banana,cherry"),
+        ),
+        ("AVERAGE(A1:A5*2)", n(60.0)),
         ("IF(TRUE,,9)", CellValue::Empty),
     ]);
 }
@@ -257,6 +265,8 @@ fn lookup_functions() {
         ("MATCH(35, A1:A5, 1)", n(3.0)),
         ("XLOOKUP(2, E1:E4, F1:F4)", t("two")),
         ("XLOOKUP(9, E1:E4, F1:F4, \"none\")", t("none")),
+        ("XLOOKUP(\"cherry\", UNIQUE(B1:B5), SEQUENCE(3))", n(3.0)),
+        ("INDEX(SORT(A1:A5,1,-1), 1)", n(50.0)),
         ("CHOOSE(2, \"a\", \"b\", \"c\")", t("b")),
         ("ROW(A5)", n(5.0)),
         ("COLUMN(C1)", n(3.0)),

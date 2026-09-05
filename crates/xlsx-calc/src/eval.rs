@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use xlsx_model::{CellProvider, CellRef, CellValue, ErrorValue, SheetId};
 
+use crate::functions::arrays::{ArrayValue, MAX_CELLS};
 use crate::parser::{BinaryOp, Expr, UnaryOp};
 
 pub const MAX_EVALUATION_CELL_VISITS: u64 = 1_100_000;
@@ -52,6 +53,7 @@ pub struct EvalContext<'a> {
     unhandled_budget_errors: Rc<Cell<u64>>,
     defined_name_stack: Rc<RefCell<Vec<DefinedNameKey>>>,
     defined_name_values: Rc<RefCell<HashMap<DefinedNameKey, CellValue>>>,
+    defined_name_arrays: Rc<RefCell<HashMap<DefinedNameKey, Produced>>>,
     shared_budget: Option<Rc<EvaluationBudget>>,
 }
 
@@ -66,6 +68,7 @@ impl<'a> EvalContext<'a> {
             unhandled_budget_errors: Rc::new(Cell::new(0)),
             defined_name_stack: Rc::new(RefCell::new(Vec::new())),
             defined_name_values: Rc::new(RefCell::new(HashMap::new())),
+            defined_name_arrays: Rc::new(RefCell::new(HashMap::new())),
             shared_budget: None,
         }
     }
@@ -80,6 +83,7 @@ impl<'a> EvalContext<'a> {
             unhandled_budget_errors: Rc::new(Cell::new(0)),
             defined_name_stack: Rc::new(RefCell::new(Vec::new())),
             defined_name_values: Rc::new(RefCell::new(HashMap::new())),
+            defined_name_arrays: Rc::new(RefCell::new(HashMap::new())),
             shared_budget: None,
         }
     }
@@ -98,6 +102,7 @@ impl<'a> EvalContext<'a> {
             unhandled_budget_errors: Rc::new(Cell::new(0)),
             defined_name_stack: Rc::new(RefCell::new(Vec::new())),
             defined_name_values: Rc::new(RefCell::new(HashMap::new())),
+            defined_name_arrays: Rc::new(RefCell::new(HashMap::new())),
             shared_budget: Some(budget),
         }
     }
@@ -112,6 +117,7 @@ impl<'a> EvalContext<'a> {
             unhandled_budget_errors: Rc::clone(&self.unhandled_budget_errors),
             defined_name_stack: Rc::clone(&self.defined_name_stack),
             defined_name_values: Rc::clone(&self.defined_name_values),
+            defined_name_arrays: Rc::clone(&self.defined_name_arrays),
             shared_budget: self.shared_budget.clone(),
         }
     }
@@ -210,44 +216,123 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext<'_>) -> CellValue {
         Expr::Name { scope, name } => evaluate_defined_name(scope, name, ctx),
         Expr::Unary { op, expr } => eval_unary(*op, expr, ctx),
         Expr::Binary { op, lhs, rhs } => eval_binary(*op, lhs, rhs, ctx),
-        Expr::Percent(inner) => match to_number(&evaluate(inner, ctx)) {
-            Ok(n) => num(n / 100.0),
-            Err(e) => err(e),
-        },
+        Expr::Percent(inner) => percent_value(evaluate(inner, ctx)),
         // A gap reaches a function that wanted a value, not an option.
         Expr::Omitted => CellValue::Empty,
         Expr::FuncCall { name, args } => match crate::functions::lookup(name) {
             Some(f) => f(args, ctx),
-            // An array function reached in scalar position. Nothing here can
-            // consume a rectangle yet, and answering with its first cell would
-            // make `SUM(SEQUENCE(3))` quietly 1 instead of 6, so it is refused
-            // as the wrong kind of value rather than the wrong number.
+            // An array function reached where one value was wanted — a
+            // parameter like ROUND's, which is not lifted across a rectangle
+            // here. Answering with its first cell would be a wrong number, so
+            // it is refused as the wrong kind of value.
             None if crate::functions::arrays::lookup(name).is_some() => err(ErrorValue::Value),
             None => err(ErrorValue::Name),
         },
     }
 }
 
-/// The rectangle this formula produces, when it produces one.
+/// The rectangle an expression stands for, when it stands for one: a range,
+/// an array function, a name defined as either, or an operator applied across
+/// one of those.
 ///
-/// Only a whole formula spills. The same function nested inside another
-/// expression is consumed there — `=SUM(SEQUENCE(3))` is one number — so this
-/// answers for a top-level call and nothing else.
-pub fn evaluate_array(
-    expr: &Expr,
-    ctx: &EvalContext<'_>,
-) -> Option<Result<crate::functions::arrays::ArrayValue, CellValue>> {
-    let Expr::FuncCall { name, args } = expr else {
-        return None;
-    };
-    if crate::functions::lookup(name).is_some() {
+/// A single cell is a value, not a one-cell rectangle — `=A1*2` must not
+/// spill, and a formula that spills is saved as an array formula.
+pub fn evaluate_array(expr: &Expr, ctx: &EvalContext<'_>) -> Produced {
+    match expr {
+        Expr::Range { sheet, range } => Some(match resolve_sheet(sheet, ctx) {
+            Some(sheet) => Area::cells(sheet, *range).into_array(ctx).map_err(err),
+            None => Err(err(ErrorValue::Ref)),
+        }),
+        Expr::Name { scope, name } => evaluate_defined_name_array(scope, name, ctx),
+        Expr::Unary { op, expr } => {
+            let op = *op;
+            Some(evaluate_array(expr, ctx)?.map(|array| array.map(|v| unary_value(op, v))))
+        }
+        Expr::Percent(inner) => {
+            Some(evaluate_array(inner, ctx)?.map(|array| array.map(percent_value)))
+        }
+        Expr::Binary { op, lhs, rhs } => broadcast(*op, lhs, rhs, ctx),
+        Expr::FuncCall { name, args } => {
+            if crate::functions::lookup(name).is_some() {
+                return None;
+            }
+            Some(crate::functions::arrays::lookup(name)?(args, ctx))
+        }
+        Expr::Number(_)
+        | Expr::Text(_)
+        | Expr::Bool(_)
+        | Expr::Error(_)
+        | Expr::Ref { .. }
+        | Expr::Omitted => None,
+    }
+}
+
+/// An operator with a rectangle on at least one side, applied cell by cell.
+///
+/// A side with one row or one column is repeated across the other's extent,
+/// so a column against a row is every pairing; sides that agree on neither
+/// dimension are padded with `#N/A` where one runs out, which is what Excel
+/// shows for `{1;2;3}+{1;2}`.
+fn broadcast(op: BinaryOp, lhs: &Expr, rhs: &Expr, ctx: &EvalContext<'_>) -> Produced {
+    let left = evaluate_array(lhs, ctx);
+    let right = evaluate_array(rhs, ctx);
+    if left.is_none() && right.is_none() {
         return None;
     }
-    Some(crate::functions::arrays::lookup(name)?(args, ctx))
+    let side = |produced: Produced, expr: &Expr| match produced {
+        Some(produced) => produced,
+        None => Ok(ArrayValue::scalar(evaluate(expr, ctx))),
+    };
+    let (left, right) = match (side(left, lhs), side(right, rhs)) {
+        (Ok(left), Ok(right)) => (left, right),
+        (Err(error), _) | (_, Err(error)) => return Some(Err(error)),
+    };
+
+    let span = |a: usize, b: usize| {
+        if a == 1 {
+            b
+        } else if b == 1 {
+            a
+        } else {
+            a.max(b)
+        }
+    };
+    let (rows, cols) = (
+        span(left.rows(), right.rows()),
+        span(left.cols(), right.cols()),
+    );
+    if rows.checked_mul(cols).is_none_or(|cells| cells > MAX_CELLS) {
+        return Some(Err(err(ErrorValue::Num)));
+    }
+    let na = err(ErrorValue::NA);
+    let pick = |array: &ArrayValue, row: usize, col: usize| -> CellValue {
+        let row = if array.rows() == 1 { 0 } else { row };
+        let col = if array.cols() == 1 { 0 } else { col };
+        if row < array.rows() && col < array.cols() {
+            array.at(row, col).clone()
+        } else {
+            na.clone()
+        }
+    };
+    let mut values = Vec::with_capacity(rows * cols);
+    for row in 0..rows {
+        for col in 0..cols {
+            values.push(binary_values(
+                op,
+                &pick(&left, row, col),
+                &pick(&right, row, col),
+            ));
+        }
+    }
+    Some(Ok(ArrayValue::new(rows, cols, values)))
 }
 
 /// a defined name identified by the sheet its lookup resolved against.
 type DefinedNameKey = (SheetId, String);
+
+/// What `evaluate_array` answers: nothing for a value, else the rectangle or
+/// the error that stands where it would.
+type Produced = Option<Result<ArrayValue, CellValue>>;
 
 /// a defined name resolved to its parsed definition plus the sheet that
 /// definition's unqualified refs bind to.
@@ -276,6 +361,26 @@ fn evaluate_defined_name(scope: &Option<String>, name: &str, ctx: &EvalContext<'
         .borrow_mut()
         .insert(binding.key, value.clone());
     value
+}
+
+/// Whether a name stands for a rectangle, remembered per context for the same
+/// reason as its value: asked through `A=B+B` for each side, an unmemoised
+/// answer costs 2^n.
+fn evaluate_defined_name_array(
+    scope: &Option<String>,
+    name: &str,
+    ctx: &EvalContext<'_>,
+) -> Produced {
+    let key = defined_name_key(scope, name, ctx).ok()?;
+    if let Some(known) = ctx.defined_name_arrays.borrow().get(&key) {
+        return known.clone();
+    }
+    let binding = bind_defined_name(key, name, ctx).ok()?;
+    let produced = ctx.inside_defined_name(&binding, evaluate_array);
+    ctx.defined_name_arrays
+        .borrow_mut()
+        .insert(binding.key, produced.clone());
+    produced
 }
 
 fn defined_name_key(
@@ -356,7 +461,10 @@ pub(crate) fn resolve_sheet(sheet: &Option<String>, ctx: &EvalContext<'_>) -> Op
 }
 
 fn eval_unary(op: UnaryOp, expr: &Expr, ctx: &EvalContext<'_>) -> CellValue {
-    let v = evaluate(expr, ctx);
+    unary_value(op, evaluate(expr, ctx))
+}
+
+fn unary_value(op: UnaryOp, v: CellValue) -> CellValue {
     match to_number(&v) {
         Ok(n) => match op {
             UnaryOp::Neg => num(-n),
@@ -366,39 +474,54 @@ fn eval_unary(op: UnaryOp, expr: &Expr, ctx: &EvalContext<'_>) -> CellValue {
     }
 }
 
+fn percent_value(v: CellValue) -> CellValue {
+    match to_number(&v) {
+        Ok(n) => num(n / 100.0),
+        Err(e) => err(e),
+    }
+}
+
 fn eval_binary(op: BinaryOp, lhs: &Expr, rhs: &Expr, ctx: &EvalContext<'_>) -> CellValue {
     let lv = evaluate(lhs, ctx);
     if let CellValue::Error { value } = lv {
         return err(value);
     }
-    let rv = evaluate(rhs, ctx);
+    binary_values(op, &lv, &evaluate(rhs, ctx))
+}
+
+/// An operator on two values; an error on either side is the answer, the
+/// left one first.
+fn binary_values(op: BinaryOp, lv: &CellValue, rv: &CellValue) -> CellValue {
+    if let CellValue::Error { value } = lv {
+        return err(*value);
+    }
     if let CellValue::Error { value } = rv {
-        return err(value);
+        return err(*value);
     }
     match op {
         BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Pow => {
-            let a = match to_number(&lv) {
+            let a = match to_number(lv) {
                 Ok(n) => n,
                 Err(e) => return err(e),
             };
-            let b = match to_number(&rv) {
+            let b = match to_number(rv) {
                 Ok(n) => n,
                 Err(e) => return err(e),
             };
             arithmetic(op, a, b)
         }
         BinaryOp::Concat => {
-            let a = match to_text(&lv) {
+            let a = match to_text(lv) {
                 Ok(s) => s,
                 Err(e) => return err(e),
             };
-            let b = match to_text(&rv) {
+            let b = match to_text(rv) {
                 Ok(s) => s,
                 Err(e) => return err(e),
             };
             text(a + &b)
         }
-        _ => compare(op, &lv, &rv),
+        _ => compare(op, lv, rv),
     }
 }
 
@@ -534,16 +657,47 @@ pub(crate) fn format_number(n: f64) -> String {
     format!("{n}")
 }
 
-/// a resolved rectangular reference: absolute top-left plus dimensions on a
-/// known sheet, for positional access by function modules.
+/// A rectangle a function reads by position: cells on a sheet, fetched as
+/// they are asked for, or values an expression already produced.
 pub(crate) struct Area {
-    pub sheet: SheetId,
-    pub start: CellRef,
+    source: Source,
     pub rows: usize,
     pub cols: usize,
 }
 
+enum Source {
+    Cells { sheet: SheetId, start: CellRef },
+    Values(ArrayValue),
+}
+
 impl Area {
+    fn cells(sheet: SheetId, range: xlsx_model::CellRange) -> Self {
+        Self {
+            source: Source::Cells {
+                sheet,
+                start: range.start,
+            },
+            rows: (range.end.row - range.start.row + 1) as usize,
+            cols: (range.end.col - range.start.col + 1) as usize,
+        }
+    }
+
+    fn computed(values: ArrayValue) -> Self {
+        Self {
+            rows: values.rows(),
+            cols: values.cols(),
+            source: Source::Values(values),
+        }
+    }
+
+    /// The top-left cell, for a rectangle that is a reference to one.
+    pub(crate) fn origin(&self) -> Option<CellRef> {
+        match &self.source {
+            Source::Cells { start, .. } => Some(*start),
+            Source::Values(_) => None,
+        }
+    }
+
     /// value at 0-based `(row, col)` within the area.
     pub(crate) fn get(
         &self,
@@ -551,19 +705,41 @@ impl Area {
         row: usize,
         col: usize,
     ) -> Result<CellValue, ErrorValue> {
-        if !ctx.consume_cells(1) {
+        if matches!(self.source, Source::Cells { .. }) && !ctx.consume_cells(1) {
             return Err(ErrorValue::Num);
         }
         Ok(self.get_unmetered(ctx, row, col))
     }
 
     pub(crate) fn get_unmetered(&self, ctx: &EvalContext<'_>, row: usize, col: usize) -> CellValue {
-        let cell = CellRef::new(self.start.row + row as u32, self.start.col + col as u32);
-        normalize_provider_value(ctx.provider.value(self.sheet, cell))
+        match &self.source {
+            Source::Cells { sheet, start } => {
+                let cell = CellRef::new(start.row + row as u32, start.col + col as u32);
+                normalize_provider_value(ctx.provider.value(*sheet, cell))
+            }
+            Source::Values(values) => values.at(row, col).clone(),
+        }
     }
 
     /// all values in row-major order.
     pub(crate) fn values(&self, ctx: &EvalContext<'_>) -> Result<Vec<CellValue>, ErrorValue> {
+        match &self.source {
+            Source::Cells { .. } => self.read(ctx),
+            Source::Values(values) => Ok(values.values().to_vec()),
+        }
+    }
+
+    /// The rectangle itself, moved out where it was already computed.
+    pub(crate) fn into_array(self, ctx: &EvalContext<'_>) -> Result<ArrayValue, ErrorValue> {
+        match self.source {
+            Source::Cells { .. } => Ok(ArrayValue::new(self.rows, self.cols, self.read(ctx)?)),
+            Source::Values(values) => Ok(values),
+        }
+    }
+
+    /// Every cell of a sheet rectangle, charged to the budget as one visit
+    /// each. Values already computed are not cells and are not charged.
+    fn read(&self, ctx: &EvalContext<'_>) -> Result<Vec<CellValue>, ErrorValue> {
         let count = self.cell_count().ok_or(ErrorValue::Num)?;
         if !ctx.consume_cells(count) {
             return Err(ErrorValue::Num);
@@ -585,28 +761,30 @@ impl Area {
     }
 }
 
-/// interpret an argument as a rectangular reference (1x1 for single cells);
-/// `None` for non-references or unknown sheets.
+/// Read an argument as a rectangle: a reference (a lone cell is 1x1), or
+/// anything `evaluate_array` produces one for. `None` for a value, and for a
+/// reference to a sheet that does not exist.
+///
+/// A producer that fails is a 1x1 rectangle holding its error, so that the
+/// error reaches whichever function reads it the way Excel's does:
+/// `SUM(FILTER(…))` with nothing kept is `#CALC!`, and `COUNTA` of the same
+/// is 1.
 pub(crate) fn as_area(arg: &Expr, ctx: &EvalContext<'_>) -> Option<Area> {
     match arg {
-        Expr::Ref { sheet, cell } => Some(Area {
-            sheet: resolve_sheet(sheet, ctx)?,
-            start: *cell,
-            rows: 1,
-            cols: 1,
-        }),
-        Expr::Range { sheet, range } => Some(Area {
-            sheet: resolve_sheet(sheet, ctx)?,
-            start: range.start,
-            rows: (range.end.row - range.start.row + 1) as usize,
-            cols: (range.end.col - range.start.col + 1) as usize,
-        }),
+        Expr::Ref { sheet, cell } => Some(Area::cells(
+            resolve_sheet(sheet, ctx)?,
+            xlsx_model::CellRange::new(*cell, *cell),
+        )),
+        Expr::Range { sheet, range } => Some(Area::cells(resolve_sheet(sheet, ctx)?, *range)),
         Expr::Name { scope, name } => {
             let key = defined_name_key(scope, name, ctx).ok()?;
             let binding = bind_defined_name(key, name, ctx).ok()?;
             ctx.inside_defined_name(&binding, as_area)
         }
-        _ => None,
+        _ => Some(match evaluate_array(arg, ctx)? {
+            Ok(values) => Area::computed(values),
+            Err(error) => Area::computed(ArrayValue::scalar(error)),
+        }),
     }
 }
 
