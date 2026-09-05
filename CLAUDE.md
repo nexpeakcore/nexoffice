@@ -5,7 +5,7 @@
 Fork of BetterOffice (Apache-2.0). Building an Electron + Rust office suite (Word + Excel clone).
 
 ## Architecture
-- **Rust engines** in `crates/` (149K LOC, 24 crates) → compiled to WASM
+- **Rust engines** in `crates/` (176K LOC, 25 crates) → compiled to WASM
 - **TypeScript packages** in `packages/` — WASM wrappers + React components
 - **Electron desktop shell** in `desktop/` — electron-vite + electron-builder
 - Build tool: bun + wasm-pack
@@ -20,7 +20,7 @@ crates/
 ├── betteroffice-docx/ — Public DOCX API
 ├── xlsx-model/     — XLSX data model
 ├── xlsx-parse/     — XLSX parser
-├── xlsx-calc/      — Formula engine (110+ functions)
+├── xlsx-calc/      — Formula engine (110+ functions, dynamic arrays)
 ├── xlsx-ops/       — CRDT operations
 ├── xlsx-render/    — Canvas renderer
 ├── xlsx-raster/    — PNG export
@@ -36,13 +36,13 @@ crates/
 packages/
 ├── docx/           — @betteroffice/docx WASM wrapper
 ├── docx-react/     — @betteroffice/docx-react (88 components)
-├── docx-i18n/      — 12 languages
+├── docx-i18n/      — 10 languages
 ├── xlsx/           — @betteroffice/xlsx WASM wrapper
 ├── xlsx-react/     — @betteroffice/xlsx-react
-├── xlsx-i18n/      — 12 languages
+├── xlsx-i18n/      — 10 languages
 ├── pptx/           — @betteroffice/pptx
 ├── pptx-react/     — @betteroffice/pptx-react
-├── pptx-i18n/      — 12 languages
+├── pptx-i18n/      — 10 languages
 └── fonts/
 ```
 
@@ -56,23 +56,54 @@ bun run rust:check             # cargo fmt + clippy + test
 ```
 
 ## Current State
-- Rust engines: Production-quality, build successfully
-- React components: 180+ files for DOCX editor, 17 for XLSX
-- Web demo app exists at apps/demo and apps/web
-- Electron shell in `desktop/` — Phase 1, in progress
+- Rust engines: production-quality, 193 files in `docx-react`, 17 in `xlsx-react`
+- Web demo app at `apps/demo` and `apps/web`
+- Desktop app ships: `desktop-v1.0.0` through `v1.1.2` are tagged; **v1.1.2 has
+  no installers attached** and `desktop/package.json` already reads 1.1.4, so
+  the tree is two versions ahead of anything a user can install
+- Phases 1-3 are done (Electron shell, XLSX sheet features, PPTX editing).
+  Phase 4 (editor depth) is where new feature work goes
 
-## Phase 1 Goals (Current)
-Build Electron desktop wrapper + critical missing features:
-1. Electron + React shell with WASM bundles
-2. File Open/Save via native dialogs
-3. Menu bar + keyboard shortcuts
-4. Spell check (hunspell)
-5. Word count
-6. Export PDF
-7. Page numbers
-8. Sort & Filter (XLSX)
-9. Freeze panes (XLSX)
-10. Cell merge + comments (XLSX)
+## What is blocked, and on what
+These are the reasons work stops, not a backlog. Check them before promising a
+release or a published package.
+
+1. **Actions cannot open a release PR.** `default_workflow_permissions` is
+   `read` and `can_approve_pull_request_reviews` is false, so `release.yml`
+   fails at `changesets/action` on every push to main. **24 changesets are
+   queued unpublished.** The fix is a repo setting the owner must flip:
+   Settings → Actions → General → Workflow permissions → read+write, plus
+   "Allow GitHub Actions to create and approve pull requests".
+2. **Windows installers are unsigned.** `desktop/electron-builder.yml` has no
+   `publisherName`, so electron-updater's signature check is a no-op and
+   SmartScreen warns on install.
+3. **`vendor/yrs` is a fork the repo calls TEMPORARY.** 1.5MB, 58 files, kept
+   for a text-cursor API that makes DOCX seeding linear. Its exit condition is
+   written in the root `Cargo.toml`. Until upstream carries the change, the
+   `yrs-cursor` feature stays off by default — which means a plain
+   `cargo test` measures the OLD quadratic seed. Pass `--features yrs-cursor`
+   to any measurement of seeding or opening.
+4. **The worker-authoritative refactor is 2 stages of 3.** The worker owns the
+   document and the display list is page-windowed; the main-thread `bootstrap`
+   path it replaced is still there alongside it.
+
+## Phase 1-3, shipped
+Electron + React shell with WASM bundles · file open/save via native dialogs ·
+menu bar and shortcuts · spell check · word count · PDF export · page numbers ·
+XLSX sort, filter, freeze panes, merge, comments · charts (render, author,
+agent tool) · AI assistant with approval-gated writes · auto-update over Azure.
+
+## Next, in order
+1. **Typing on long documents.** ~160ms a keystroke on a 338-page file, of
+   which lowering is ~53ms. Measured: reading the document out of yrs costs
+   1ms of that; the other 30ms rebuilds all 2753 blocks when one paragraph
+   changed. `lower_timing` in `crates/docx-edit/src/engine.rs` prints the
+   split. The fix is to reuse lowered paragraphs by the content key
+   `lower_story` already computes.
+2. **Phase 4 editor depth**: vector PDF, spell check beyond English, threaded
+   comments, incremental projection.
+3. **Dynamic-array leftovers**: `CHOOSE` does not lift, `{1,2,3}` does not lex,
+   `@` is not understood.
 
 ## Tech Stack for Electron
 - Electron latest
