@@ -19,6 +19,64 @@ pub mod text;
 /// a builtin: lazy arguments in, one value out.
 pub type BuiltIn = fn(&[Expr], &EvalContext<'_>) -> CellValue;
 
+/// Which of a function's parameters take one value, so that a rectangle
+/// given for one runs the function once per cell, and which take a range,
+/// which is read whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Params {
+    /// Every parameter takes one value: `LEN`, `ROUND`, `IF`.
+    Values,
+    /// Every parameter takes a range: `SUM`, `AND`, `ROWS`.
+    Ranges,
+    /// These positions take one value and the rest take a range.
+    ValuesAt(&'static [usize]),
+    /// A criterion at every second position from here on, each after the
+    /// range it applies to: `COUNTIFS(range, crit, range, crit)`.
+    CriteriaFrom(usize),
+}
+
+impl Params {
+    pub(crate) fn takes_a_value(self, index: usize) -> bool {
+        match self {
+            Params::Values => true,
+            Params::Ranges => false,
+            Params::ValuesAt(positions) => positions.contains(&index),
+            Params::CriteriaFrom(first) => index >= first && (index - first).is_multiple_of(2),
+        }
+    }
+}
+
+/// The parameter shape of a builtin. Anything not named here is read as
+/// ranges, which is what every function did before rectangles could be
+/// lifted, so an omission costs a lift and never a wrong answer.
+pub(crate) fn params(name: &str) -> Params {
+    match name.to_ascii_uppercase().as_str() {
+        "ABS" | "SIGN" | "ROUND" | "ROUNDUP" | "ROUNDDOWN" | "MROUND" | "CEILING" | "FLOOR"
+        | "INT" | "TRUNC" | "MOD" | "POWER" | "SQRT" | "EXP" | "LN" | "LOG" | "LOG10" => {
+            Params::Values
+        }
+        "LEN" | "LEFT" | "RIGHT" | "MID" | "FIND" | "SEARCH" | "SUBSTITUTE" | "REPLACE"
+        | "TRIM" | "UPPER" | "LOWER" | "PROPER" | "CLEAN" | "REPT" | "EXACT" | "T" | "CHAR"
+        | "CODE" | "VALUE" | "NUMBERVALUE" | "TEXT" => Params::Values,
+        "DATE" | "YEAR" | "MONTH" | "DAY" | "WEEKDAY" | "EDATE" | "EOMONTH" | "HOUR" | "MINUTE"
+        | "SECOND" | "TIME" | "DATEDIF" => Params::Values,
+        "IF" | "IFERROR" | "IFNA" | "IFS" | "SWITCH" | "NOT" => Params::Values,
+        "ISBLANK" | "ISNUMBER" | "ISTEXT" | "ISLOGICAL" | "ISERROR" | "ISERR" | "ISNA" | "N" => {
+            Params::Values
+        }
+        "SUMIF" | "COUNTIF" | "AVERAGEIF" | "LARGE" | "SMALL" => Params::ValuesAt(&[1]),
+        "COUNTIFS" => Params::CriteriaFrom(1),
+        "SUMIFS" | "AVERAGEIFS" => Params::CriteriaFrom(2),
+        "RANK" | "RANK.EQ" | "MATCH" => Params::ValuesAt(&[0, 2]),
+        "VLOOKUP" | "HLOOKUP" => Params::ValuesAt(&[0, 2, 3]),
+        "INDEX" => Params::ValuesAt(&[1, 2]),
+        "XLOOKUP" => Params::ValuesAt(&[0, 3, 4, 5]),
+        "CHOOSE" => Params::ValuesAt(&[0]),
+        "TEXTJOIN" => Params::ValuesAt(&[0, 1]),
+        _ => Params::Ranges,
+    }
+}
+
 /// resolve a function name (case-insensitive) to its implementation; aliases
 /// map to the same function.
 pub fn lookup(name: &str) -> Option<BuiltIn> {
@@ -195,5 +253,27 @@ pub(crate) fn finite(x: f64) -> CellValue {
         num(x)
     } else {
         err(ErrorValue::Num)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Params;
+
+    #[test]
+    fn a_criterion_follows_each_range_it_applies_to() {
+        let countifs = Params::CriteriaFrom(1);
+        assert!([1, 3, 5].iter().all(|i| countifs.takes_a_value(*i)));
+        assert!([0, 2, 4].iter().all(|i| !countifs.takes_a_value(*i)));
+        let sumifs = Params::CriteriaFrom(2);
+        assert!([2, 4].iter().all(|i| sumifs.takes_a_value(*i)));
+        assert!([0, 1, 3].iter().all(|i| !sumifs.takes_a_value(*i)));
+    }
+
+    #[test]
+    fn a_function_nobody_described_reads_ranges_as_it_always_did() {
+        assert_eq!(super::params("SUM"), Params::Ranges);
+        assert_eq!(super::params("NOT_A_FUNCTION"), Params::Ranges);
+        assert_eq!(super::params("len"), Params::Values);
     }
 }
