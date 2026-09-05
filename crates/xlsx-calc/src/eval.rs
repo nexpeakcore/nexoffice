@@ -214,6 +214,8 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext<'_>) -> CellValue {
             Ok(n) => num(n / 100.0),
             Err(e) => err(e),
         },
+        // A gap reaches a function that wanted a value, not an option.
+        Expr::Omitted => CellValue::Empty,
         Expr::FuncCall { name, args } => match crate::functions::lookup(name) {
             Some(f) => f(args, ctx),
             // An array function reached in scalar position. Nothing here can

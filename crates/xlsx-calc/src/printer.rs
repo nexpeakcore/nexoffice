@@ -96,6 +96,7 @@ impl Expr {
                 }
             }
             Expr::Percent(expr) => format!("{}%", expr.print(6)),
+            Expr::Omitted => String::new(),
             Expr::Binary { op, lhs, rhs } => {
                 let bp = binary_bp(op);
                 // left-associative: the right child needs parens at equal bp
@@ -142,6 +143,9 @@ mod tests {
             "1-2-3",
             "2^3^2",
             "-(1+2)",
+            "SORT(A1:B9,,,TRUE)",
+            "VLOOKUP(A1,B1:C9,2,)",
+            "SUM(,1)",
         ] {
             round_trips(src);
         }
