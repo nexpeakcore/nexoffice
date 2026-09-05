@@ -594,6 +594,57 @@ mod tests {
     }
 
     #[test]
+    fn a_filtered_result_resizes_when_the_data_it_reads_changes() {
+        // `SEQUENCE` only changes size when the formula does. A filter changes
+        // size because a cell somewhere else changed, which is the case the
+        // spill bookkeeping has to survive without being re-entered by hand.
+        let (mut wb, sheet) = one_sheet();
+        for (cell, value) in [("A1", 10.0), ("A2", 20.0), ("A3", 30.0)] {
+            put_num(&mut wb, sheet, cell, value);
+        }
+        for (cell, keep) in [("B1", 1.0), ("B2", 0.0), ("B3", 1.0)] {
+            put_num(&mut wb, sheet, cell, keep);
+        }
+        put_formula(&mut wb, sheet, "D1", "FILTER(A1:A3,B1:B3)");
+        let (mut graph, _) = rebuild_and_recalc_all(&mut wb, None);
+
+        assert_eq!(value(&wb, sheet, "D1"), num(10.0));
+        assert_eq!(value(&wb, sheet, "D2"), num(30.0));
+        assert_eq!(
+            wb.sheet(sheet).unwrap().spill(a1("D1")),
+            Some(CellRange::new(a1("D1"), a1("D2")))
+        );
+
+        put_num(&mut wb, sheet, "B2", 1.0);
+        recalc_after(&mut wb, &mut graph, &[(sheet, a1("B2"))], None);
+        assert_eq!(value(&wb, sheet, "D2"), num(20.0));
+        assert_eq!(value(&wb, sheet, "D3"), num(30.0));
+        assert_eq!(
+            wb.sheet(sheet).unwrap().spill(a1("D1")),
+            Some(CellRange::new(a1("D1"), a1("D3")))
+        );
+
+        for cell in ["B1", "B2", "B3"] {
+            put_num(&mut wb, sheet, cell, 0.0);
+        }
+        recalc_after(
+            &mut wb,
+            &mut graph,
+            &[(sheet, a1("B1")), (sheet, a1("B2")), (sheet, a1("B3"))],
+            None,
+        );
+        assert_eq!(
+            value(&wb, sheet, "D1"),
+            CellValue::Error {
+                value: ErrorValue::Calc
+            }
+        );
+        assert_eq!(value(&wb, sheet, "D2"), CellValue::Empty);
+        assert_eq!(value(&wb, sheet, "D3"), CellValue::Empty);
+        assert_eq!(wb.sheet(sheet).unwrap().spill(a1("D1")), None);
+    }
+
+    #[test]
     fn a_result_growing_over_its_own_cells_is_not_blocked_by_them() {
         let (mut wb, sheet) = one_sheet();
         put_formula(&mut wb, sheet, "A1", "SEQUENCE(2)");

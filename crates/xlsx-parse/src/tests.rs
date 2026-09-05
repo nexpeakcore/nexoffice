@@ -487,6 +487,27 @@ fn full_circle_parse_serialize_parse_is_stable() {
 }
 
 #[test]
+fn a_calc_error_reads_back_as_an_error_and_not_as_its_own_text() {
+    // Excel writes `#CALC!` as the cached value of a dynamic array that
+    // produced nothing. An error string the reader does not know is kept as
+    // text, which would leave that label sitting in the cell that holds the
+    // formula and hand it back to Excel as a string.
+    let body = r#"
+        <sheetData>
+            <row r="1"><c r="A1" t="e"><v>#CALC!</v></c></row>
+        </sheetData>
+    "#;
+    let expected = CellValue::Error {
+        value: ErrorValue::Calc,
+    };
+    let wb = parse_workbook(&package(body, &[], false)).unwrap();
+    assert_eq!(cell_at(&wb, "A1").value, expected);
+
+    let wb2 = parse_workbook(&serialize_workbook(&wb).unwrap()).unwrap();
+    assert_eq!(cell_at(&wb2, "A1").value, expected);
+}
+
+#[test]
 fn serialize_round_trips_inline_text_without_shared_table() {
     let mut wb = Workbook::default();
     let mut sheet = xlsx_model::Sheet::new("Only");

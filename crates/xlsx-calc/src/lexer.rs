@@ -43,6 +43,7 @@ const ERROR_LITERALS: &[(&str, ErrorValue)] = &[
     ("#REF!", ErrorValue::Ref),
     ("#VALUE!", ErrorValue::Value),
     ("#SPILL!", ErrorValue::Spill),
+    ("#CALC!", ErrorValue::Calc),
 ];
 
 #[derive(Debug, Clone, PartialEq)]
