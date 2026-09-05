@@ -165,6 +165,34 @@ describe('wasm loader', () => {
     }
   });
 
+  it('tells a caller which spilled result a cell belongs to, and refuses to tear one', () => {
+    const handle = openWorkbook(sampleBytes());
+    try {
+      handle.editCell(0, 40, 8, '=SEQUENCE(3)');
+      const child = handle.cell(0, 41, 8);
+      expect(child.input).toBe('2');
+      expect(child.spill).toEqual({
+        anchor: 'I41',
+        range: { start: { row: 40, col: 8 }, end: { row: 42, col: 8 } },
+        input: '=SEQUENCE(3)',
+      });
+      expect(handle.cell(0, 43, 8).spill).toBeUndefined();
+
+      // A refusal is a result, not a thrown error: the caller reads why.
+      const refused = handle.editCell(0, 41, 8, '9');
+      expect(refused.applied).toBe(false);
+      expect(refused.refusal).toEqual({
+        kind: 'spilledCell',
+        at: 'I42',
+        anchor: 'I41',
+        range: null,
+      });
+      expect(handle.cell(0, 41, 8).input).toBe('2');
+    } finally {
+      handle.dispose();
+    }
+  });
+
   it('freezes and unfreezes panes as one undoable step', () => {
     const handle = openWorkbook(sampleBytes());
     try {

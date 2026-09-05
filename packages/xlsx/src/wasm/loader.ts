@@ -72,6 +72,28 @@ export interface EditResult {
   sheetInfo: SheetInfo;
   changed?: string[];
   limitedCells?: string[];
+  /** Present when the engine declined the edit for a reason the user can act on. */
+  refusal?: EditRefusal;
+}
+
+/**
+ * An edit the engine declined, as data rather than a message, so the host says
+ * it in the reader's language.
+ *
+ * `spilledCell`: `at` belongs to the result of the formula in `anchor`.
+ * `spillTorn`: the change would have split the result in `range`.
+ */
+export interface EditRefusal {
+  kind: 'spilledCell' | 'spillTorn';
+  at?: string;
+  anchor: string;
+  range: CellSpan | null;
+}
+
+/** An inclusive rectangle in engine coordinates. */
+export interface CellSpan {
+  start: CellPoint;
+  end: CellPoint;
 }
 
 export interface CalculationStatus {
@@ -243,6 +265,15 @@ export interface CellEdit {
   input: string;
   isFormula: boolean;
   filterText?: string;
+  /** Set when this cell is part of an array formula's spilled result. */
+  spill?: CellSpill;
+}
+
+/** The spilled result a cell belongs to, and the formula that wrote it. */
+export interface CellSpill {
+  anchor: string;
+  range: CellSpan;
+  input: string;
 }
 
 /** One cell of a batch edit: target coordinates plus the raw user input. */

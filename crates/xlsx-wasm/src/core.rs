@@ -2,9 +2,9 @@
 use betteroffice_xlsx::RenderOptions;
 use betteroffice_xlsx::{
     CalculationOptions, CapturedFormat, CellAddress, CellInput as WorkbookCellInput, CellRange,
-    CellRef, CellValue, ChartSeriesSpec, ChartSpec, MutationResult, NumberFormatMutation, Op,
-    Proposal, ProposalEditInput as WorkbookProposalEditInput, ProposalRequest, SheetId, StylePatch,
-    UpdateEvent, UpdateSubscription, Viewport, Workbook,
+    CellRef, CellValue, ChartSeriesSpec, ChartSpec, Error, MutationResult, NumberFormatMutation,
+    Op, OpError, Proposal, ProposalEditInput as WorkbookProposalEditInput, ProposalRequest,
+    SheetId, Spill, StylePatch, UpdateEvent, UpdateSubscription, Viewport, Workbook,
 };
 use serde::{Deserialize, Serialize};
 
@@ -183,6 +183,21 @@ struct EditResult {
     sheet_info: SheetInfo,
     changed: Vec<String>,
     limited_cells: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refusal: Option<Refusal>,
+}
+
+/// An edit the engine declined for a reason the user can act on, as data
+/// rather than an error message, so the host can say it in the user's
+/// language.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Refusal {
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    at: Option<String>,
+    anchor: String,
+    range: Option<CellRange>,
 }
 
 #[derive(Serialize)]
@@ -198,6 +213,26 @@ struct CellEdit {
     input: String,
     is_formula: bool,
     filter_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spill: Option<SpillJson>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SpillJson {
+    anchor: String,
+    range: CellRange,
+    input: String,
+}
+
+impl From<Spill> for SpillJson {
+    fn from(spill: Spill) -> Self {
+        Self {
+            anchor: spill.anchor.to_a1(),
+            range: spill.region,
+            input: spill.input,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -398,16 +433,15 @@ impl Session {
     ) -> Result<String, String> {
         let args: EditArgs =
             serde_json::from_str(args).map_err(|error| format!("bad edit args: {error}"))?;
-        let result = self
-            .workbook
-            .edit_cell(
-                SheetId(args.sheet),
-                CellRef::new(args.row, args.col),
-                &args.input,
-                calculation_options(now_serial),
-            )
-            .map_err(|error| error.to_string())?;
-        self.edit_result(result)
+        match self.workbook.edit_cell(
+            SheetId(args.sheet),
+            CellRef::new(args.row, args.col),
+            &args.input,
+            calculation_options(now_serial),
+        ) {
+            Ok(result) => self.edit_result(result),
+            Err(error) => self.refused(error),
+        }
     }
 
     pub fn edit_cells_json(
@@ -425,11 +459,13 @@ impl Session {
                 input: edit.input,
             })
             .collect::<Vec<_>>();
-        let result = self
+        match self
             .workbook
             .edit_cells(SheetId(args.sheet), &edits, calculation_options(now_serial))
-            .map_err(|error| error.to_string())?;
-        self.edit_result(result)
+        {
+            Ok(result) => self.edit_result(result),
+            Err(error) => self.refused(error),
+        }
     }
 
     pub fn apply_ops_json(
@@ -524,6 +560,7 @@ impl Session {
             input: cell.input,
             is_formula: cell.is_formula,
             filter_text,
+            spill: cell.spill.map(SpillJson::from),
         })
         .map_err(|error| error.to_string())
     }
@@ -563,6 +600,7 @@ impl Session {
                             .unwrap_or_default(),
                         input: cell.input,
                         is_formula: cell.is_formula,
+                        spill: cell.spill.map(SpillJson::from),
                     })
                     .collect()
             })
@@ -806,6 +844,36 @@ impl Session {
             sheet_info: self.sheet_info()?,
             changed: self.changed_list(&result.changed),
             limited_cells: self.changed_list(&result.limited_cells),
+            refusal: None,
+        })
+        .map_err(|error| error.to_string())
+    }
+
+    /// An edit that did not happen. A refusal the user can act on — the cell
+    /// belongs to a spilled result — is an answer; anything else is still
+    /// the error it was.
+    fn refused(&self, error: Error) -> Result<String, String> {
+        let refusal = match &error {
+            Error::Operation(OpError::SpilledCell { at, anchor, .. }) => Refusal {
+                kind: "spilledCell",
+                at: Some(at.to_a1()),
+                anchor: anchor.to_a1(),
+                range: None,
+            },
+            Error::Operation(OpError::SpillTorn { anchor, region, .. }) => Refusal {
+                kind: "spillTorn",
+                at: None,
+                anchor: anchor.to_a1(),
+                range: Some(*region),
+            },
+            _ => return Err(error.to_string()),
+        };
+        serde_json::to_string(&EditResult {
+            applied: false,
+            sheet_info: self.sheet_info()?,
+            changed: Vec::new(),
+            limited_cells: Vec::new(),
+            refusal: Some(refusal),
         })
         .map_err(|error| error.to_string())
     }
@@ -1518,6 +1586,60 @@ mod tests {
             session.cell_json(r#"{"sheet":0,"row":0,"col":0}"#).unwrap(),
             cell
         );
+    }
+
+    #[test]
+    fn a_cell_says_which_spilled_result_it_belongs_to() {
+        let mut session = Session::open(&sample_xlsx(), None).unwrap();
+        session
+            .edit_cell_json(
+                r#"{"sheet":0,"row":5,"col":5,"input":"=SEQUENCE(3)"}"#,
+                None,
+            )
+            .unwrap();
+        let child = session.cell_json(r#"{"sheet":0,"row":6,"col":5}"#).unwrap();
+        assert!(child.contains(r#""input":"2""#), "{child}");
+        assert!(
+            child.contains(
+                r#""spill":{"anchor":"F6","range":{"start":{"row":5,"col":5},"end":{"row":7,"col":5}},"input":"=SEQUENCE(3)"}"#
+            ),
+            "{child}"
+        );
+        let anchor = session.cell_json(r#"{"sheet":0,"row":5,"col":5}"#).unwrap();
+        assert!(anchor.contains(r#""spill":{"anchor":"F6""#), "{anchor}");
+        let outside = session.cell_json(r#"{"sheet":0,"row":8,"col":5}"#).unwrap();
+        assert!(!outside.contains("spill"), "{outside}");
+    }
+
+    #[test]
+    fn typing_into_a_spilled_cell_is_refused_as_an_answer_not_an_error() {
+        let mut session = Session::open(&sample_xlsx(), None).unwrap();
+        session
+            .edit_cell_json(
+                r#"{"sheet":0,"row":5,"col":5,"input":"=SEQUENCE(3)"}"#,
+                None,
+            )
+            .unwrap();
+        let refused = session
+            .edit_cell_json(r#"{"sheet":0,"row":6,"col":5,"input":"9"}"#, None)
+            .expect("a refusal is a result");
+        assert!(refused.contains(r#""applied":false"#), "{refused}");
+        assert!(
+            refused.contains(
+                r#""refusal":{"kind":"spilledCell","at":"F7","anchor":"F6","range":null}"#
+            ),
+            "{refused}"
+        );
+        let still = session.cell_json(r#"{"sheet":0,"row":6,"col":5}"#).unwrap();
+        assert!(still.contains(r#""input":"2""#), "{still}");
+
+        let cleared = session
+            .edit_cells_json(
+                r#"{"sheet":0,"edits":[{"row":6,"col":5,"input":""},{"row":7,"col":5,"input":""}]}"#,
+                None,
+            )
+            .expect("a refusal is a result");
+        assert!(cleared.contains(r#""kind":"spilledCell""#), "{cleared}");
     }
 
     #[test]

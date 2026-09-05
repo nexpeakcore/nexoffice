@@ -157,5 +157,11 @@
     "cellLabelSelected": "{address}, {value}, selected",
     "emptyCellLabel": "{address}, empty",
     "emptyCellLabelSelected": "{address}, empty, selected"
+  },
+  "spill": {
+    "cannotEdit": "{cell} holds part of the result of the formula in {anchor}. Edit {anchor} instead.",
+    "cannotTear": "That would split the result of the formula in {anchor}, which fills {range}.",
+    "borrowedFormula": "Formula in {anchor}, whose result fills this cell",
+    "dismiss": "Dismiss"
   }
 }

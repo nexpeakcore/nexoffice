@@ -55,6 +55,9 @@ import type {
   CollaborationReplica,
 } from '@betteroffice/xlsx/collaboration';
 import type { Translations } from '@betteroffice/xlsx-i18n';
+
+import type { Notice } from './spill/spilledResult';
+import { formulaBarView, refusalNotice, spilledRegion } from './spill/spilledResult';
 import { LocaleProvider, useTranslation } from './i18n';
 import { EditorToolbar } from './components/EditorToolbar';
 import type {
@@ -511,6 +514,7 @@ function XlsxEditorContent({
 
   const [sheetInfo, setSheetInfo] = useState<SheetInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [frame, setFrame] = useState<DisplayList | null>(null);
   const [selectedChart, setSelectedChart] = useState<number | null>(null);
   const [chartGhost, setChartGhost] = useState<{
@@ -900,6 +904,14 @@ function XlsxEditorContent({
     };
   }, [doPaint, sheetInfo, error, revision]);
 
+  // A refusal outlives the selection move that produced it: committing from the
+  // formula bar steps down a row, and clearing on that would erase the notice
+  // in the same tick it was set. The next edit replaces it, or the reader
+  // dismisses it.
+  useEffect(() => {
+    setNotice(null);
+  }, [activeSheet]);
+
   // read the focused cell's editable text for the name box + formula bar; reruns
   // as the selection moves or the workbook mutates.
   useEffect(() => {
@@ -999,6 +1011,7 @@ function XlsxEditorContent({
       refreshSheetState(result.sheetInfo.activeSheet);
       setRevision((r) => r + 1);
       refreshProposals();
+      setNotice(refusalNotice(result.refusal));
       if (result.applied) onEditRef.current?.();
     },
     [refreshProposals, refreshSheetState]
@@ -2102,7 +2115,10 @@ function XlsxEditorContent({
 
   const spacerWidth = sheetInfo ? sheetInfo.contentWidth * zoom : undefined;
   const spacerHeight = sheetInfo ? sheetInfo.contentHeight * zoom : undefined;
-  const formulaValue = formulaDraft ?? focusedCell?.input ?? '';
+  const formulaBar = formulaBarView(focusedCell, formulaDraft);
+  const spillRegion = spilledRegion(focusedCell);
+  const spillRect = grid && spillRegion ? rangeRect(grid, spillRegion) : null;
+  const scaledSpillRect = spillRect ? scaledRect(spillRect, zoom) : null;
   const normalizedSelection = selection ? normalizeRange(selection) : null;
   const selectionRows = normalizedSelection
     ? normalizedSelection.bottom - normalizedSelection.top + 1
@@ -2344,9 +2360,18 @@ function XlsxEditorContent({
               </span>
               <input
                 data-testid="xlsx-formula-input"
-                value={formulaValue}
+                value={formulaBar.value}
                 placeholder={t('toolbar.formulaPlaceholder')}
-                aria-label={t('toolbar.formulaPlaceholder')}
+                aria-label={
+                  formulaBar.borrowedFrom
+                    ? t('spill.borrowedFormula', { anchor: formulaBar.borrowedFrom })
+                    : t('toolbar.formulaPlaceholder')
+                }
+                title={
+                  formulaBar.borrowedFrom
+                    ? t('spill.borrowedFormula', { anchor: formulaBar.borrowedFrom })
+                    : undefined
+                }
                 disabled={!sheetInfo}
                 onChange={(e) => setFormulaDraft(e.target.value)}
                 onKeyDown={(e) => {
@@ -2361,7 +2386,11 @@ function XlsxEditorContent({
                   }
                 }}
                 onBlur={() => commitFormula()}
-                style={xlsxToolbarStyles.formulaInput}
+                style={
+                  formulaBar.borrowedFrom
+                    ? { ...xlsxToolbarStyles.formulaInput, color: '#64748b' }
+                    : xlsxToolbarStyles.formulaInput
+                }
               />
             </div>
             <PresenceStrip
@@ -2393,6 +2422,42 @@ function XlsxEditorContent({
           </div>
         </EditorToolbar>
       </div>
+      {notice && (
+        <div
+          data-testid="xlsx-spill-notice"
+          role="status"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '6px 12px',
+            background: '#fef3c7',
+            borderBottom: '1px solid #fcd34d',
+            color: '#78350f',
+            fontSize: 13,
+          }}
+        >
+          <span style={{ flex: '1 1 auto' }}>{t(notice.key, notice.vars)}</span>
+          <button
+            type="button"
+            data-testid="xlsx-spill-notice-dismiss"
+            aria-label={t('spill.dismiss')}
+            onClick={() => setNotice(null)}
+            style={{
+              appearance: 'none',
+              border: 0,
+              background: 'transparent',
+              color: 'inherit',
+              cursor: 'pointer',
+              padding: '0 4px',
+              fontSize: 15,
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
       {proposalsAvailable && proposalsPanelOpen && (
         <ProposalsPanel
           proposals={proposals}
@@ -2593,6 +2658,22 @@ function XlsxEditorContent({
                   boxSizing: 'border-box',
                   border: `1px solid ${BRAND}`,
                   background: 'rgba(33, 115, 70, 0.12)',
+                }}
+              />
+            )}
+            {scaledSpillRect && (
+              <div
+                data-testid="xlsx-spill-region"
+                aria-hidden="true"
+                style={{
+                  position: 'absolute',
+                  left: scaledSpillRect.x,
+                  top: scaledSpillRect.y,
+                  width: scaledSpillRect.w,
+                  height: scaledSpillRect.h,
+                  boxSizing: 'border-box',
+                  border: `1px dashed ${BRAND}`,
+                  pointerEvents: 'none',
                 }}
               />
             )}

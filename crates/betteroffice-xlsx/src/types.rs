@@ -40,6 +40,17 @@ pub struct CellEdit {
     pub cell: CellRef,
     pub input: String,
     pub is_formula: bool,
+    /// The array formula this cell shows part of the result of, if any.
+    pub spill: Option<Spill>,
+}
+
+/// A spilled result a cell belongs to: the cell holding the formula, the
+/// cells its result fills, and the formula as typed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Spill {
+    pub anchor: CellRef,
+    pub region: CellRange,
+    pub input: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]

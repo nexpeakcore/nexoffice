@@ -29,7 +29,7 @@ use crate::authority::{
 use crate::{
     CalculationOptions, CalculationResult, CellAddress, CellEdit, CellInput, Error, HistoryState,
     MutationResult, NumberFormatKind, ProposalAcceptance, ProposalRequest, Result,
-    SelectionFormatting, SheetInfo, UpdateEvent, UpdateOrigin,
+    SelectionFormatting, SheetInfo, Spill, UpdateEvent, UpdateOrigin,
 };
 #[cfg(feature = "raster")]
 use crate::{RenderOptions, RenderedPng};
@@ -607,17 +607,19 @@ impl Workbook {
     pub fn cell(&self, sheet: SheetId, cell: CellRef) -> Result<CellEdit> {
         self.validate_cell(cell)?;
         let sheet_ref = self.sheet(sheet)?;
-        let (input, is_formula) = match sheet_ref.cell(cell) {
-            Some(cell) => match &cell.formula {
-                Some(formula) => (format!("={formula}"), true),
-                None => (value_to_input(&cell.value), false),
-            },
-            None => (String::new(), false),
-        };
+        let (input, is_formula) = cell_input(sheet_ref, cell);
+        let spill = sheet_ref.spill_owner(cell).and_then(|anchor| {
+            Some(Spill {
+                anchor,
+                region: sheet_ref.spill(anchor)?,
+                input: cell_input(sheet_ref, anchor).0,
+            })
+        });
         Ok(CellEdit {
             cell,
             input,
             is_formula,
+            spill,
         })
     }
 
@@ -3031,6 +3033,17 @@ fn proposal_alignment_value(
         .and_then(|sheet| sheet.cell(cell))
         .map(|cell| cell.value.clone())
         .unwrap_or_default()
+}
+
+/// What a cell shows in the formula bar: its formula as typed, or its value.
+fn cell_input(sheet: &Sheet, at: CellRef) -> (String, bool) {
+    match sheet.cell(at) {
+        Some(cell) => match &cell.formula {
+            Some(formula) => (format!("={formula}"), true),
+            None => (value_to_input(&cell.value), false),
+        },
+        None => (String::new(), false),
+    }
 }
 
 fn value_to_input(value: &CellValue) -> String {
