@@ -66,5 +66,11 @@
     "cellLabelSelected": null,
     "emptyCellLabel": null,
     "emptyCellLabelSelected": null
+  },
+  "spill": {
+    "cannotEdit": null,
+    "cannotTear": null,
+    "borrowedFormula": null,
+    "dismiss": null
   }
 }

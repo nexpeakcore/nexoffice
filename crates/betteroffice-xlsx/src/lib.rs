@@ -9,7 +9,7 @@ pub use error::Error;
 pub use types::{
     CalculationOptions, CalculationResult, CellAddress, CellEdit, CellInput, HistoryState,
     MutationResult, NumberFormatKind, ProposalAcceptance, ProposalEditInput, ProposalRequest,
-    RenderOptions, RenderedPng, SelectionFormatting, SheetInfo, UpdateEvent, UpdateOrigin,
+    RenderOptions, RenderedPng, SelectionFormatting, SheetInfo, Spill, UpdateEvent, UpdateOrigin,
 };
 pub use workbook::{
     ChartSeriesSpec, ChartSpec, MAX_COLLABORATION_BYTES, MAX_COLLABORATION_CLIENT_ID,
@@ -25,8 +25,8 @@ pub use xlsx_model::{
 };
 pub use xlsx_ops::{
     BorderLineStyle, BorderPatch, BorderPreset, CapturedFormat, CellState, HorizontalAlignment,
-    NumberFormatMutation, Op, Proposal, ProposedEdit, Provenance, StylePatch, StyleProperty,
-    TextWrapping, Transaction, VerticalAlignment,
+    NumberFormatMutation, Op, OpError, Proposal, ProposedEdit, Provenance, StylePatch,
+    StyleProperty, TextWrapping, Transaction, VerticalAlignment,
 };
 pub use xlsx_render::{
     Align, DisplayList, DrawCmd, GridGeometry, GridMeta, HyperlinkRegion, Rect, Viewport,
