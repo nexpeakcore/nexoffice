@@ -4260,6 +4260,125 @@ mod tests {
         );
     }
 
+    /// What a keystroke's lowering phase is actually spent on.
+    ///
+    /// The phase is the largest of a keystroke (53ms of ~160ms in wasm), and
+    /// splitting it says which half to attack: reading the document out of
+    /// yrs, or building the blocks from what was read.
+    ///
+    ///   cargo test -p betteroffice-docx-edit --release --features yrs-cursor \
+    ///     --lib lower_timing -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement; needs test-fixtures/heavy-300p.docx"]
+    fn lower_timing() {
+        const FONT: &[u8] =
+            include_bytes!("../../ooxml-text/tests/fonts/LiberationSans-Regular.ttf");
+        const EDITS: u32 = 10;
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-fixtures/heavy-300p.docx");
+        let bytes = std::fs::read(&path).expect("fixture");
+        docx_layout::clear_measure_fonts();
+        let font_id = docx_layout::register_measure_font(FONT).unwrap();
+        let request = serde_json::json!({
+            "bodyStory": "body",
+            "options": {"pageGap": 24},
+            "regions": {
+                "sections": [{
+                    "sectionId": "main",
+                    "pageSize": {"w": 816, "h": 1056},
+                    "margins": {"top": 96, "right": 96, "bottom": 96, "left": 96,
+                                "header": 48, "footer": 48}
+                }]
+            },
+            "notes": {"contents": []},
+            "measurement": {
+                "fontChains": {"calibri|0|0": [font_id], "calibri|0|1": [font_id],
+                               "calibri|1|0": [font_id]},
+                "defaults": {"fontSize": 24, "fontFamily": "Calibri"},
+                "authoritativeShaping": true
+            },
+            "renderEnv": {}
+        })
+        .to_string();
+
+        let engine = EngineSession::new(7011);
+        crate::seed_from_docx(engine.doc(), &bytes).expect("seed");
+        engine
+            .layout_document_with_regions_void(&request)
+            .expect("layout");
+        let env = {
+            let render = engine.render.borrow();
+            render
+                .stories
+                .get("body")
+                .expect("lowered body")
+                .env
+                .clone()
+        };
+        let ctx = crate::EditCtx::local("", "");
+
+        let mut read = std::time::Duration::ZERO;
+        let mut lower = std::time::Duration::ZERO;
+        let mut handover = std::time::Duration::ZERO;
+        let (mut blocks, mut runs) = (0, 0);
+        for _ in 0..EDITS {
+            engine
+                .doc()
+                .insert_text(
+                    &ctx,
+                    crate::Position::new("body", 7),
+                    "y",
+                    crate::FormatPolicy::Inherit,
+                )
+                .unwrap();
+
+            let at = std::time::Instant::now();
+            {
+                use yrs::{Map, ReadTxn, Text, Transact};
+                let txn = engine.doc.yrs_doc().transact();
+                let story = txn
+                    .get_map("stories")
+                    .and_then(|stories| stories.get(&txn, "body"))
+                    .and_then(|value| value.cast::<yrs::TextRef>().ok())
+                    .expect("body story");
+                let diff = story.diff(&txn, yrs::types::text::YChange::identity);
+                runs = diff.len();
+                std::hint::black_box(diff);
+            }
+            read += at.elapsed();
+
+            let at = std::time::Instant::now();
+            let lowered =
+                crate::bridge::yrs_doc_to_lowered_blocks(&engine.doc, "body", &env).unwrap();
+            lower += at.elapsed();
+            blocks = lowered.blocks.len();
+
+            let at = std::time::Instant::now();
+            std::hint::black_box(lowered.blocks.to_vec());
+            handover += at.elapsed();
+
+            engine.render.borrow_mut().stories.insert(
+                "body".to_owned(),
+                LoweredStory {
+                    doc_epoch: engine.doc_epoch(),
+                    env: env.clone(),
+                    blocks: lowered.blocks,
+                    content_keys: lowered.keys,
+                    serialized_blocks: None,
+                },
+            );
+        }
+
+        let ms = |total: std::time::Duration| total.as_secs_f64() * 1000.0 / f64::from(EDITS);
+        println!("{blocks} blocks from {runs} runs, per edit:");
+        println!("  read out of yrs   {:>7.1} ms", ms(read));
+        println!(
+            "  whole lowering    {:>7.1} ms   <- of which the read above",
+            ms(lower)
+        );
+        println!("  handed to caller  {:>7.1} ms", ms(handover));
+    }
+
     /// What opening a document waits on, stage by stage, against what the
     /// reader actually waits for: the pass that paints the first pages.
     ///
