@@ -343,11 +343,15 @@ fn lower_story<T: ReadTxn>(
             // Text and the pilcrow are the only things the paragraph key
             // describes. Deciding that here rather than in each arm means a new
             // kind of embed cannot quietly inherit a key that does not cover it.
-            let described_by_key = match &diff.insert {
-                Out::Any(Any::String(_)) => true,
+            // Asked once and answered once: this decides both whether the
+            // paragraph key still describes the entry and which arm below takes
+            // it, and asking twice reads the document 2753 times for nothing.
+            let ends_a_paragraph = match &diff.insert {
                 Out::YMap(map) => is_pilcrow(map, txn),
                 _ => false,
             };
+            let described_by_key =
+                ends_a_paragraph || matches!(diff.insert, Out::Any(Any::String(_)));
             if !described_by_key {
                 paragraph_key = None;
             }
@@ -371,7 +375,7 @@ fn lower_story<T: ReadTxn>(
                     paragraph_pm_units += width;
                     at_block_boundary = false;
                 }
-                Out::YMap(pilcrow) if is_pilcrow(&pilcrow, txn) => {
+                Out::YMap(pilcrow) if ends_a_paragraph => {
                     // One read of the pilcrow's properties serves the paragraph
                     // and the section break that may follow it.
                     let values = pilcrow_values(&pilcrow, txn);

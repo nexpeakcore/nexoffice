@@ -729,8 +729,14 @@ fn map_string<T: ReadTxn>(map: &MapRef, txn: &T, key: &str) -> Option<String> {
     }
 }
 
+/// Reads the kind in place. Lowering asks this of every embed it walks, and
+/// the answer is a boolean — building a `String` to throw away is the whole
+/// cost on a long document.
 fn is_pilcrow<T: ReadTxn>(map: &MapRef, txn: &T) -> bool {
-    map_string(map, txn, KIND_KEY).as_deref() == Some(PILCROW_KIND)
+    matches!(
+        map.get(txn, KIND_KEY),
+        Some(Out::Any(Any::String(kind))) if kind.as_ref() == PILCROW_KIND
+    )
 }
 
 fn pilcrows<T: ReadTxn>(story: &TextRef, txn: &T) -> Vec<(u32, MapRef)> {
