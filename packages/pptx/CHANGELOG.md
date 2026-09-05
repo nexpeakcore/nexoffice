@@ -1,5 +1,23 @@
 # @betteroffice/pptx
 
+## 0.1.0
+
+### Minor Changes
+
+- c3713b9: A save that does not write now says which kind of thing went wrong, rather than reporting every one of them as a change the writer cannot express. `EditError::Unprojectable` kept only the cases it names — a formatting patch, a moved shape, an added slide — and four new variants took the rest: `Unsavable` for a replica opened from a collaborative update, which never carried the source bytes and can never be written to a file; `WriteLimit` for an edit larger than one save may write; `WriteFailed` for a write that broke or a writer that reached a state it does not hold; and `VerificationFailed` for bytes that did not read back as the deck they were planned from.
+
+  The distinction is what lets a host answer correctly. `EditError::save_fault` returns a `SaveFault` whose `undoing_helps` is true for exactly one of them, so an offer to abandon edits is only ever made when undoing the named change would let the same save through. A broken write and a failed verification are the writer's problem, not the edit's, and the work has to survive them.
+
+  `saveBytes` across the wasm boundary now rejects with an `Error` carrying `code`, `reason` and `undoingHelps` properties, and `@betteroffice/pptx` exports `saveFault` to read them. Classify on the code: `saveFault` returns `null` for anything the writer did not classify — a disposed handle, a panic, an error that merely quotes the writer's wording — so a host cannot be talked into discarding work by a message that reads like a refusal.
+
+  Breaking for Rust callers that match on `EditError::Unprojectable` to detect a failed save: the cases above now arrive as their own variants. Match on `save_fault` instead.
+
+### Patch Changes
+
+- b51086c: Undo in the browser now takes back a word rather than a letter. The undo manager groups edits that land inside a 500 ms window, but the wasm build had no clock to measure that window with and used a counter that advanced 501 ms on every reading — so every keystroke fell outside the previous one's window and became its own undo step. Taking back a five-letter word cost five presses. The docx and pptx engines now read `Date.now` through the JS boundary, and one press takes back the run as it was typed.
+
+  Workbooks keep one press to one cell, deliberately. A spreadsheet commits an edit per cell on Enter or Tab, and grouping by time would take back every cell filled in the same half second; callers that want several edits undone together still say so through the batch entry point.
+
 ## 0.0.3
 
 ### Patch Changes
