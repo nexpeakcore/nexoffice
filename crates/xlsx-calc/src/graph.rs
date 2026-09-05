@@ -342,7 +342,8 @@ fn push_defined_name_uses(owner: SheetId, expr: &Expr, pending: &mut Vec<Defined
             | Expr::Bool(_)
             | Expr::Error(_)
             | Expr::Ref { .. }
-            | Expr::Range { .. } => {}
+            | Expr::Range { .. }
+            | Expr::Omitted => {}
         }
     }
     pending.extend(uses.into_iter().rev());
@@ -371,7 +372,8 @@ fn push_volatile_name_uses(owner: SheetId, expr: &Expr, pending: &mut Vec<Define
             | Expr::Bool(_)
             | Expr::Error(_)
             | Expr::Ref { .. }
-            | Expr::Range { .. } => {}
+            | Expr::Range { .. }
+            | Expr::Omitted => {}
         }
     }
     pending.extend(uses.into_iter().rev());

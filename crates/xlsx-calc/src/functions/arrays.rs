@@ -189,13 +189,24 @@ fn direction(args: &[Expr], ctx: &EvalContext<'_>, index: usize) -> Result<bool,
     }
 }
 
+/// Whether an option argument was left for the function to decide.
+///
+/// Past the end of the list, or a gap between two commas — `SORT(A1:B9,,,TRUE)`
+/// sorts by the first row, it does not sort by row zero. That reading is for
+/// the option arguments here; a gap where a *value* was wanted is the blank it
+/// looks like, which is what `FILTER`'s last argument and `VLOOKUP`'s make of
+/// one.
+fn left_open(args: &[Expr], index: usize) -> bool {
+    matches!(args.get(index), None | Some(Expr::Omitted))
+}
+
 fn optional_int(
     args: &[Expr],
     ctx: &EvalContext<'_>,
     index: usize,
     default: i64,
 ) -> Result<i64, CellValue> {
-    if index >= args.len() {
+    if left_open(args, index) {
         return Ok(default);
     }
     nth_int(args, ctx, index).map_err(err)
@@ -207,7 +218,7 @@ fn optional_number(
     index: usize,
     default: f64,
 ) -> Result<f64, CellValue> {
-    if index >= args.len() {
+    if left_open(args, index) {
         return Ok(default);
     }
     nth_number(args, ctx, index).map_err(err)
@@ -219,7 +230,7 @@ fn optional_bool(
     index: usize,
     default: bool,
 ) -> Result<bool, CellValue> {
-    if index >= args.len() {
+    if left_open(args, index) {
         return Ok(default);
     }
     crate::eval::to_bool(&evaluate(&args[index], ctx)).map_err(err)
@@ -466,6 +477,18 @@ mod tests {
         Err(CellValue::Error { value })
     }
 
+    /// `A1:C2` holds two rows of three columns, out of order across.
+    fn wide() -> Workbook {
+        sheet_with(&[
+            ("A1", n(3.0)),
+            ("B1", n(1.0)),
+            ("C1", n(2.0)),
+            ("A2", t("c")),
+            ("B2", t("a")),
+            ("C2", t("b")),
+        ])
+    }
+
     /// `A1:B3` holds three rows, out of order by both of its columns.
     fn table() -> Workbook {
         sheet_with(&[
@@ -558,15 +581,7 @@ mod tests {
 
     #[test]
     fn by_col_reorders_columns_and_reads_a_row_for_its_key() {
-        let workbook = sheet_with(&[
-            ("A1", n(3.0)),
-            ("B1", n(1.0)),
-            ("C1", n(2.0)),
-            ("A2", t("c")),
-            ("B2", t("a")),
-            ("C2", t("b")),
-        ]);
-        let sorted = produced_in(&workbook, "SORT(A1:C2,1,1,TRUE)").expect("a rectangle");
+        let sorted = produced_in(&wide(), "SORT(A1:C2,1,1,TRUE)").expect("a rectangle");
         assert_eq!(
             grid(&sorted),
             [[n(1.0), n(2.0), n(3.0)], [t("a"), t("b"), t("c")],]
@@ -737,6 +752,22 @@ mod tests {
             ),
             refused(ErrorValue::Value)
         );
+    }
+
+    #[test]
+    fn an_option_left_open_is_the_one_the_function_would_have_chosen() {
+        // The spelling all of this is for: sorting by column is the fourth
+        // argument and nobody writes the two in front of it. A gap has to mean
+        // "sort by the first row", not "sort by row zero".
+        let sorted = produced_in(&wide(), "SORT(A1:C2,,,TRUE)").expect("a rectangle");
+        assert_eq!(
+            grid(&sorted),
+            [[n(1.0), n(2.0), n(3.0)], [t("a"), t("b"), t("c")]]
+        );
+
+        let workbook = sheet_with(&[("A1", n(1.0)), ("A2", n(1.0)), ("A3", n(2.0))]);
+        let once = produced_in(&workbook, "UNIQUE(A1:A3,,TRUE)").expect("a rectangle");
+        assert_eq!(grid(&once), [[n(2.0)]]);
     }
 
     #[test]

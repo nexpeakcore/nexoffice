@@ -1747,6 +1747,21 @@ mod tests {
     }
 
     #[test]
+    fn a_gap_in_a_rewritten_formula_is_still_there_afterwards() {
+        // Dropping it would not fail: `VLOOKUP(…,2,)` would come back as
+        // `VLOOKUP(…,2)` and quietly change from an exact match to an
+        // approximate one, which answers a different question.
+        assert_eq!(
+            shift_formula_rows("VLOOKUP(A1,B1:C9,2,)", 2),
+            Ok(Some("VLOOKUP(A3,B3:C11,2,)".into()))
+        );
+        assert_eq!(
+            shift_formula_rows("SORT(A1:B9,,,TRUE)", 1),
+            Ok(Some("SORT(A2:B10,,,TRUE)".into()))
+        );
+    }
+
+    #[test]
     fn interval_clip_edges() {
         assert_eq!(clip_interval(0, 9, 2, 1), Some((0, 8)));
         assert_eq!(clip_interval(4, 6, 4, 3), None);

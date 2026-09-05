@@ -236,6 +236,8 @@ fn logical_functions() {
         ("XOR(TRUE, TRUE)", b(false)),
         ("IF(TRUE, 1, 1/0)", n(1.0)),
         ("IFERROR(1, 1/0)", n(1.0)),
+        ("SUM(1,,2)", n(3.0)),
+        ("IF(TRUE,,9)", CellValue::Empty),
     ]);
 }
 
@@ -245,6 +247,9 @@ fn lookup_functions() {
         ("VLOOKUP(2, E1:F4, 2, FALSE)", t("two")),
         ("VLOOKUP(2.5, E1:F4, 2)", t("two")),
         ("VLOOKUP(9, E1:F4, 2, FALSE)", e(ErrorValue::NA)),
+        // A gap is why people write the trailing comma at all: the fourth
+        // argument absent is an approximate match, present and empty is FALSE.
+        ("VLOOKUP(2.5, E1:F4, 2,)", e(ErrorValue::NA)),
         ("HLOOKUP(3, H1:K2, 2, FALSE)", t("c")),
         ("INDEX(A1:A5, 3)", n(30.0)),
         ("INDEX(E1:F4, 2, 2)", t("two")),

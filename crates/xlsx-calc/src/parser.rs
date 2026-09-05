@@ -44,6 +44,13 @@ pub enum Expr {
         name: String,
         args: Vec<Expr>,
     },
+    /// An argument left out between two commas: `SORT(A1:B9,,,TRUE)`.
+    ///
+    /// It is not the same as a blank and not the same as absent. Excel's newer
+    /// functions read a gap as "take your default", while `VLOOKUP(a,b,c,)`
+    /// reads the same gap as `FALSE` — which is why people write it — so what
+    /// a gap means is left to the function that receives it.
+    Omitted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,7 +249,10 @@ impl Parser<'_> {
             }));
         }
         loop {
-            args.push(self.expr_bp(0, depth + 1)?);
+            args.push(match self.peek().map(|t| &t.kind) {
+                Some(TokKind::Comma | TokKind::RParen) => ParsedExpr::leaf(Expr::Omitted),
+                _ => self.expr_bp(0, depth + 1)?,
+            });
             match self.peek().map(|t| &t.kind) {
                 Some(TokKind::Comma) => {
                     self.advance();
@@ -307,6 +317,39 @@ mod tests {
             op,
             lhs: Box::new(l),
             rhs: Box::new(r),
+        }
+    }
+
+    #[test]
+    fn an_argument_can_be_left_out_between_two_commas() {
+        let Expr::FuncCall { name, args } = parse("SORT(A1:B9,,,TRUE)") else {
+            panic!("a call")
+        };
+        assert_eq!(name, "SORT");
+        assert_eq!(args.len(), 4);
+        assert_eq!(args[1], Expr::Omitted);
+        assert_eq!(args[2], Expr::Omitted);
+        assert_eq!(args[3], Expr::Bool(true));
+
+        let Expr::FuncCall { args, .. } = parse("SUM(1,)") else {
+            panic!("a call")
+        };
+        assert_eq!(args, [Expr::Number(1.0), Expr::Omitted]);
+    }
+
+    #[test]
+    fn a_gap_is_an_argument_and_nothing_else() {
+        // An empty argument list is no arguments, not one empty one, and a gap
+        // outside a call is still the syntax error it always was.
+        assert_eq!(
+            parse("NOW()"),
+            Expr::FuncCall {
+                name: "NOW".into(),
+                args: Vec::new(),
+            }
+        );
+        for src in ["1+,", ",", "(,)", ",1"] {
+            assert!(parse_formula(src).is_err(), "{src}");
         }
     }
 
@@ -410,7 +453,7 @@ mod tests {
 
     #[test]
     fn rejects_malformed_input() {
-        for src in ["", "1+", "(1", "1 2", "SUM(1,)", "*1", ")"] {
+        for src in ["", "1+", "(1", "1 2", "*1", ")"] {
             assert!(parse_formula(src).is_err(), "should reject {src:?}");
         }
     }
