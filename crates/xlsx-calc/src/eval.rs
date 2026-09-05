@@ -221,10 +221,10 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext<'_>) -> CellValue {
         Expr::Omitted => CellValue::Empty,
         Expr::FuncCall { name, args } => match crate::functions::lookup(name) {
             Some(f) => f(args, ctx),
-            // An array function reached where one value was wanted — a
-            // parameter like ROUND's, which is not lifted across a rectangle
-            // here. Answering with its first cell would be a wrong number, so
-            // it is refused as the wrong kind of value.
+            // An array function reached where one value was wanted and
+            // nothing lifted it: a range parameter that reads its argument
+            // as a value. Answering with its first cell would be a wrong
+            // number, so it is refused as the wrong kind of value.
             None if crate::functions::arrays::lookup(name).is_some() => err(ErrorValue::Value),
             None => err(ErrorValue::Name),
         },
@@ -232,8 +232,8 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext<'_>) -> CellValue {
 }
 
 /// The rectangle an expression stands for, when it stands for one: a range,
-/// an array function, a name defined as either, or an operator applied across
-/// one of those.
+/// an array function, a name defined as either, an operator applied across
+/// one of those, or a function given one where it takes a value.
 ///
 /// A single cell is a value, not a one-cell rectangle — `=A1*2` must not
 /// spill, and a formula that spills is saved as an array formula.
@@ -252,18 +252,75 @@ pub fn evaluate_array(expr: &Expr, ctx: &EvalContext<'_>) -> Produced {
             Some(evaluate_array(inner, ctx)?.map(|array| array.map(percent_value)))
         }
         Expr::Binary { op, lhs, rhs } => broadcast(*op, lhs, rhs, ctx),
-        Expr::FuncCall { name, args } => {
-            if crate::functions::lookup(name).is_some() {
-                return None;
-            }
-            Some(crate::functions::arrays::lookup(name)?(args, ctx))
-        }
+        Expr::FuncCall { name, args } => match crate::functions::lookup(name) {
+            Some(f) => lift(f, crate::functions::params(name), args, ctx),
+            None => Some(crate::functions::arrays::lookup(name)?(args, ctx)),
+        },
         Expr::Number(_)
         | Expr::Text(_)
         | Expr::Bool(_)
         | Expr::Error(_)
         | Expr::Ref { .. }
         | Expr::Omitted => None,
+    }
+}
+
+/// A function given a rectangle where it takes one value, run once per cell
+/// with that cell in the rectangle's place. Several such arguments line up
+/// the way an operator's sides do; the ones that take a range are passed
+/// through untouched.
+///
+/// Nothing is evaluated unless a value parameter holds a rectangle, so a
+/// formula with none costs a walk over its arguments and no more.
+fn lift(
+    f: crate::functions::BuiltIn,
+    params: crate::functions::Params,
+    args: &[Expr],
+    ctx: &EvalContext<'_>,
+) -> Produced {
+    let mut lifted: Vec<(usize, ArrayValue)> = Vec::new();
+    for (index, arg) in args.iter().enumerate() {
+        if !params.takes_a_value(index) {
+            continue;
+        }
+        match evaluate_array(arg, ctx) {
+            None => {}
+            Some(Ok(rectangle)) => lifted.push((index, rectangle)),
+            Some(Err(error)) => return Some(Err(error)),
+        }
+    }
+    if lifted.is_empty() {
+        return None;
+    }
+    let (rows, cols) = lifted.iter().fold((1, 1), |(rows, cols), (_, rectangle)| {
+        (span(rows, rectangle.rows()), span(cols, rectangle.cols()))
+    });
+    if rows.checked_mul(cols).is_none_or(|cells| cells > MAX_CELLS) {
+        return Some(Err(err(ErrorValue::Num)));
+    }
+
+    let mut once: Vec<Expr> = args.to_vec();
+    let mut values = Vec::with_capacity(rows * cols);
+    for row in 0..rows {
+        for col in 0..cols {
+            for (index, rectangle) in &lifted {
+                once[*index] = literal(pick(rectangle, row, col));
+            }
+            values.push(f(&once, ctx));
+        }
+    }
+    Some(Ok(ArrayValue::new(rows, cols, values)))
+}
+
+/// A value as the expression that evaluates to it, for handing one cell of
+/// a rectangle to a function that reads its arguments.
+fn literal(value: CellValue) -> Expr {
+    match value {
+        CellValue::Empty => Expr::Omitted,
+        CellValue::Number { value } => Expr::Number(value),
+        CellValue::Text { value } => Expr::Text(value),
+        CellValue::Bool { value } => Expr::Bool(value),
+        CellValue::Error { value } => Expr::Error(value),
     }
 }
 
@@ -288,15 +345,6 @@ fn broadcast(op: BinaryOp, lhs: &Expr, rhs: &Expr, ctx: &EvalContext<'_>) -> Pro
         (Err(error), _) | (_, Err(error)) => return Some(Err(error)),
     };
 
-    let span = |a: usize, b: usize| {
-        if a == 1 {
-            b
-        } else if b == 1 {
-            a
-        } else {
-            a.max(b)
-        }
-    };
     let (rows, cols) = (
         span(left.rows(), right.rows()),
         span(left.cols(), right.cols()),
@@ -304,16 +352,6 @@ fn broadcast(op: BinaryOp, lhs: &Expr, rhs: &Expr, ctx: &EvalContext<'_>) -> Pro
     if rows.checked_mul(cols).is_none_or(|cells| cells > MAX_CELLS) {
         return Some(Err(err(ErrorValue::Num)));
     }
-    let na = err(ErrorValue::NA);
-    let pick = |array: &ArrayValue, row: usize, col: usize| -> CellValue {
-        let row = if array.rows() == 1 { 0 } else { row };
-        let col = if array.cols() == 1 { 0 } else { col };
-        if row < array.rows() && col < array.cols() {
-            array.at(row, col).clone()
-        } else {
-            na.clone()
-        }
-    };
     let mut values = Vec::with_capacity(rows * cols);
     for row in 0..rows {
         for col in 0..cols {
@@ -325,6 +363,31 @@ fn broadcast(op: BinaryOp, lhs: &Expr, rhs: &Expr, ctx: &EvalContext<'_>) -> Pro
         }
     }
     Some(Ok(ArrayValue::new(rows, cols, values)))
+}
+
+/// The extent two rectangles line up to along one dimension: a side of one is
+/// repeated across the other, and sides that disagree reach as far as the
+/// longer.
+fn span(a: usize, b: usize) -> usize {
+    if a == 1 {
+        b
+    } else if b == 1 {
+        a
+    } else {
+        a.max(b)
+    }
+}
+
+/// One cell of a rectangle lined up to a larger extent: a lone row or column
+/// answers for every position, and `#N/A` stands where a side ran out.
+fn pick(array: &ArrayValue, row: usize, col: usize) -> CellValue {
+    let row = if array.rows() == 1 { 0 } else { row };
+    let col = if array.cols() == 1 { 0 } else { col };
+    if row < array.rows() && col < array.cols() {
+        array.at(row, col).clone()
+    } else {
+        err(ErrorValue::NA)
+    }
 }
 
 /// a defined name identified by the sheet its lookup resolved against.

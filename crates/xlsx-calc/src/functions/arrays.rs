@@ -465,7 +465,8 @@ mod tests {
         shown_in(&sheet_with(&[]), formula)
     }
 
-    /// `A1:A4` holds 3, 1, 2, 1 and `B1:B4` tags them x, y, x, y.
+    /// `A1:A4` holds 3, 1, 2, 1 and `B1:B4` tags them x, y, x, y; `E1:F3`
+    /// names 1, 2, 3.
     fn tagged() -> Workbook {
         sheet_with(&[
             ("A1", n(3.0)),
@@ -476,7 +477,17 @@ mod tests {
             ("B2", t("y")),
             ("B3", t("x")),
             ("B4", t("y")),
+            ("E1", n(1.0)),
+            ("F1", t("mot")),
+            ("E2", n(2.0)),
+            ("F2", t("hai")),
+            ("E3", n(3.0)),
+            ("F3", t("ba")),
         ])
+    }
+
+    fn e(value: ErrorValue) -> CellValue {
+        CellValue::Error { value }
     }
 
     /// A rectangle as nested rows, so a test can state the answer as a grid.
@@ -570,16 +581,16 @@ mod tests {
     }
 
     #[test]
-    fn a_rectangle_is_refused_where_one_value_was_wanted() {
-        // ROUND takes a number; it is not lifted across a rectangle here.
-        // Saying so beats answering with the first cell, which would be a
-        // wrong number rather than a wrong kind — and `#NAME?` would claim
-        // the function does not exist, which is not true.
+    fn a_rectangle_is_refused_where_nothing_lifts_it() {
+        // CHOOSE's choices are read as values and are not lifted. Saying so
+        // beats answering with the first cell, which would be a wrong number
+        // rather than a wrong kind — and `#NAME?` would claim the function
+        // does not exist, which is not true.
         let refused = CellValue::Error {
             value: ErrorValue::Value,
         };
         assert_eq!(shown("SEQUENCE(3)"), refused);
-        assert_eq!(shown("ROUND(SEQUENCE(3),0)"), refused);
+        assert_eq!(shown("CHOOSE(1,SEQUENCE(3))"), refused);
     }
 
     #[test]
@@ -936,6 +947,133 @@ mod tests {
                 value: ErrorValue::Value
             }
         );
+    }
+
+    #[test]
+    fn a_function_given_a_rectangle_where_it_takes_a_value_runs_once_per_cell() {
+        let workbook = tagged();
+        let lengths = produced_in(&workbook, "LEN(REPT(B1:B4,A1:A4))").expect("a rectangle");
+        assert_eq!(grid(&lengths), [[n(3.0)], [n(1.0)], [n(2.0)], [n(1.0)]]);
+        let rounded = produced_in(&workbook, "ROUND(A1:A4/3,1)").expect("a rectangle");
+        assert_eq!(grid(&rounded), [[n(1.0)], [n(0.3)], [n(0.7)], [n(0.3)]]);
+        let shown = produced_in(&workbook, "TEXT(A1:A4,\"0.0\")").expect("a rectangle");
+        assert_eq!(
+            grid(&shown),
+            [[t("3.0")], [t("1.0")], [t("2.0")], [t("1.0")]]
+        );
+    }
+
+    #[test]
+    fn the_conditions_people_write_with_a_scalar_function_are_masks() {
+        let workbook = tagged();
+        let found = produced_in(&workbook, "ISNUMBER(SEARCH(\"x\",B1:B4))").expect("a rectangle");
+        let (yes, no) = (
+            CellValue::Bool { value: true },
+            CellValue::Bool { value: false },
+        );
+        assert_eq!(grid(&found), [[yes.clone()], [no.clone()], [yes], [no]]);
+
+        let kept = produced_in(&workbook, "FILTER(A1:A4,ISNUMBER(SEARCH(\"x\",B1:B4)))")
+            .expect("a rectangle");
+        assert_eq!(grid(&kept), [[n(3.0)], [n(2.0)]]);
+        let initial =
+            produced_in(&workbook, "FILTER(A1:A4,LEFT(B1:B4,1)=\"y\")").expect("a rectangle");
+        assert_eq!(grid(&initial), [[n(1.0)], [n(1.0)]]);
+    }
+
+    #[test]
+    fn if_runs_once_per_cell_and_still_takes_only_the_branch_it_needs() {
+        let workbook = tagged();
+        let sized = produced_in(&workbook, "IF(A1:A4>2,\"big\",\"small\")").expect("a rectangle");
+        assert_eq!(
+            grid(&sized),
+            [[t("big")], [t("small")], [t("small")], [t("small")]]
+        );
+
+        let lazy = produced_in(&workbook, "IF(A1:A4>2,1/0,\"b\")").expect("a rectangle");
+        assert_eq!(
+            grid(&lazy),
+            [[e(ErrorValue::Div0)], [t("b")], [t("b")], [t("b")]]
+        );
+
+        // The idiom that predates SUMIF, and what people still write.
+        assert_eq!(shown_in(&workbook, "SUM(IF(A1:A4>1,A1:A4,0))"), n(5.0));
+    }
+
+    #[test]
+    fn a_value_parameter_lifts_and_a_range_parameter_beside_it_does_not() {
+        let workbook = tagged();
+        let counts = produced_in(&workbook, "COUNTIF(B1:B4,UNIQUE(B1:B4))").expect("a rectangle");
+        assert_eq!(grid(&counts), [[n(2.0)], [n(2.0)]]);
+        let top = produced_in(&workbook, "LARGE(A1:A4,SEQUENCE(2))").expect("a rectangle");
+        assert_eq!(grid(&top), [[n(3.0)], [n(2.0)]]);
+        let ranks = produced_in(&workbook, "RANK(A1:A4,A1:A4)").expect("a rectangle");
+        assert_eq!(grid(&ranks), [[n(1.0)], [n(3.0)], [n(2.0)], [n(3.0)]]);
+        let named = produced_in(&workbook, "VLOOKUP(A1:A4,E1:F3,2,)").expect("a rectangle");
+        assert_eq!(
+            grid(&named),
+            [[t("ba")], [t("mot")], [t("hai")], [t("mot")]]
+        );
+        let picked = produced_in(&workbook, "INDEX(E1:F3,SEQUENCE(2),2)").expect("a rectangle");
+        assert_eq!(grid(&picked), [[t("mot")], [t("hai")]]);
+        let over = produced_in(&workbook, "SUMIF(A1:A4,\">\"&SEQUENCE(2))").expect("a rectangle");
+        assert_eq!(grid(&over), [[n(5.0)], [n(3.0)]]);
+    }
+
+    #[test]
+    fn a_lifted_function_nests_in_another() {
+        let workbook = tagged();
+        let safe =
+            produced_in(&workbook, "IFERROR(VLOOKUP(A1:A5,E1:F3,2,),\"-\")").expect("a rectangle");
+        assert_eq!(
+            grid(&safe),
+            [[t("ba")], [t("mot")], [t("hai")], [t("mot")], [t("-")]]
+        );
+        assert_eq!(shown_in(&workbook, "SUM(LEN(REPT(B1:B4,A1:A4)))"), n(7.0));
+    }
+
+    #[test]
+    fn rectangles_in_several_value_parameters_line_up_like_an_operators_sides() {
+        let chosen = produced("IF(SEQUENCE(3)>1,SEQUENCE(2),\"c\")").expect("a rectangle");
+        assert_eq!(grid(&chosen), [[t("c")], [n(2.0)], [e(ErrorValue::NA)]]);
+        assert_eq!(
+            produced("ROUND(SEQUENCE(1024),SEQUENCE(1,1025))"),
+            refused(ErrorValue::Num)
+        );
+    }
+
+    #[test]
+    fn a_blank_cell_is_handed_over_as_a_blank() {
+        let workbook = tagged();
+        let lengths = produced_in(&workbook, "LEN(A4:A5)").expect("a rectangle");
+        assert_eq!(grid(&lengths), [[n(1.0)], [n(0.0)]]);
+        let blank = produced_in(&workbook, "ISBLANK(A4:A5)").expect("a rectangle");
+        assert_eq!(
+            grid(&blank),
+            [
+                [CellValue::Bool { value: false }],
+                [CellValue::Bool { value: true }]
+            ]
+        );
+    }
+
+    #[test]
+    fn a_formula_with_no_rectangle_in_a_value_parameter_is_not_lifted() {
+        let workbook = tagged();
+        let ctx = EvalContext::new(&workbook, SheetId(0));
+        for formula in [
+            "ROUND(A1,0)",
+            "IF(A1>2,\"a\",\"b\")",
+            "VLOOKUP(A1,E1:F3,2,)",
+            "SUM(A1:A4)",
+            "AND(A1:A4>0)",
+            "ROWS(A1:A4)",
+            "SUM(LEN(B1:B4))",
+            "COUNTIF(B1:B4,\"x\")",
+        ] {
+            let expr = parse_formula(formula).expect("parses");
+            assert!(evaluate_array(&expr, &ctx).is_none(), "{formula}");
+        }
     }
 
     #[test]

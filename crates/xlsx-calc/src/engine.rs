@@ -626,6 +626,29 @@ mod tests {
     }
 
     #[test]
+    fn a_lifted_function_spills_and_follows_what_it_read() {
+        let (mut wb, sheet) = one_sheet();
+        for (cell, value) in [("A1", 1.5), ("A2", 2.5), ("A3", 3.5)] {
+            put_num(&mut wb, sheet, cell, value);
+        }
+        put_formula(&mut wb, sheet, "C1", "ROUND(A1:A3,0)");
+        put_formula(&mut wb, sheet, "D1", "ROUND(A1,0)");
+        let (mut graph, _) = rebuild_and_recalc_all(&mut wb, None);
+
+        assert_eq!(value(&wb, sheet, "C3"), num(4.0));
+        assert_eq!(
+            wb.sheet(sheet).unwrap().spill(a1("C1")),
+            Some(CellRange::new(a1("C1"), a1("C3")))
+        );
+        assert_eq!(value(&wb, sheet, "D1"), num(2.0));
+        assert_eq!(wb.sheet(sheet).unwrap().spill(a1("D1")), None);
+
+        put_num(&mut wb, sheet, "A2", 7.2);
+        recalc_after(&mut wb, &mut graph, &[(sheet, a1("A2"))], None);
+        assert_eq!(value(&wb, sheet, "C2"), num(7.0));
+    }
+
+    #[test]
     fn a_filtered_result_resizes_when_the_data_it_reads_changes() {
         // `SEQUENCE` only changes size when the formula does. A filter changes
         // size because a cell somewhere else changed, which is the case the

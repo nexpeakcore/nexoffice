@@ -245,6 +245,11 @@ fn logical_functions() {
             t("apple,banana,cherry"),
         ),
         ("AVERAGE(A1:A5*2)", n(60.0)),
+        ("SUM(LEN(B1:B5))", n(27.0)),
+        ("MAX(LEN(B1:B5))", n(6.0)),
+        ("SUM(IF(A1:A5>25, A1:A5, 0))", n(120.0)),
+        ("SUM(COUNTIF(B1:B5, UNIQUE(B1:B5)))", n(5.0)),
+        ("SUMPRODUCT(ISNUMBER(SEARCH(\"an\", B1:B5))*A1:A5)", n(20.0)),
         ("IF(TRUE,,9)", CellValue::Empty),
     ]);
 }
