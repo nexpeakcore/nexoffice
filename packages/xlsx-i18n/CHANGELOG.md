@@ -1,5 +1,11 @@
 # @betteroffice/xlsx-i18n
 
+## 0.0.9
+
+### Patch Changes
+
+- 66758d9: A spilled result now looks like one. Selecting any cell it fills outlines the whole result, the formula bar shows the formula that wrote it rather than the bare number, and typing into one of those cells says which cell to edit instead of failing silently.
+
 ## 0.0.8
 
 ## 0.0.7
