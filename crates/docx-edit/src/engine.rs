@@ -4320,6 +4320,7 @@ mod tests {
         let mut read = std::time::Duration::ZERO;
         let mut lower = std::time::Duration::ZERO;
         let mut handover = std::time::Duration::ZERO;
+        let mut boundaries = std::time::Duration::ZERO;
         let (mut blocks, mut runs) = (0, 0);
         for _ in 0..EDITS {
             engine
@@ -4346,6 +4347,41 @@ mod tests {
                 std::hint::black_box(diff);
             }
             read += at.elapsed();
+
+            // The floor any design has to pay if it must still see every
+            // paragraph: walk the whole story, find the boundaries, build
+            // nothing.
+            let at = std::time::Instant::now();
+            {
+                use yrs::{Any, Map, Out, ReadTxn, Text, Transact};
+                let txn = engine.doc.yrs_doc().transact();
+                let story = txn
+                    .get_map("stories")
+                    .and_then(|stories| stories.get(&txn, "body"))
+                    .and_then(|value| value.cast::<yrs::TextRef>().ok())
+                    .expect("body story");
+                let mut paragraphs = 0_u32;
+                let mut chars = 0_u32;
+                for entry in story.diff(&txn, yrs::types::text::YChange::identity) {
+                    match entry.insert {
+                        Out::Any(Any::String(text)) => {
+                            chars += text.encode_utf16().count() as u32;
+                        }
+                        Out::YMap(map) => {
+                            if matches!(
+                                map.get(&txn, "_kind"),
+                                Some(Out::Any(Any::String(kind))) if kind.as_ref() == "pilcrow"
+                            ) {
+                                paragraphs += 1;
+                            }
+                            chars += 1;
+                        }
+                        _ => chars += 1,
+                    }
+                }
+                std::hint::black_box((paragraphs, chars));
+            }
+            boundaries += at.elapsed();
 
             let at = std::time::Instant::now();
             let lowered =
@@ -4375,6 +4411,10 @@ mod tests {
         println!(
             "  whole lowering    {:>7.1} ms   <- of which the read above",
             ms(lower)
+        );
+        println!(
+            "  boundaries only   {:>7.1} ms   <- the floor for seeing every paragraph",
+            ms(boundaries)
         );
         println!("  handed to caller  {:>7.1} ms", ms(handover));
     }
