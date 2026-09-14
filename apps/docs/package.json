@@ -13,12 +13,12 @@
     "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
   },
   "dependencies": {
-    "cnfast": "^0.1.0",
-    "fumadocs-core": "16.13.0",
-    "fumadocs-mdx": "15.2.0",
+    "cnfast": "^0.2.0",
+    "fumadocs-core": "16.15.8",
+    "fumadocs-mdx": "15.4.0",
     "fumadocs-ui": "npm:@fumadocs/base-ui@16.10.7",
     "lucide-react": "^1.28.0",
-    "next": "16.2.11",
+    "next": "16.3.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
