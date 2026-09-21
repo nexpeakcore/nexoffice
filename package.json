@@ -57,6 +57,6 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.1",
-    "jszip": "3.10.1"
+    "jszip": "3.10.2"
   }
 }
