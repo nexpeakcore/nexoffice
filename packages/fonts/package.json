@@ -1,6 +1,6 @@
 {
   "name": "@betteroffice/docx-fonts",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "Bundled open fonts for the @betteroffice/docx editor: metric-compatible Latin faces (Carlito, Caladea, Liberation) plus Noto CJK/RTL script-coverage faces, with a lazy same-origin loader.",
   "sideEffects": false,

@@ -1,5 +1,26 @@
 # @betteroffice/xlsx-react
 
+## 0.0.9
+
+### Patch Changes
+
+- 66758d9: A spilled result now looks like one. Selecting any cell it fills outlines the whole result, the formula bar shows the formula that wrote it rather than the bare number, and typing into one of those cells says which cell to edit instead of failing silently.
+- Updated dependencies [d9841a7]
+- Updated dependencies [66758d9]
+- Updated dependencies [5c0d5db]
+- Updated dependencies [5d2afd1]
+- Updated dependencies [eba6194]
+- Updated dependencies [1617da6]
+- Updated dependencies [08a3f7c]
+- Updated dependencies [74a329d]
+- Updated dependencies [69f35ba]
+- Updated dependencies [ab6e094]
+- Updated dependencies [692f2c7]
+- Updated dependencies [f5d1b03]
+- Updated dependencies [0ac3c46]
+  - @betteroffice/xlsx@0.0.9
+  - @betteroffice/xlsx-i18n@0.0.9
+
 ## 0.0.8
 
 ### Patch Changes
